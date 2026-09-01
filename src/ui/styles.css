@@ -3,7 +3,7 @@
    from the prototype (Shared Canvas.dc.html L22-42).
    Dark is the default theme. Canvas render colors are mirrored in
    src/shared/tokens.ts for the server-side renderer — keep them in step. */
-@import url('https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=IBM+Plex+Sans:wght@500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
 :root {
   --color-bg: #f2f2f3;
@@ -21,7 +21,7 @@
   --color-accent-400: #94bce3; --color-accent-500: #749dc4; --color-accent-600: #597ea3;
   --color-accent-700: #416180; --color-accent-800: #2c455d; --color-accent-900: #1d2d3d;
 
-  --font-heading: "Barlow Condensed", system-ui, sans-serif;
+  --font-heading: "IBM Plex Sans", system-ui, sans-serif;
   --font-heading-weight: 600;
   --font-body: "Barlow", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
@@ -170,7 +170,11 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
   background: var(--color-bg); cursor: default;
 }
 #grid { position: absolute; inset: 0; }
-#world { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+/* canvas.ts sets --zoom (quantized, core/lod.ts ZOOM_STEPS) and data-lod on
+   #world. Every tier rule lives here (TYPOGRAPHY_LOD.md § 1): text counter-
+   scales to a screen-px floor (label 12, mono 10) and is hidden by tier,
+   never shrunk. Node geometry never reads either attribute. */
+#world { --zoom: 1; position: absolute; top: 0; left: 0; transform-origin: 0 0; }
 #svglayer { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
 #nodelayer { position: absolute; top: 0; left: 0; }
 
@@ -181,13 +185,33 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
 }
 .node-kicker {
   display: flex; align-items: center; gap: 6px;
-  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.09em;
+  font-family: var(--font-mono); font-weight: 500; letter-spacing: 0.09em; line-height: 1.2;
+  font-size: max(9.5px, calc(10px / var(--zoom)));
 }
-.node-label { font-family: var(--font-heading); font-weight: 600; font-size: 16px; line-height: 1.1; letter-spacing: 0.01em; }
+.node-label {
+  font-family: var(--font-heading); font-weight: 600; line-height: 1.1; letter-spacing: 0.01em;
+  font-size: max(16px, calc(12px / var(--zoom)));
+}
 .node-ref {
-  font-family: var(--font-mono); font-size: 10px; color: var(--color-neutral-600);
+  font-family: var(--font-mono); font-weight: 500; color: var(--color-neutral-600);
+  font-size: max(10px, calc(10px / var(--zoom)));
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.edge-label { font-family: var(--font-mono); font-weight: 500; fill: var(--color-accent-700); font-size: max(11px, calc(10px / var(--zoom))); }
+/* compact + dot: one-line ellipsised label, kind-only kicker, no ref line */
+#world:not([data-lod="full"]) .node-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#world:not([data-lod="full"]) .node-kicker span + span { display: none; }
+#world:not([data-lod="full"]) .node-ref { display: none; }
+/* dot: no kicker; edge labels only on the selected edge */
+#world[data-lod="dot"] .node-kicker { display: none; }
+#world[data-lod="dot"] .edge:not(.selected) .edge-label, #world[data-lod="dot"] .edge:not(.selected) .edge-label-bg { display: none; }
+/* notes wrap inside the box; lines clamp by tier (full = unclamped) */
+#world .node-box[data-kind="note"] .node-label {
+  white-space: normal; overflow-wrap: anywhere; overflow: hidden;
+  display: -webkit-box; -webkit-box-orient: vertical;
+}
+#world[data-lod="compact"] .node-box[data-kind="note"] .node-label { -webkit-line-clamp: 3; }
+#world[data-lod="dot"] .node-box[data-kind="note"] .node-label { -webkit-line-clamp: 1; }
 .resize-handle {
   position: absolute; right: -5px; bottom: -5px; width: 9px; height: 9px;
   background: var(--color-accent); border: 1px solid var(--color-bg);
