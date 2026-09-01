@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TheTechChild/inkwire/schema/canvas-state.schema.json",
+  "title": "Inkwire CanvasState",
+  "description": "Return shape of canvas.get_state. Meaning (graph) and placement (layout) are separate fields with independent revision counters.",
+  "type": "object",
+  "required": ["board", "graph", "layout", "ink", "images", "history", "viewport"],
+  "additionalProperties": false,
+  "properties": {
+    "board": {
+      "type": "object",
+      "required": ["id", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" }
+      }
+    },
+    "graph": {
+      "type": "object",
+      "description": "What the diagram means. Positions are deliberately absent.",
+      "required": ["revision", "nodes", "edges"],
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Increments on any change to node or edge semantics. Unchanged by moves."
+        },
+        "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
+        "edges": { "type": "array", "items": { "$ref": "#/$defs/edge" } }
+      }
+    },
+    "layout": {
+      "type": "object",
+      "description": "Where things sit. Bumped by drags and by canvas.move only.",
+      "required": ["revision", "units", "boxes"],
+      "additionalProperties": false,
+      "properties": {
+        "revision": { "type": "integer", "minimum": 0 },
+        "units": { "const": "canvas px" },
+        "boxes": {
+          "type": "object",
+          "description": "Element id to [x, y, w, h]. Covers nodes and images.",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 4,
+            "maxItems": 4
+          }
+        }
+      }
+    },
+    "ink": {
+      "type": "array",
+      "description": "Freehand strokes not yet resolved into structure. Full polylines only when include_ink_geometry is set.",
+      "items": { "$ref": "#/$defs/stroke" }
+    },
+    "images": { "type": "array", "items": { "$ref": "#/$defs/image" } },
+    "history": { "$ref": "#/$defs/historySummary" },
+    "viewport": {
+      "type": "object",
+      "required": ["x", "y", "zoom"],
+      "additionalProperties": false,
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "zoom": { "type": "number", "minimum": 0.35, "maximum": 2.4 }
+      }
+    }
+  },
+  "$defs": {
+    "author": {
+      "type": "string",
+      "enum": ["human", "ai"]
+    },
+    "node": {
+      "type": "object",
+      "required": ["id", "label", "kind", "ref", "endpoint", "author"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "kind": {
+          "type": "string",
+          "enum": ["entry", "service", "store", "transform", "note"],
+          "description": "See SPEC.md open question 1 — state and lifeline are likely additions."
+        },
+        "ref": {
+          "type": ["string", "null"],
+          "description": "path/to/file.ts or path/to/file.ts:symbol. Validated against the project root on write."
+        },
+        "endpoint": { "type": ["string", "null"] },
+        "from_ink": {
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "description": "Stroke ids this node was inferred from. Provenance for either inference path."
+        },
+        "author": { "$ref": "#/$defs/author" }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "required": ["id", "from", "to", "kind", "author"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "from": { "type": "string", "description": "Node id. Guaranteed to exist — the fold prunes dangling edges." },
+        "to": { "type": "string" },
+        "label": { "type": ["string", "null"], "description": "Short name for the transition, e.g. \"miss\"." },
+        "schema": { "type": ["string", "null"], "description": "Payload type crossing this edge, e.g. \"OrderDTO\"." },
+        "kind": { "type": "string", "enum": ["sync", "async", "error"] },
+        "condition": { "type": ["string", "null"], "description": "Branch predicate, e.g. \"cache miss\"." },
+        "from_ink": { "type": ["array", "null"], "items": { "type": "string" } },
+        "author": { "$ref": "#/$defs/author" }
+      }
+    },
+    "stroke": {
+      "type": "object",
+      "required": ["id", "bbox"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "points": {
+          "type": "integer",
+          "description": "Point count. Present unless include_ink_geometry was requested."
+        },
+        "geometry": {
+          "type": "array",
+          "description": "Full polyline in canvas px, draw order. Only with include_ink_geometry.",
+          "items": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "bbox": {
+          "type": "object",
+          "required": ["x", "y", "w", "h"],
+          "additionalProperties": false,
+          "properties": {
+            "x": { "type": "number" }, "y": { "type": "number" },
+            "w": { "type": "number" }, "h": { "type": "number" }
+          }
+        },
+        "author": { "$ref": "#/$defs/author" }
+      }
+    },
+    "image": {
+      "type": "object",
+      "required": ["id", "src", "natural", "author"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "src": { "type": "string", "description": "Server-relative URL of the stored bitmap." },
+        "natural": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "author": { "$ref": "#/$defs/author" }
+      }
+    },
+    "historySummary": {
+      "type": "object",
+      "description": "In-memory, per server session. Boards persist; timelines do not.",
+      "required": ["steps", "head", "applied", "skipped", "ahead", "conflicts"],
+      "additionalProperties": false,
+      "properties": {
+        "steps": { "type": "integer", "minimum": 0, "description": "Total steps excluding the base." },
+        "head": { "type": "integer", "minimum": 0, "description": "Timeline pointer. The board is the fold of steps 0..head." },
+        "applied": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "ahead": { "type": "integer", "minimum": 0, "description": "Steps past the head, replayable forward." },
+        "conflicts": { "type": "integer", "minimum": 0 },
+        "edges_pruned": { "type": "integer", "minimum": 0, "description": "Dangling edges removed by the fold's integrity pass." },
+        "by_human": { "type": "integer", "minimum": 0 },
+        "by_ai": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}
