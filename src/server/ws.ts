@@ -17,6 +17,10 @@ export class PanelHub implements CaptureBroker {
     private sessions: Sessions,
   ) {
     const wss = new WebSocketServer({ server, path: "/ws" });
+    // ws re-emits the http server's errors (EADDRINUSE included) on the
+    // WebSocketServer; without a listener that throws and kills the process
+    // before index.ts can print its friendly port-conflict message.
+    wss.on("error", (err) => console.error("ws server error:", err.message));
     wss.on("connection", (socket, req) => {
       const url = new URL(req.url ?? "/", "http://localhost");
       const boardId = url.searchParams.get("board");
