@@ -7,3 +7,8 @@ dist/
 .pnp.*
 .playwright-mcp/
 .DS_Store
+
+# Design handoff stays local; the directory and its schema (read by tests) are tracked.
+design_handoff_inkwire/*
+!design_handoff_inkwire/schema/
+!**/.keep
