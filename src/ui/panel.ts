@@ -1,0 +1,461 @@
+// Right panel (inspector + four tabs), header controls, and the footer.
+import { captureBoard } from "./capture.js";
+import { deleteSelection } from "./canvas.js";
+import type { App, Scope, Tab, Tool } from "./app.js";
+import { KIND_META, el } from "./app.js";
+import { NODE_KINDS, EDGE_KINDS } from "../shared/types.js";
+
+const TOOLS: [Tool, string, string][] = [
+  ["select", "select", "V"],
+  ["pen", "pen", "P"],
+  ["box", "node", "B"],
+  ["arrow", "edge", "A"],
+  ["text", "text", "T"],
+  ["erase", "erase", "E"],
+];
+
+const TABS: [Tab, string][] = [
+  ["session", "SESSION"],
+  ["history", "HISTORY"],
+  ["state", "STATE"],
+  ["tools", "TOOLS"],
+];
+
+const SCOPES: [Scope, string][] = [
+  ["all", "ALL"],
+  ["human", "YOU"],
+  ["ai", "CLAUDE"],
+];
+
+const SCOPE_NOTES: Record<Scope, string> = {
+  all: "⌘Z rewinds the timeline a step at a time — click any row to jump the canvas straight to that point.",
+  human: "⌘Z skips your last edit in place and leaves claude's work standing. Row clicks still rewind the whole timeline.",
+  ai: "⌘Z skips claude's last edit in place and keeps everything you drew. Row clicks still rewind the whole timeline.",
+};
+
+// The real tool surface (schema/tools.json). Run buttons exist only where
+// the panel can genuinely act; the rest belong to Claude over MCP.
+const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
+  ["boards.list", "Board ids, names, element counts, last touched.", "() → { boards }", null as never],
+  ["boards.open", "Make a board current and return its state.", "(board_id) → CanvasState", null as never],
+  ["boards.create", "New empty board.", "(name) → { board_id }", null as never],
+  ["canvas.get_state", "The graph, layout, ink, and history summary — meaning and placement in separate fields.", "(include_ink_geometry?, include_layout?) → CanvasState", (app) => switchTab(app, "state")],
+  ["canvas.screenshot", "Pixels of the current viewport, for reading handwriting and layout.", "(viewport?, fit?) → image", (app) => downloadScreenshot(app)],
+  ["canvas.infer_structure", "Turn freehand ink into typed nodes and edges.", "(stroke_ids?) → diff", (app) => app.send({ type: "infer" })],
+  ["canvas.add_node", "Place a node on the shared board.", "(label, kind, at?, size?) → id", null as never],
+  ["canvas.update_node", "Change a node's label, kind, or bindings.", "(node_id, …fields)", null as never],
+  ["canvas.add_edge", "Connect two nodes with label, schema, kind, condition.", "(from, to, …fields) → id", null as never],
+  ["canvas.update_edge", "Change an edge's label, schema, kind, or condition.", "(edge_id, …fields)", null as never],
+  ["canvas.delete", "Remove an element; a node takes its edges with it.", "(id)", null as never],
+  ["canvas.move", "Set layout for an element. Bumps layout.revision only.", "(id, at, size?)", null as never],
+  ["canvas.bind_code", "Attach a file/function or endpoint to a node — validated against the project root.", "(node_id, ref | endpoint)", null as never],
+  ["canvas.annotate", "Pin a comment to an element as a note node.", "(target_id, text)", null as never],
+  ["canvas.set_viewport", "Pan and zoom so the human sees what you mean.", "(x, y, zoom)", null as never],
+  ["canvas.export_mermaid", "Serialise the graph as text for the transcript.", "() → string", null as never],
+  ["history.get", "Read the timeline: steps, authors, conflicts. Read-only.", "(limit?) → { head, steps }", null as never],
+];
+
+export function setupPanel(app: App): void {
+  // Header: tool palette.
+  const toolSeg = el("toolseg");
+  for (const [id, label, key] of TOOLS) {
+    const opt = document.createElement("label");
+    opt.className = "seg-opt";
+    opt.title = `${label} (${key})`;
+    opt.innerHTML = `<input type="radio" name="tool" value="${id}"><span>${label}</span><span class="keycap">${key}</span>`;
+    opt.querySelector("input")!.addEventListener("change", () => {
+      app.tool = id;
+      app.pendingFrom = null;
+      app.render();
+    });
+    toolSeg.appendChild(opt);
+  }
+
+  // Theme.
+  for (const input of el("themeseg").querySelectorAll("input")) {
+    input.addEventListener("change", () => {
+      app.theme = input.value as "light" | "dark";
+      document.documentElement.dataset.theme = app.theme;
+      app.render();
+    });
+  }
+
+  // Undo / redo — they act through history intents, scoped.
+  el("btn-undo").addEventListener("click", () => app.send({ type: "history", action: "undo", scope: app.scope }));
+  el("btn-redo").addEventListener("click", () => app.send({ type: "history", action: "redo", scope: app.scope }));
+
+  el("btn-screenshot").addEventListener("click", () => void downloadScreenshot(app));
+  el("btn-infer").addEventListener("click", () => app.send({ type: "infer" }));
+  el("btn-resetview").addEventListener("click", () => {
+    app.view = { x: 40, y: 20, zoom: 1 };
+    app.send({ type: "set_viewport", viewport: app.view });
+    app.render();
+  });
+
+  // Tabs.
+  const tabs = el("tabs");
+  for (const [id, label] of TABS) {
+    const opt = document.createElement("label");
+    opt.className = "seg-opt";
+    opt.innerHTML = `<input type="radio" name="tab" value="${id}"${id === app.tab ? " checked" : ""}><span>${label}</span>`;
+    opt.querySelector("input")!.addEventListener("change", () => switchTab(app, id));
+    tabs.appendChild(opt);
+  }
+
+  renderToolsPane(app);
+}
+
+export function switchTab(app: App, tab: Tab): void {
+  app.tab = tab;
+  for (const input of el("tabs").querySelectorAll("input")) {
+    input.checked = input.value === tab;
+  }
+  app.render();
+}
+
+async function downloadScreenshot(app: App): Promise<void> {
+  app.flash();
+  const blob = await captureBoard(app, null, false);
+  if (!blob) return;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `inkwire-${app.boardId}.png`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+let inspectorKey = "";
+
+export function renderPanel(app: App): void {
+  const push = app.push;
+
+  // Header state.
+  for (const input of el("toolseg").querySelectorAll("input")) {
+    input.checked = input.value === app.tool;
+  }
+  const canUndo = (push?.state.history.head ?? 0) > 0;
+  const canRedo = (push?.state.history.ahead ?? 0) > 0 || (push?.state.history.skipped ?? 0) > 0;
+  el("btn-undo").style.color = canUndo ? "var(--color-text)" : "var(--color-neutral-400)";
+  el("btn-redo").style.color = canRedo ? "var(--color-text)" : "var(--color-neutral-400)";
+
+  renderInspector(app);
+
+  for (const [id] of TABS) {
+    el(`pane-${id}`).hidden = app.tab !== id;
+  }
+  if (app.tab === "session") renderSession(app);
+  if (app.tab === "history") renderHistory(app);
+  if (app.tab === "state") renderState(app);
+
+  renderFooter(app);
+}
+
+function renderInspector(app: App): void {
+  const box = el("inspector");
+  const state = app.push?.state;
+  const sel = app.sel;
+  if (!sel || !state) {
+    box.hidden = true;
+    inspectorKey = "";
+    return;
+  }
+  const key = `${sel.type}:${sel.id}`;
+  // Never rebuild under the user's caret.
+  if (key === inspectorKey && box.contains(document.activeElement)) return;
+
+  const node = sel.type === "node" ? state.graph.nodes.find((n) => n.id === sel.id) : undefined;
+  const edge = sel.type === "edge" ? state.graph.edges.find((e) => e.id === sel.id) : undefined;
+  const image = sel.type === "image" ? state.images.find((i) => i.id === sel.id) : undefined;
+  if (!node && !edge && !image) {
+    box.hidden = true;
+    inspectorKey = "";
+    return;
+  }
+  inspectorKey = key;
+  box.hidden = false;
+  box.replaceChildren();
+
+  const head = document.createElement("div");
+  head.className = "head";
+  head.innerHTML = `<span class="type"></span><span class="id"></span>`;
+  (head.children[0] as HTMLElement).textContent = sel.type.toUpperCase();
+  (head.children[1] as HTMLElement).textContent = sel.id;
+  box.appendChild(head);
+
+  const field = (labelText: string, value: string, mono: boolean, placeholder: string, onCommit: (v: string) => void) => {
+    const label = document.createElement("label");
+    label.className = "field";
+    const span = document.createElement("span");
+    span.textContent = labelText;
+    const input = document.createElement("input");
+    input.className = mono ? "input mono" : "input";
+    input.value = value;
+    input.placeholder = placeholder;
+    input.addEventListener("change", () => onCommit(input.value));
+    label.append(span, input);
+    box.appendChild(label);
+  };
+
+  if (node) {
+    field("label", node.label, false, "", (v) =>
+      app.send({ type: "update_node", node_id: node.id, label: v, field: "label" }),
+    );
+    const seg = document.createElement("div");
+    seg.className = "seg kind-seg";
+    for (const kind of NODE_KINDS) {
+      const opt = document.createElement("label");
+      opt.className = "seg-opt";
+      opt.innerHTML = `<input type="radio" name="kind"><span>${KIND_META[kind].label}</span>`;
+      const input = opt.querySelector("input")!;
+      input.checked = node.kind === kind;
+      input.addEventListener("change", () => app.send({ type: "update_node", node_id: node.id, kind }));
+      seg.appendChild(opt);
+    }
+    box.appendChild(seg);
+    field("code ref — file/function", node.ref ?? "", true, "svc/orders/handler.ts:serve", (v) =>
+      app.send({ type: "update_node", node_id: node.id, ref: v || null, field: "ref" }),
+    );
+    field("endpoint", node.endpoint ?? "", true, "GET /v2/orders/:id", (v) =>
+      app.send({ type: "update_node", node_id: node.id, endpoint: v || null, field: "endpoint" }),
+    );
+  }
+
+  if (edge) {
+    field("label", edge.label ?? "", false, "miss", (v) =>
+      app.send({ type: "update_edge", edge_id: edge.id, label: v || null, field: "label" }),
+    );
+    const seg = document.createElement("div");
+    seg.className = "seg kind-seg";
+    for (const kind of EDGE_KINDS) {
+      const opt = document.createElement("label");
+      opt.className = "seg-opt";
+      opt.innerHTML = `<input type="radio" name="edgekind"><span>${kind.toUpperCase()}</span>`;
+      const input = opt.querySelector("input")!;
+      input.checked = edge.kind === kind;
+      input.addEventListener("change", () => app.send({ type: "update_edge", edge_id: edge.id, kind }));
+      seg.appendChild(opt);
+    }
+    box.appendChild(seg);
+    field("condition — branch predicate", edge.condition ?? "", true, "cache miss", (v) =>
+      app.send({ type: "update_edge", edge_id: edge.id, condition: v || null, field: "condition" }),
+    );
+    field("payload schema", edge.schema ?? "", true, "OrderDTO", (v) =>
+      app.send({ type: "update_edge", edge_id: edge.id, schema: v || null, field: "schema" }),
+    );
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const copy = document.createElement("button");
+  copy.className = "btn btn-secondary";
+  copy.style.flex = "1";
+  copy.textContent = "copy id for claude";
+  copy.addEventListener("click", () => {
+    const name = node?.label ?? edge?.label ?? sel.id;
+    void navigator.clipboard.writeText(`${sel.id} (${name})`);
+    copy.textContent = "copied";
+    setTimeout(() => (copy.textContent = "copy id for claude"), 1200);
+  });
+  const del = document.createElement("button");
+  del.className = "btn btn-secondary";
+  del.textContent = "delete";
+  del.addEventListener("click", () => deleteSelection(app));
+  actions.append(copy, del);
+  box.appendChild(actions);
+}
+
+function renderSession(app: App): void {
+  const pane = el("pane-session");
+  pane.replaceChildren();
+  const log = app.push?.log ?? [];
+  for (const row of [...log].reverse()) {
+    const card = document.createElement("div");
+    card.className = row.author === "ai" ? "card log-card ai" : "card log-card";
+    const kicker = document.createElement("div");
+    kicker.className = "kicker";
+    const who = document.createElement("span");
+    who.textContent = row.author === "ai" ? "CLAUDE" : row.author === "server" ? "SERVER" : "YOU";
+    const time = document.createElement("span");
+    time.className = "time";
+    time.textContent = fmtTime(row.at);
+    kicker.append(who, time);
+    const body = document.createElement("div");
+    body.className = "body";
+    body.textContent = row.text;
+    card.append(kicker, body);
+    pane.appendChild(card);
+  }
+  if (log.length === 0) {
+    const note = document.createElement("div");
+    note.className = "pane-note";
+    note.textContent = "SESSION LOG — every mutation lands here, by author";
+    pane.appendChild(note);
+  }
+}
+
+function renderHistory(app: App): void {
+  const pane = el("pane-history");
+  pane.replaceChildren();
+  const push = app.push;
+  if (!push) return;
+
+  const scopeWrap = document.createElement("div");
+  scopeWrap.style.cssText = "display:flex;flex-direction:column;gap:6px";
+  const scopeLabel = document.createElement("span");
+  scopeLabel.className = "pane-note";
+  scopeLabel.textContent = "UNDO SCOPE — what ⌘Z acts on";
+  const seg = document.createElement("div");
+  seg.className = "seg";
+  seg.style.width = "100%";
+  for (const [id, label] of SCOPES) {
+    const opt = document.createElement("label");
+    opt.className = "seg-opt";
+    opt.style.cssText = "flex:1;justify-content:center;padding:6px 4px;font-family:var(--font-mono);font-size:10.5px";
+    opt.innerHTML = `<input type="radio" name="scope"><span>${label}</span>`;
+    const input = opt.querySelector("input")!;
+    input.checked = app.scope === id;
+    input.addEventListener("change", () => {
+      app.scope = id;
+      app.render();
+    });
+    seg.appendChild(opt);
+  }
+  scopeWrap.append(scopeLabel, seg);
+  pane.appendChild(scopeWrap);
+
+  const note = document.createElement("div");
+  note.className = "pane-note";
+  note.style.letterSpacing = "0";
+  note.textContent =
+    push.state.history.edges_pruned > 0
+      ? `${push.state.history.edges_pruned} edge(s) dropped as dangling — the step that orphaned them is flagged conflict below.`
+      : SCOPE_NOTES[app.scope];
+  pane.appendChild(note);
+
+  const rows = [...push.history].reverse();
+  const head = push.state.history.head;
+  for (const row of rows) {
+    const card = document.createElement("div");
+    const classes = ["card", "hist-card"];
+    if (row.index === head) classes.push("head");
+    if (row.conflict) classes.push("conflict");
+    if (row.ahead) classes.push("ahead");
+    if (row.skipped) classes.push("skipped");
+    card.className = classes.join(" ");
+    card.title = row.ahead ? "click to replay forward to this step" : "click to rewind the canvas to this step";
+    card.addEventListener("click", () => app.send({ type: "history", action: "rewind", index: row.index, scope: app.scope }));
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const step = document.createElement("span");
+    step.className = "step";
+    step.textContent = String(row.index).padStart(2, "0");
+    const by = document.createElement("span");
+    by.textContent = row.author === "ai" ? "claude" : "you";
+    by.style.color = row.author === "ai" ? "var(--color-accent-700)" : "var(--color-neutral-600)";
+    const marker = document.createElement("span");
+    marker.className = "marker";
+    marker.textContent = row.conflict ? "conflict" : row.index === head ? "◆ head" : row.ahead ? "ahead" : row.skipped ? "skipped" : "";
+    meta.append(step, by, marker);
+
+    const line = document.createElement("div");
+    line.className = "row";
+    const label = document.createElement("div");
+    label.className = "label";
+    label.textContent = row.label;
+    line.appendChild(label);
+    if (!row.ahead) {
+      const skip = document.createElement("button");
+      skip.className = "btn btn-ghost";
+      skip.title = "revert just this step, keeping the record";
+      skip.textContent = row.skipped ? "restore" : "skip";
+      skip.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        app.send({ type: "history", action: "skip", index: row.index, scope: app.scope });
+      });
+      line.appendChild(skip);
+    }
+    const drop = document.createElement("button");
+    drop.className = "btn btn-ghost";
+    drop.title = "delete this step from the history";
+    drop.style.color = "var(--color-neutral-600)";
+    drop.textContent = "drop";
+    drop.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      app.send({ type: "history", action: "drop", index: row.index, scope: app.scope });
+    });
+    line.appendChild(drop);
+
+    card.append(meta, line);
+    pane.appendChild(card);
+  }
+
+  const base = document.createElement("div");
+  base.className = "card hist-card" + (head === 0 ? " head" : "");
+  base.title = "click to rewind to the opened board";
+  base.addEventListener("click", () => app.send({ type: "history", action: "rewind", index: 0, scope: app.scope }));
+  base.innerHTML = `<div class="meta"><span class="step">00</span><span style="color: var(--color-neutral-600)">base</span><span class="marker">${head === 0 ? "◆ head" : ""}</span></div><div class="row"><div class="label">board opened</div></div>`;
+  pane.appendChild(base);
+}
+
+function renderState(app: App): void {
+  const push = app.push;
+  if (!push) return;
+  // Show the default get_state shape: point counts, not polylines.
+  const display = {
+    ...push.state,
+    ink: push.state.ink.map(({ geometry, ...rest }) => ({
+      ...rest,
+      points: geometry?.length ?? rest.points ?? 0,
+    })),
+  };
+  el("statejson").textContent = JSON.stringify(display, null, 1);
+}
+
+function renderToolsPane(app: App): void {
+  const pane = el("pane-tools");
+  pane.replaceChildren();
+  for (const [name, desc, args, run] of MCP_TOOLS) {
+    const row = document.createElement("div");
+    row.className = "tool-row";
+    const info = document.createElement("div");
+    info.className = "info";
+    info.innerHTML = `<span class="name"></span><span class="desc"></span><span class="args"></span>`;
+    (info.children[0] as HTMLElement).textContent = name;
+    (info.children[1] as HTMLElement).textContent = desc;
+    (info.children[2] as HTMLElement).textContent = args;
+    row.appendChild(info);
+    if (run) {
+      const btn = document.createElement("button");
+      btn.className = "btn btn-secondary";
+      btn.textContent = "run";
+      btn.addEventListener("click", () => run(app));
+      row.appendChild(btn);
+    }
+    pane.appendChild(row);
+  }
+}
+
+function renderFooter(app: App): void {
+  const push = app.push;
+  const conn = el("conn");
+  conn.className = app.connected ? "conn" : "conn off";
+  conn.textContent = app.connected ? "● mcp connected · 17 tools" : "○ reconnecting…";
+  if (push) {
+    const s = push.state;
+    el("counts").textContent = `${s.graph.nodes.length} nodes · ${s.graph.edges.length} edges · ${s.ink.length} ink`;
+    el("histnote").textContent =
+      `step ${s.history.head}/${s.history.steps}` +
+      (s.history.skipped ? ` · ${s.history.skipped} skipped` : "") +
+      ` · scope ${app.scope === "human" ? "you" : app.scope === "ai" ? "claude" : "all"}`;
+    el("inknote").textContent = s.ink.length
+      ? `${s.ink.length} strokes awaiting infer_structure`
+      : "all ink resolved";
+  }
+  el("zoom").textContent = `zoom ${Math.round(app.view.zoom * 100)}%`;
+}
+
+function fmtTime(at: number): string {
+  const t = new Date(at);
+  return `${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
+}

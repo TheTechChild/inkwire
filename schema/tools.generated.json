@@ -1,0 +1,438 @@
+{
+  "boards.list": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {}
+  },
+  "boards.open": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "board_id"
+    ]
+  },
+  "boards.create": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "required": [
+      "name"
+    ]
+  },
+  "canvas.get_state": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "include_ink_geometry": {
+        "type": "boolean"
+      },
+      "include_layout": {
+        "type": "boolean"
+      }
+    }
+  },
+  "canvas.screenshot": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "viewport": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          },
+          "zoom": {
+            "type": "number",
+            "minimum": 0.35,
+            "maximum": 2.4
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "zoom"
+        ],
+        "additionalProperties": false
+      },
+      "fit": {
+        "type": "boolean"
+      }
+    }
+  },
+  "canvas.infer_structure": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "stroke_ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "canvas.add_node": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "label": {
+        "type": "string"
+      },
+      "kind": {
+        "type": "string",
+        "enum": [
+          "entry",
+          "service",
+          "store",
+          "transform",
+          "note",
+          "state",
+          "lifeline"
+        ]
+      },
+      "at": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "number"
+          }
+        ],
+        "items": false,
+        "minItems": 2,
+        "maxItems": 2
+      },
+      "size": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "number"
+          }
+        ],
+        "items": false,
+        "minItems": 2,
+        "maxItems": 2
+      },
+      "ref": {
+        "type": "string"
+      },
+      "endpoint": {
+        "type": "string"
+      },
+      "from_ink": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "label",
+      "kind"
+    ]
+  },
+  "canvas.update_node": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "node_id": {
+        "type": "string"
+      },
+      "label": {
+        "type": "string"
+      },
+      "kind": {
+        "type": "string",
+        "enum": [
+          "entry",
+          "service",
+          "store",
+          "transform",
+          "note",
+          "state",
+          "lifeline"
+        ]
+      },
+      "ref": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "endpoint": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "node_id"
+    ]
+  },
+  "canvas.add_edge": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "from": {
+        "type": "string"
+      },
+      "to": {
+        "type": "string"
+      },
+      "label": {
+        "type": "string"
+      },
+      "schema": {
+        "type": "string"
+      },
+      "kind": {
+        "default": "sync",
+        "type": "string",
+        "enum": [
+          "sync",
+          "async",
+          "error"
+        ]
+      },
+      "condition": {
+        "type": "string"
+      },
+      "from_ink": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "from",
+      "to"
+    ]
+  },
+  "canvas.update_edge": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "edge_id": {
+        "type": "string"
+      },
+      "label": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "schema": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "kind": {
+        "type": "string",
+        "enum": [
+          "sync",
+          "async",
+          "error"
+        ]
+      },
+      "condition": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "edge_id"
+    ]
+  },
+  "canvas.delete": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ]
+  },
+  "canvas.move": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "id": {
+        "type": "string"
+      },
+      "at": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "number"
+          }
+        ],
+        "items": false,
+        "minItems": 2,
+        "maxItems": 2
+      },
+      "size": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "number"
+          }
+        ],
+        "items": false,
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "required": [
+      "id",
+      "at"
+    ]
+  },
+  "canvas.bind_code": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "node_id": {
+        "type": "string"
+      },
+      "ref": {
+        "type": "string"
+      },
+      "endpoint": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "node_id"
+    ]
+  },
+  "canvas.annotate": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "target_id": {
+        "type": "string"
+      },
+      "text": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "required": [
+      "target_id",
+      "text"
+    ]
+  },
+  "canvas.set_viewport": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "x": {
+        "type": "number"
+      },
+      "y": {
+        "type": "number"
+      },
+      "zoom": {
+        "type": "number",
+        "minimum": 0.35,
+        "maximum": 2.4
+      }
+    },
+    "required": [
+      "x",
+      "y",
+      "zoom"
+    ]
+  },
+  "canvas.export_mermaid": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      }
+    }
+  },
+  "history.get": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      }
+    }
+  }
+}

@@ -1,0 +1,68 @@
+[
+  {
+    "name": "closed rectangle becomes one node at its bbox",
+    "strokes": [
+      { "id": "s1", "points": [[100, 100], [220, 100], [220, 180], [100, 180], [100, 105]] }
+    ],
+    "existing": [],
+    "expect": { "nodes": 1, "edges": 0, "consumed": 1, "nodeBox": [100, 100, 120, 80] }
+  },
+  {
+    "name": "rectangle with a 15px corner gap is still closed",
+    "strokes": [
+      { "id": "s1", "points": [[100, 100], [220, 100], [220, 180], [100, 180], [100, 115]] }
+    ],
+    "existing": [],
+    "expect": { "nodes": 1, "edges": 0, "consumed": 1 }
+  },
+  {
+    "name": "rectangle far too small produces nothing and is left alone",
+    "strokes": [
+      { "id": "s1", "points": [[0, 0], [40, 0], [40, 20], [0, 20], [0, 2]] }
+    ],
+    "existing": [],
+    "expect": { "nodes": 0, "edges": 0, "consumed": 0 }
+  },
+  {
+    "name": "line between two existing nodes becomes one edge, correct direction",
+    "strokes": [
+      { "id": "s1", "points": [[110, 30], [290, 30]] }
+    ],
+    "existing": [
+      { "id": "n1", "box": [0, 0, 100, 60] },
+      { "id": "n2", "box": [300, 0, 100, 60] }
+    ],
+    "expect": { "nodes": 0, "edges": 1, "consumed": 1, "direction": { "from": "n1", "to": "n2" } }
+  },
+  {
+    "name": "line whose endpoint is 400px from any node produces nothing",
+    "strokes": [
+      { "id": "s1", "points": [[600, 600], [800, 600]] }
+    ],
+    "existing": [
+      { "id": "n1", "box": [0, 0, 100, 60] },
+      { "id": "n2", "box": [300, 0, 100, 60] }
+    ],
+    "expect": { "nodes": 0, "edges": 0, "consumed": 0 }
+  },
+  {
+    "name": "line from a node back to itself produces no edge",
+    "strokes": [
+      { "id": "s1", "points": [[110, 0], [260, 60], [110, 120]] }
+    ],
+    "existing": [
+      { "id": "n1", "box": [0, 0, 100, 60] }
+    ],
+    "expect": { "nodes": 0, "edges": 0, "consumed": 0 }
+  },
+  {
+    "name": "two boxes and a connector become two nodes and one edge with provenance",
+    "strokes": [
+      { "id": "s1", "points": [[0, 0], [120, 0], [120, 80], [0, 80], [0, 5]] },
+      { "id": "s2", "points": [[300, 0], [420, 0], [420, 80], [300, 80], [300, 5]] },
+      { "id": "s3", "points": [[130, 40], [290, 40]] }
+    ],
+    "existing": [],
+    "expect": { "nodes": 2, "edges": 1, "consumed": 3, "provenance": true }
+  }
+]

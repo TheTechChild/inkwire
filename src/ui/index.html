@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inkwire — shared canvas</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1.5' y='1.5' width='13' height='13' fill='none' stroke='%235980a6' stroke-width='1.5'/%3E%3Cpath d='M4 11 L11 4' stroke='%235980a6' stroke-width='1.5'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<div id="app">
+  <header class="nav">
+    <div class="nav-brand brand">
+      <span class="title">SHARED CANVAS</span>
+      <span class="proto">mcp://inkwire</span>
+    </div>
+    <div class="seg tool-seg" id="toolseg"></div>
+    <div class="header-right">
+      <div class="seg theme-seg" id="themeseg">
+        <label class="seg-opt" title="light">
+          <input type="radio" name="theme" value="light">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"></path>
+          </svg>
+        </label>
+        <label class="seg-opt" title="dark">
+          <input type="radio" name="theme" value="dark" checked>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+            <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5z"></path>
+          </svg>
+        </label>
+      </div>
+      <div class="seg hist-seg">
+        <label class="seg-opt" title="undo — ⌘Z" id="btn-undo"><input type="radio" name="hist"><span>↶ undo</span></label>
+        <label class="seg-opt" title="redo — ⇧⌘Z" id="btn-redo"><input type="radio" name="hist"><span>redo ↷</span></label>
+      </div>
+      <button class="btn btn-secondary" id="btn-screenshot" style="font-size: 13px; white-space: nowrap">canvas.screenshot</button>
+      <button class="btn btn-primary blueprint" id="btn-infer" style="font-size: 13px; white-space: nowrap">
+        <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+        infer_structure
+      </button>
+    </div>
+  </header>
+
+  <div id="body">
+    <div id="canvas" tabindex="0">
+      <div id="grid"></div>
+      <div id="world">
+        <svg id="svglayer" width="6000" height="4000">
+          <defs>
+            <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="var(--color-accent-700)" stroke-width="1.4"></path>
+            </marker>
+            <marker id="arwai" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="var(--color-accent)" stroke-width="1.4"></path>
+            </marker>
+          </defs>
+          <g id="inkgroup"></g>
+          <g id="edgegroup"></g>
+          <g id="previewgroup"></g>
+        </svg>
+        <div id="nodelayer"></div>
+      </div>
+      <div id="hints">
+        <span id="hint"></span>
+        <span>scroll = zoom · space-drag = pan · del = delete · ⌘Z / ⇧⌘Z = undo, redo</span>
+      </div>
+      <div id="flash"></div>
+    </div>
+
+    <aside>
+      <div id="inspector" hidden></div>
+      <div class="seg" id="tabs"></div>
+      <div id="panelbody">
+        <div class="tabpane" id="pane-session"></div>
+        <div class="tabpane" id="pane-history" hidden></div>
+        <div class="tabpane" id="pane-state" hidden>
+          <div class="pane-note">RESPONSE · canvas.get_state<br>graph and layout revision independently — moving a box does not change the graph</div>
+          <pre id="statejson"></pre>
+        </div>
+        <div class="tabpane" id="pane-tools" hidden style="padding: 0; gap: 0"></div>
+      </div>
+    </aside>
+  </div>
+
+  <footer>
+    <span class="conn off" id="conn">○ connecting…</span>
+    <span id="counts"></span>
+    <span id="zoom"></span>
+    <button class="btn btn-ghost" id="btn-resetview">reset view</button>
+    <span id="histnote"></span>
+    <span class="ink-note" id="inknote"></span>
+  </footer>
+</div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>
