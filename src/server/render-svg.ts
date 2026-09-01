@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { bbox, edgeEndpoints } from "../core/geometry.js";
-import { labelPx, lodFor, monoPx, wrapText } from "../core/lod.js";
+import { edgeLabel, labelPx, lodFor, monoPx, wrapText } from "../core/lod.js";
 import type { Collections, Viewport } from "../shared/types.js";
 import { DARK, RENDER, type ThemeTokens } from "../shared/tokens.js";
 
@@ -77,9 +77,7 @@ export function renderBoardSvg(opts: RenderOptions): string {
     parts.push(
       `<path d="M ${p1[0]} ${p1[1]} L ${p2[0]} ${p2[1]}" fill="none" stroke="${stroke}" stroke-width="1.4"${dash} marker-end="url(#${ai ? "arwai" : "arw"})"/>`,
     );
-    const labelText = [e.label, e.condition ? `(${e.condition})` : null, e.schema ? `⟨${e.schema}⟩` : null]
-      .filter(Boolean)
-      .join(" ");
+    const labelText = edgeLabel(e);
     if (labelText && lod !== "dot") {
       const size = monoPx(vp.zoom, 11);
       const w = Math.max(20, labelText.length * size * 0.62);

@@ -2,7 +2,7 @@
 // All hit-testing happens in world coordinates on the container — node divs
 // are pointer-events: none. Gestures commit ONE intent, on release.
 import { edgeEndpoints } from "../core/geometry.js";
-import { lodFor, quantizeZoom } from "../core/lod.js";
+import { edgeLabel, lodFor, quantizeZoom } from "../core/lod.js";
 import type { App, Drag, Tool } from "./app.js";
 import { KIND_META, clampZoom, el } from "./app.js";
 import type { Box, Point } from "../shared/types.js";
@@ -370,9 +370,7 @@ export function renderWorld(app: App): void {
     path.setAttribute("marker-end", ai ? "url(#arwai)" : "url(#arw)");
     g.appendChild(path);
 
-    const labelText = [e.label, e.condition ? `(${e.condition})` : null, e.schema ? `⟨${e.schema}⟩` : null]
-      .filter(Boolean)
-      .join(" ");
+    const labelText = edgeLabel(e, selected);
     if (labelText) {
       const text = document.createElementNS(SVG_NS, "text");
       text.setAttribute("x", String(mid[0]));

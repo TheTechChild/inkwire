@@ -2,7 +2,7 @@
 // with the same geometry (core/geometry) and tokens (shared/tokens) the
 // server-side SVG fallback uses, so the two renderers stay in step.
 import { bbox, edgeEndpoints } from "../core/geometry.js";
-import { labelPx, lodFor, monoPx, wrapText } from "../core/lod.js";
+import { edgeLabel, labelPx, lodFor, monoPx, wrapText } from "../core/lod.js";
 import { DARK, LIGHT, RENDER } from "../shared/tokens.js";
 import type { App } from "./app.js";
 import type { Point, Viewport } from "../shared/types.js";
@@ -70,9 +70,7 @@ export async function captureBoard(
     ctx.stroke();
     drawArrowHead(ctx, p1, p2);
     ctx.setLineDash([]);
-    const label = [e.label, e.condition ? `(${e.condition})` : null, e.schema ? `⟨${e.schema}⟩` : null]
-      .filter(Boolean)
-      .join(" ");
+    const label = edgeLabel(e);
     if (label && lod !== "dot") {
       ctx.font = mono(11);
       const size = monoPx(vp.zoom, 11);

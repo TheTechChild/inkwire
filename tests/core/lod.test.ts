@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ZOOM_STEPS, labelPx, lodFor, monoPx, quantizeZoom, wrapText } from "../../src/core/lod.js";
+import { EDGE_LABEL_CHARS, ZOOM_STEPS, edgeLabel, labelPx, lodFor, monoPx, quantizeZoom, wrapText } from "../../src/core/lod.js";
 
 describe("lod", () => {
   it("quantizeZoom picks the nearest step <= z and clamps below the first", () => {
@@ -40,5 +40,15 @@ describe("lod", () => {
     expect(wrapText("api gateway", 8, 1)).toEqual(["api gat…"]);
     expect(wrapText("one two three four five six", 9, 2)).toEqual(["one two", "three fo…"]);
     expect(wrapText("", 10)).toEqual([]);
+  });
+
+  it("edgeLabel composes label, condition, schema and clips to one line unless full", () => {
+    expect(edgeLabel({ label: "read", condition: "cache miss", schema: "Order" })).toBe("read (cache miss) ⟨Order⟩");
+    expect(edgeLabel({})).toBe("");
+    const long = { label: "UNAUTHORIZED / NOT_FOUND", condition: "draft without admin, or configId miss at three sites" };
+    const clipped = edgeLabel(long);
+    expect(clipped.length).toBeLessThanOrEqual(EDGE_LABEL_CHARS);
+    expect(clipped.endsWith("…")).toBe(true);
+    expect(edgeLabel(long, true)).toContain("three sites");
   });
 });

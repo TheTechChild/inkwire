@@ -2,6 +2,9 @@
 // Both renderers (panel, render-svg) call these so they agree on what text
 // is visible and how big it is. Node geometry never depends on the tier.
 
+/** Edge labels clip to one line of this many characters (full text on selection). */
+export const EDGE_LABEL_CHARS = 40;
+
 export type Lod = "full" | "compact" | "dot";
 export const ZOOM_STEPS = [0.35, 0.5, 0.75, 1, 1.5, 2.4] as const;
 
@@ -24,6 +27,17 @@ export function labelPx(zoom: number): number {
 /** Canvas mono world px: `base` (kicker/ref/edge label) with a 10 screen px floor. */
 export function monoPx(zoom: number, base: number): number {
   return Math.max(base, 10 / quantizeZoom(zoom));
+}
+
+/** Edge label text: label, (condition), ⟨schema⟩ — clipped unless `full`. */
+export function edgeLabel(
+  e: { label?: string | null; condition?: string | null; schema?: string | null },
+  full = false,
+): string {
+  const text = [e.label, e.condition ? `(${e.condition})` : null, e.schema ? `⟨${e.schema}⟩` : null]
+    .filter(Boolean)
+    .join(" ");
+  return full ? text : (wrapText(text, EDGE_LABEL_CHARS, 1)[0] ?? "");
 }
 
 /**
