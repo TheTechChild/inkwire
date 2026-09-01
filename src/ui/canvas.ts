@@ -2,7 +2,7 @@
 // All hit-testing happens in world coordinates on the container — node divs
 // are pointer-events: none. Gestures commit ONE intent, on release.
 import { edgeEndpoints } from "../core/geometry.js";
-import { edgeLabel, lodFor, quantizeZoom } from "../core/lod.js";
+import { edgeLabel, lodFor, monoPx, quantizeZoom } from "../core/lod.js";
 import type { App, Drag, Tool } from "./app.js";
 import { KIND_META, clampZoom, el } from "./app.js";
 import type { Box, Point } from "../shared/types.js";
@@ -284,8 +284,16 @@ function hitEdge(app: App, p: Point): string | null {
     const a = state.layout.boxes[e.from];
     const b = state.layout.boxes[e.to];
     if (!a || !b) continue;
-    const { p1, p2 } = edgeEndpoints(a, b);
-    if (segmentDistance(p, p1, p2) < 12) return e.id;
+    const { p1, p2, mid } = edgeEndpoints(a, b);
+    const tol = 12 / app.view.zoom; // screen-constant, like the resize handle
+    if (segmentDistance(p, p1, p2) < tol) return e.id;
+    // The label sits above the midpoint; accept clicks on it too. Its size
+    // follows the same counter-scaling as .edge-label in styles.css.
+    // ponytail: 0.62em mono glyph estimate stands in for measuring the text.
+    const fontPx = monoPx(app.view.zoom, 11);
+    const halfW = (edgeLabel(e).length * fontPx * 0.62) / 2;
+    const cy = mid[1] - 8 - fontPx * 0.35;
+    if (Math.abs(p[0] - mid[0]) < halfW + tol && Math.abs(p[1] - cy) < Math.max(tol, fontPx)) return e.id;
   }
   return null;
 }
