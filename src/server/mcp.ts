@@ -12,6 +12,7 @@ import type { Sessions } from "./session.js";
 import type { Screenshots } from "./screenshot.js";
 import * as mutations from "./mutations.js";
 import { validateRef } from "./bindcode.js";
+import { lintBoard } from "./lint.js";
 import type { Store } from "./store.js";
 
 export interface McpDeps {
@@ -243,6 +244,22 @@ export function buildMcpServer(deps: McpDeps): McpServer {
       const session = sessions.resolve(args.board_id);
       const c = session.collections();
       return text({ mermaid: exportMermaid(c.nodes, c.edges) });
+    },
+  );
+
+  register(
+    "canvas.lint",
+    `Static checks against the project root (${deps.projectRoot}), no model: refs to missing files (error), refs whose symbol is gone (warn), nodes with neither ref nor endpoint (warn), error edges with no condition (warn), conditions on a node with a single outgoing edge (warn). Run after a refactor to find board rot. For a semantic audit — does the edge really call what it says — read get_state and check the code yourself.`,
+    (args: { board_id?: string }) => {
+      const session = sessions.resolve(args.board_id);
+      const c = session.collections();
+      const findings = lintBoard(deps.projectRoot, c.nodes, c.edges);
+      return text({
+        project_root: deps.projectRoot,
+        errors: findings.filter((f) => f.level === "error").length,
+        warnings: findings.filter((f) => f.level === "warn").length,
+        findings,
+      });
     },
   );
 
