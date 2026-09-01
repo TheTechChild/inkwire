@@ -33,9 +33,9 @@ afterAll(async () => {
 });
 
 describe("stdio transport", () => {
-  it("lists all 17 tools over real pipes", async () => {
+  it("lists all 18 tools over real pipes", async () => {
     const tools = await client.listTools();
-    expect(tools.tools).toHaveLength(17);
+    expect(tools.tools).toHaveLength(18);
     const names = tools.tools.map((t) => t.name);
     expect(names).toContain("boards_create");
     expect(names).toContain("canvas_get_state");
