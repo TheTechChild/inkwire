@@ -2,9 +2,12 @@
 // recorded with author "ai" — the server assigns authorship, never a tool
 // argument. Wire names use underscores (MCP tool-name charset); the dotted
 // names from the spec appear in descriptions.
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { exportMermaid } from "../core/mermaid.js";
 import { toolArgs } from "../shared/schemas.js";
+import { importBoard } from "./board-file.js";
 import type { Sessions } from "./session.js";
 import type { Screenshots } from "./screenshot.js";
 import * as mutations from "./mutations.js";
@@ -75,6 +78,33 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     sessions.currentBoardId = session.boardId;
     return text({ board_id: session.boardId, panel_url: deps.panelUrl(session.boardId) });
   });
+
+  register(
+    "boards.import",
+    `Load a downloaded inkwire board file (…​.inkwire.json) from disk into a new board and make it current. path is resolved against the project root (${deps.projectRoot}) when relative, or given absolute. The result names the local panel URL for the human to open in the browser.`,
+    (args: { path: string }) => {
+      const file = path.isAbsolute(args.path) ? args.path : path.join(deps.projectRoot, args.path);
+      let raw: unknown;
+      try {
+        raw = JSON.parse(readFileSync(file, "utf8"));
+      } catch (err) {
+        throw new Error(`cannot read board file at ${file}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      const session = importBoard(sessions, deps.store, raw);
+      session.persistNow();
+      sessions.currentBoardId = session.boardId;
+      const c = session.collections();
+      return text({
+        board_id: session.boardId,
+        panel_url: deps.panelUrl(session.boardId),
+        name: session.meta.name,
+        nodes: c.nodes.length,
+        edges: c.edges.length,
+        strokes: c.strokes.length,
+        images: c.images.length,
+      });
+    },
+  );
 
   register(
     "canvas.get_state",

@@ -29,6 +29,19 @@
       "name"
     ]
   },
+  "boards.import": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "required": [
+      "path"
+    ]
+  },
   "canvas.get_state": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
