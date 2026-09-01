@@ -169,6 +169,7 @@ export const toolArgs = {
     zoom: z.number().min(0.35).max(2.4),
   }),
   "canvas.export_mermaid": z.object({ ...boardScoped }),
+  "canvas.lint": z.object({ ...boardScoped }),
   "history.get": z.object({ ...boardScoped, limit: z.int().min(1).optional() }),
 } as const;
 

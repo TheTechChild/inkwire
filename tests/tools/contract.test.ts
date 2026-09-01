@@ -234,6 +234,24 @@ describe("tool contracts", () => {
     expect(text).toContain("zoom");
   });
 
+  it("lint flags missing refs, missing symbols, unbound nodes, and edge shape", async () => {
+    const good = (await call("canvas_add_node", { label: "auth", kind: "service", ref: "auth.ts:verifyToken" })).json().ids[0];
+    const gone = (await call("canvas_add_node", { label: "gone", kind: "service", ref: "moved.ts" })).json().ids[0];
+    const stale = (await call("canvas_add_node", { label: "stale", kind: "store", ref: "auth.ts:removed" })).json().ids[0];
+    const bare = (await call("canvas_add_node", { label: "bare", kind: "transform" })).json().ids[0];
+    const err = (await call("canvas_add_edge", { from: good, to: gone, kind: "error" })).json().ids[0];
+    const cond = (await call("canvas_add_edge", { from: stale, to: bare, condition: "cached" })).json().ids[0];
+
+    const { findings } = (await call("canvas_lint")).json();
+    const check = (id: string) => findings.filter((f: { target_id: string }) => f.target_id === id).map((f: { check: string }) => f.check);
+    expect(check(good)).toEqual([]);
+    expect(check(gone)).toEqual(["ref_missing"]);
+    expect(check(stale)).toEqual(["symbol_missing"]);
+    expect(check(bare)).toEqual(["unbound"]);
+    expect(check(err)).toEqual(["error_no_condition"]);
+    expect(check(cond)).toEqual(["condition_no_branch"]);
+  });
+
   it("boards_list reports counts", async () => {
     // Force persistence so counts are visible in the store.
     await new Promise((r) => setTimeout(r, 120));

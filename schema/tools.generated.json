@@ -434,6 +434,15 @@
       }
     }
   },
+  "canvas.lint": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      }
+    }
+  },
   "history.get": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
