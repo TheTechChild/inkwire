@@ -2,6 +2,7 @@
 // All hit-testing happens in world coordinates on the container — node divs
 // are pointer-events: none. Gestures commit ONE intent, on release.
 import { edgeEndpoints } from "../core/geometry.js";
+import { lodFor, quantizeZoom } from "../core/lod.js";
 import type { App, Drag, Tool } from "./app.js";
 import { KIND_META, clampZoom, el } from "./app.js";
 import type { Box, Point } from "../shared/types.js";
@@ -313,6 +314,10 @@ export function renderWorld(app: App): void {
   const v = app.view;
 
   world.style.transform = `translate(${v.x}px, ${v.y}px) scale(${v.zoom})`;
+  // LOD: quantized so styles do not recompute every frame; all tier rules are CSS.
+  const qz = quantizeZoom(v.zoom);
+  world.style.setProperty("--zoom", String(qz));
+  world.dataset.lod = lodFor(qz);
   grid.style.backgroundImage = "radial-gradient(circle, var(--cv-grid) 1px, transparent 1px)";
   grid.style.backgroundSize = `${(28 * v.zoom).toFixed(1)}px ${(28 * v.zoom).toFixed(1)}px`;
   grid.style.backgroundPosition = `${v.x.toFixed(0)}px ${v.y.toFixed(0)}px`;
@@ -355,6 +360,7 @@ export function renderWorld(app: App): void {
     const ai = e.author === "ai";
     const { p1, p2, mid } = edgeEndpoints(a, b);
     const g = document.createElementNS(SVG_NS, "g");
+    g.setAttribute("class", selected ? "edge selected" : "edge");
     const path = document.createElementNS(SVG_NS, "path");
     path.setAttribute("d", `M ${p1[0].toFixed(1)} ${p1[1].toFixed(1)} L ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`);
     path.setAttribute("fill", "none");
@@ -372,9 +378,10 @@ export function renderWorld(app: App): void {
       text.setAttribute("x", String(mid[0]));
       text.setAttribute("y", String(mid[1] - 8));
       text.setAttribute("text-anchor", "middle");
-      text.setAttribute("style", "font-family: var(--font-mono); font-size: 11px; fill: var(--color-accent-700)");
+      text.setAttribute("class", "edge-label");
       text.textContent = labelText;
       const rect = document.createElementNS(SVG_NS, "rect");
+      rect.setAttribute("class", "edge-label-bg");
       g.appendChild(rect);
       g.appendChild(text);
       edges.appendChild(g);
@@ -439,6 +446,7 @@ export function renderWorld(app: App): void {
 
     const div = document.createElement("div");
     div.className = "node-box blueprint";
+    div.dataset.kind = n.kind;
     Object.assign(div.style, {
       left: `${box[0]}px`,
       top: `${box[1]}px`,

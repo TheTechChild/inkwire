@@ -34,9 +34,13 @@ export const DARK: ThemeTokens = {
 };
 
 export const RENDER = {
-  fontHeading: "Barlow Condensed",
+  // TYPOGRAPHY_LOD.md § 2 option A. Files in assets/fonts/ (resvg) and the
+  // @import in ui/styles.css (panel) must carry the same faces and weights.
+  fontHeading: "IBM Plex Sans",
+  fontHeadingWeight: 600,
   fontBody: "Barlow",
   fontMono: "IBM Plex Mono",
+  fontMonoWeight: 500,
   nodeDefaultSize: [176, 74] as [number, number],
   nodeMinHeight: 66,
   edgeGap: 6, // px outside the node border where edges are clipped

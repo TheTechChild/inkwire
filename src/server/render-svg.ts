@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { bbox, edgeEndpoints } from "../core/geometry.js";
+import { labelPx, lodFor, monoPx, wrapText } from "../core/lod.js";
 import type { Collections, Viewport } from "../shared/types.js";
 import { DARK, RENDER, type ThemeTokens } from "../shared/tokens.js";
 
@@ -29,6 +30,11 @@ export function renderBoardSvg(opts: RenderOptions): string {
 
   let vp = opts.viewport;
   if (opts.fit) vp = fitViewport(c, width, height);
+  // Same tier and text sizes as the panel (core/lod.ts); geometry ignores both.
+  const lod = lodFor(vp.zoom);
+  const labelSize = labelPx(vp.zoom);
+  const monoAttrs = (base: number) =>
+    `font-family="${RENDER.fontMono}, monospace" font-weight="${RENDER.fontMonoWeight}" font-size="${monoPx(vp.zoom, base)}"`;
 
   const parts: string[] = [];
   parts.push(
@@ -74,11 +80,12 @@ export function renderBoardSvg(opts: RenderOptions): string {
     const labelText = [e.label, e.condition ? `(${e.condition})` : null, e.schema ? `⟨${e.schema}⟩` : null]
       .filter(Boolean)
       .join(" ");
-    if (labelText) {
-      const w = Math.max(20, labelText.length * 7);
+    if (labelText && lod !== "dot") {
+      const size = monoPx(vp.zoom, 11);
+      const w = Math.max(20, labelText.length * size * 0.62);
       parts.push(
-        `<rect x="${mid[0] - w / 2}" y="${mid[1] - 20}" width="${w}" height="16" fill="${t.bg}"/>` +
-          `<text x="${mid[0]}" y="${mid[1] - 8}" text-anchor="middle" font-family="${RENDER.fontMono}, monospace" font-size="11" fill="${t.text}">${esc(labelText)}</text>`,
+        `<rect x="${mid[0] - w / 2}" y="${mid[1] - 8 - size * 0.9}" width="${w}" height="${size * 1.4}" fill="${t.bg}"/>` +
+          `<text x="${mid[0]}" y="${mid[1] - 8}" text-anchor="middle" ${monoAttrs(11)} fill="${t.text}">${esc(labelText)}</text>`,
       );
     }
   }
@@ -92,16 +99,25 @@ export function renderBoardSvg(opts: RenderOptions): string {
     const border = ai ? t.accent : t.text;
     const dash = ai ? ` stroke-dasharray="5 3"` : "";
     parts.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${t.bg}" stroke="${border}" stroke-width="1"${dash}/>`);
+    if (lod !== "dot") {
+      parts.push(
+        `<text x="${x + 10}" y="${y + 18}" ${monoAttrs(10)} fill="${t.accent}">${esc(n.kind.toUpperCase())}${ai && lod === "full" ? " · claude" : ""}</text>`,
+      );
+    }
+    // ponytail: 0.55em average glyph width stands in for text measurement.
+    const cols = (w - 20) / (labelSize * 0.55);
+    const maxLines = n.kind === "note" ? { full: Infinity, compact: 3, dot: 1 }[lod] : lod === "full" ? Infinity : 1;
+    const lines = n.kind === "note" || lod !== "full" ? wrapText(n.label, cols, maxLines) : [n.label];
+    const tspans = lines
+      .map((line, i) => `<tspan x="${x + 10}" dy="${i === 0 ? 0 : labelSize * 1.1}">${esc(line)}</tspan>`)
+      .join("");
     parts.push(
-      `<text x="${x + 10}" y="${y + 18}" font-family="${RENDER.fontMono}, monospace" font-size="10" fill="${t.accent}">${esc(n.kind.toUpperCase())}${ai ? " · claude" : ""}</text>`,
-    );
-    parts.push(
-      `<text x="${x + 10}" y="${y + 40}" font-family="${RENDER.fontHeading}, sans-serif" font-size="16" font-weight="600" fill="${t.text}">${esc(n.label)}</text>`,
+      `<text x="${x + 10}" y="${y + 40}" font-family="${RENDER.fontHeading}, sans-serif" font-size="${labelSize}" font-weight="${RENDER.fontHeadingWeight}" fill="${t.text}">${tspans}</text>`,
     );
     const refLine = n.ref ?? n.endpoint;
-    if (refLine) {
+    if (refLine && lod === "full") {
       parts.push(
-        `<text x="${x + 10}" y="${y + 58}" font-family="${RENDER.fontMono}, monospace" font-size="10" fill="${t.text}" opacity="0.7">${esc(refLine)}</text>`,
+        `<text x="${x + 10}" y="${y + 58}" ${monoAttrs(10)} fill="${t.text}" opacity="0.7">${esc(refLine)}</text>`,
       );
     }
   }

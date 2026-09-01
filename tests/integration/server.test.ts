@@ -260,19 +260,53 @@ describe("integration", () => {
     expect(shot.png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
   });
 
-  it("renderer parity: the server SVG contains every laid-out element", async () => {
+  it.each([
+    { zoom: 1, lod: "full" },
+    { zoom: 0.6, lod: "compact" },
+    { zoom: 0.35, lod: "dot" },
+  ])("renderer parity at zoom $zoom ($lod): geometry is tier-independent, text follows the tier", async ({ zoom, lod }) => {
     const { renderBoardSvg } = await import("../../src/server/render-svg.js");
+    const { lodFor } = await import("../../src/core/lod.js");
+    expect(lodFor(zoom)).toBe(lod);
     const session = sessions.open(boardId);
+    if (!session.collections().nodes.some((n) => n.label.startsWith("zq1 "))) {
+      const from = session.collections().nodes[0]!.id;
+      const note = mutations.addNode(session, "ai", {
+        label: Array.from({ length: 20 }, (_, i) => `zq${i + 1}`).join(" "),
+        kind: "note",
+        at: [0, 400],
+        ref: "notes/lod.md",
+      }).ids[0]!;
+      mutations.addEdge(session, "ai", { from, to: note, label: "wraps", condition: "lod" });
+    }
     const c = session.collections();
-    const svg = renderBoardSvg({ collections: c, viewport: session.viewport });
+    const labeled = c.edges.filter((e) => e.label || e.condition || e.schema);
+    expect(labeled.length).toBeGreaterThan(0);
+    const refs = c.nodes.filter((n) => n.ref ?? n.endpoint);
+    expect(refs.length).toBeGreaterThan(0);
+
+    const svg = renderBoardSvg({ collections: c, viewport: { x: 0, y: 0, zoom } });
+    // Geometry: byte-identical across tiers.
     for (const [id, box] of Object.entries(c.layout)) {
       if (c.nodes.some((n) => n.id === id)) {
         expect(svg).toContain(`<rect x="${box[0]}" y="${box[1]}" width="${box[2]}" height="${box[3]}"`);
       }
     }
-    const edgePaths = svg.match(/marker-end/g) ?? [];
-    expect(edgePaths).toHaveLength(c.edges.length);
-    const inkPaths = svg.match(/stroke-linejoin="round"/g) ?? [];
-    expect(inkPaths).toHaveLength(c.strokes.length);
+    expect(svg.match(/marker-end/g) ?? []).toHaveLength(c.edges.length);
+    expect(svg.match(/stroke-linejoin="round"/g) ?? []).toHaveLength(c.strokes.length);
+    // Text: same subset as the panel's CSS tiers.
+    expect(svg.match(/text-anchor="middle"/g) ?? []).toHaveLength(lod === "dot" ? 0 : labeled.length);
+    expect(svg.match(/opacity="0.7"/g) ?? []).toHaveLength(lod === "full" ? refs.length : 0);
+    const kinds = c.nodes.filter((n) => n.kind === "note").length;
+    expect(svg.match(/>NOTE/g) ?? []).toHaveLength(lod === "dot" ? 0 : kinds);
+    expect(svg.includes("· claude")).toBe(lod === "full");
+    // Every label >= 12 screen px, every mono string >= 10 screen px.
+    for (const m of svg.matchAll(/font-size="([\d.]+)"/g)) expect(Number(m[1]) * zoom).toBeGreaterThanOrEqual(10 - 1e-9);
+    // Note bodies wrap into tspans (full: unclamped, compact: 3 lines, dot: 1 line).
+    const noteLines = svg.match(/<tspan[^>]*>zq[^<]*<\/tspan>/g) ?? [];
+    expect(noteLines.length).toBeGreaterThanOrEqual(1);
+    if (lod === "compact") expect(noteLines.length).toBeLessThanOrEqual(3);
+    if (lod === "dot") expect(noteLines.length).toBe(1);
+    if (lod === "full") expect(noteLines.length).toBeGreaterThan(3);
   });
 });

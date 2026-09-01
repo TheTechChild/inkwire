@@ -2,6 +2,7 @@
 // with the same geometry (core/geometry) and tokens (shared/tokens) the
 // server-side SVG fallback uses, so the two renderers stay in step.
 import { bbox, edgeEndpoints } from "../core/geometry.js";
+import { labelPx, lodFor, monoPx, wrapText } from "../core/lod.js";
 import { DARK, LIGHT, RENDER } from "../shared/tokens.js";
 import type { App } from "./app.js";
 import type { Point, Viewport } from "../shared/types.js";
@@ -35,6 +36,10 @@ export async function captureBoard(
   ctx.fillRect(0, 0, width, height);
   ctx.translate(vp.x, vp.y);
   ctx.scale(vp.zoom, vp.zoom);
+  // Same tier and text sizes as the panel and render-svg (core/lod.ts).
+  const lod = lodFor(vp.zoom);
+  const labelSize = labelPx(vp.zoom);
+  const mono = (base: number) => `${RENDER.fontMonoWeight} ${monoPx(vp.zoom, base)}px "${RENDER.fontMono}", monospace`;
 
   // Images first (already loaded in the DOM, so cached).
   for (const img of state.images) {
@@ -68,11 +73,12 @@ export async function captureBoard(
     const label = [e.label, e.condition ? `(${e.condition})` : null, e.schema ? `⟨${e.schema}⟩` : null]
       .filter(Boolean)
       .join(" ");
-    if (label) {
-      ctx.font = `11px "${RENDER.fontMono}", monospace`;
+    if (label && lod !== "dot") {
+      ctx.font = mono(11);
+      const size = monoPx(vp.zoom, 11);
       const w = ctx.measureText(label).width + 8;
       ctx.fillStyle = t.bg;
-      ctx.fillRect(mid[0] - w / 2, mid[1] - 20, w, 16);
+      ctx.fillRect(mid[0] - w / 2, mid[1] - 8 - size * 0.9, w, size * 1.4);
       ctx.fillStyle = t.text;
       ctx.textAlign = "center";
       ctx.fillText(label, mid[0], mid[1] - 8);
@@ -93,16 +99,21 @@ export async function captureBoard(
     ctx.setLineDash(ai ? [5, 3] : []);
     ctx.strokeRect(x, y, w, h);
     ctx.setLineDash([]);
-    ctx.fillStyle = t.accent;
-    ctx.font = `10px "${RENDER.fontMono}", monospace`;
-    ctx.fillText(`${n.kind.toUpperCase()}${ai ? " · claude" : ""}`, x + 10, y + 18);
+    if (lod !== "dot") {
+      ctx.fillStyle = t.accent;
+      ctx.font = mono(10);
+      ctx.fillText(`${n.kind.toUpperCase()}${ai && lod === "full" ? " · claude" : ""}`, x + 10, y + 18);
+    }
     ctx.fillStyle = t.text;
-    ctx.font = `600 16px "${RENDER.fontHeading}", sans-serif`;
-    ctx.fillText(n.label, x + 10, y + 40);
+    ctx.font = `${RENDER.fontHeadingWeight} ${labelSize}px "${RENDER.fontHeading}", sans-serif`;
+    const cols = (w - 20) / (labelSize * 0.55);
+    const maxLines = n.kind === "note" ? { full: Infinity, compact: 3, dot: 1 }[lod] : lod === "full" ? Infinity : 1;
+    const lines = n.kind === "note" || lod !== "full" ? wrapText(n.label, cols, maxLines) : [n.label];
+    lines.forEach((line, i) => ctx.fillText(line, x + 10, y + 40 + i * labelSize * 1.1));
     const refLine = n.ref ?? n.endpoint;
-    if (refLine) {
+    if (refLine && lod === "full") {
       ctx.globalAlpha = 0.7;
-      ctx.font = `10px "${RENDER.fontMono}", monospace`;
+      ctx.font = mono(10);
       ctx.fillText(refLine, x + 10, y + 58);
       ctx.globalAlpha = 1;
     }
