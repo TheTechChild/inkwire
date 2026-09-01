@@ -1,7 +1,7 @@
 // Boot: board id from the query string, WS connection, render loop.
 import { connectWs } from "./ws-client.js";
 import { renderWorld, setupCanvas } from "./canvas.js";
-import { renderPanel, setupPanel } from "./panel.js";
+import { loadPanelPrefs, renderPanel, setupPanel } from "./panel.js";
 import { el, type App } from "./app.js";
 
 const boardId = new URLSearchParams(location.search).get("board");
@@ -25,6 +25,7 @@ function boot(id: string): void {
     space: false,
     view: { x: 40, y: 20, zoom: 1 },
     drag: null,
+    panel: loadPanelPrefs(),
     connected: false,
     send: () => {},
     render: () => {

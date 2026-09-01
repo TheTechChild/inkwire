@@ -7,13 +7,18 @@ import { KIND_META, clampZoom, el } from "./app.js";
 import type { Box, Point } from "../shared/types.js";
 
 const HINTS: Record<Tool, string> = {
-  select: "drag a node to move · drag empty space to pan",
+  select: "drag a node to move · drag its corner to resize · drag empty space to pan",
   pen: "draw freely — structure comes later",
   box: "drag to place a node",
   arrow: "click the source node",
   text: "click to drop a note",
   erase: "click ink, a node, or an edge to remove it",
 };
+
+const MIN_NODE_SIZE: Point = [80, 44];
+const MIN_IMAGE_SIZE: Point = [24, 24];
+/** Resize handle hit zone, in screen px, anchored at the selected box's bottom-right corner. */
+const HANDLE_PX = 14;
 
 export function setupCanvas(app: App): void {
   const host = el("canvas");
@@ -135,6 +140,12 @@ export function setupCanvas(app: App): void {
         break;
       }
       case "select": {
+        const handle = hitResizeHandle(app, p);
+        if (handle) {
+          const box = boxOf(app, handle)!;
+          app.drag = { type: "resize", id: handle, origin: box, box };
+          break;
+        }
         const n = hitNode(app, p);
         if (n) {
           const box = boxOf(app, n)!;
@@ -159,7 +170,12 @@ export function setupCanvas(app: App): void {
 
   host.addEventListener("pointermove", (e) => {
     const d = app.drag;
-    if (!d) return;
+    if (!d) {
+      if (app.tool === "select" && !app.space) {
+        host.style.cursor = hitResizeHandle(app, toWorld(e)) ? "nwse-resize" : "default";
+      }
+      return;
+    }
     if (d.type === "pan") {
       app.view = { ...app.view, x: d.ox + (e.clientX - d.sx), y: d.oy + (e.clientY - d.sy) };
       sendViewport();
@@ -180,6 +196,15 @@ export function setupCanvas(app: App): void {
     } else if (d.type === "box") {
       d.cur = p;
       app.render();
+    } else if (d.type === "resize") {
+      const min = app.push?.state.images.some((i) => i.id === d.id) ? MIN_IMAGE_SIZE : MIN_NODE_SIZE;
+      d.box = [
+        d.origin[0],
+        d.origin[1],
+        Math.max(min[0], Math.round(p[0] - d.origin[0])),
+        Math.max(min[1], Math.round(p[1] - d.origin[1])),
+      ];
+      app.render();
     }
   });
 
@@ -191,6 +216,9 @@ export function setupCanvas(app: App): void {
       app.send({ type: "add_stroke", points: d.points });
     } else if (d.type === "node" && d.moved) {
       app.send({ type: "move", id: d.id, at: d.at });
+    } else if (d.type === "resize") {
+      const [x, y, w, h] = d.box;
+      if (w !== d.origin[2] || h !== d.origin[3]) app.send({ type: "move", id: d.id, at: [x, y], size: [w, h] });
     } else if (d.type === "box") {
       const x = Math.min(d.start[0], d.cur[0]);
       const y = Math.min(d.start[1], d.cur[1]);
@@ -210,7 +238,22 @@ function boxOf(app: App, id: string): Box | undefined {
   if (!box) return undefined;
   const d = app.drag;
   if (d && d.type === "node" && d.id === id) return [d.at[0], d.at[1], box[2], box[3]];
+  if (d && d.type === "resize" && d.id === id) return d.box;
   return box;
+}
+
+/** The selected node's or image's bottom-right resize handle, if `p` is on it. */
+function hitResizeHandle(app: App, p: Point): string | null {
+  const sel = app.sel;
+  if (!sel || sel.type === "edge") return null;
+  const box = boxOf(app, sel.id);
+  if (!box) return null;
+  const hs = HANDLE_PX / app.view.zoom;
+  const right = box[0] + box[2];
+  const bottom = box[1] + box[3];
+  const onX = p[0] >= right - hs && p[0] <= right + hs / 2;
+  const onY = p[1] >= bottom - hs && p[1] <= bottom + hs / 2;
+  return onX && onY ? sel.id : null;
 }
 
 function hitNode(app: App, p: Point): string | null {
@@ -368,7 +411,10 @@ export function renderWorld(app: App): void {
     if (!box) continue;
     const div = document.createElement("div");
     div.className = "image-box";
-    if (app.sel?.id === img.id) div.style.outline = "1.5px solid var(--color-accent)";
+    if (app.sel?.id === img.id) {
+      div.style.outline = "1.5px solid var(--color-accent)";
+      div.appendChild(resizeHandle());
+    }
     Object.assign(div.style, {
       left: `${box[0]}px`,
       top: `${box[1]}px`,
@@ -423,6 +469,13 @@ export function renderWorld(app: App): void {
     ref.className = "node-ref";
     ref.textContent = n.endpoint || n.ref || "unbound";
     div.append(kicker, label, ref);
+    if (selected) div.appendChild(resizeHandle());
     nodes.appendChild(div);
   }
+}
+
+function resizeHandle(): HTMLElement {
+  const h = document.createElement("i");
+  h.className = "resize-handle";
+  return h;
 }

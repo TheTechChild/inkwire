@@ -1,7 +1,7 @@
 // Shared UI state + helpers. The server owns board state; this object holds
 // only the view over it (selection, tool, viewport, in-flight gesture).
 import type { ClientIntent, HistoryRow, LogRow, ServerMessage } from "../shared/protocol.js";
-import type { CanvasState, NodeKind, Point } from "../shared/types.js";
+import type { Box, CanvasState, NodeKind, Point } from "../shared/types.js";
 
 export type Tool = "select" | "pen" | "box" | "arrow" | "text" | "erase";
 export type Tab = "session" | "history" | "state" | "tools";
@@ -16,7 +16,8 @@ export type Drag =
   | { type: "pan"; sx: number; sy: number; ox: number; oy: number }
   | { type: "pen"; points: Point[] }
   | { type: "box"; start: Point; cur: Point }
-  | { type: "node"; id: string; dx: number; dy: number; at: Point; moved: boolean };
+  | { type: "node"; id: string; dx: number; dy: number; at: Point; moved: boolean }
+  | { type: "resize"; id: string; origin: Box; box: Box };
 
 export interface StatePush {
   state: CanvasState;
@@ -36,6 +37,8 @@ export interface App {
   space: boolean;
   view: { x: number; y: number; zoom: number };
   drag: Drag | null;
+  /** Side panel: shown or collapsed, and its width in px. Persisted locally. */
+  panel: { open: boolean; width: number };
   connected: boolean;
   send: (intent: ClientIntent) => void;
   render: () => void;

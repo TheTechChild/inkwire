@@ -179,6 +179,53 @@ describe("integration", () => {
     store2.close();
   });
 
+  it("board file: export embeds bitmaps, import creates an equal board", async () => {
+    const src = sessions.create("Export me");
+    const a = mutations.addNode(src, "human", { label: "gateway", kind: "entry", at: [10, 20] }).ids[0]!;
+    const b = mutations.addNode(src, "ai", { label: "auth", kind: "service", at: [300, 20], ref: "auth.ts#verify" }).ids[0]!;
+    mutations.addEdge(src, "ai", { from: a, to: b, kind: "async", label: "token" });
+    mutations.addStroke(src, "human", [[0, 0], [5, 5], [10, 0]]);
+    const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+    const imgSrc = store.saveImage(png, "png");
+    mutations.addImage(src, "human", { src: imgSrc, natural: [40, 30], at: [500, 500], size: [40, 30] });
+
+    const exp = await fetch(`http://127.0.0.1:${port}/api/boards/${src.boardId}/export`);
+    expect(exp.status).toBe(200);
+    expect(exp.headers.get("content-disposition")).toBe('attachment; filename="export-me.inkwire.json"');
+    const file = await exp.json();
+    expect(file.format).toBe("inkwire-board");
+    expect(file.nodes).toHaveLength(2);
+    expect(file.assets[imgSrc]).toBe(`data:image/png;base64,${png.toString("base64")}`);
+
+    const imp = await fetch(`http://127.0.0.1:${port}/api/boards/import`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(file),
+    });
+    expect(imp.status).toBe(200);
+    const created = await imp.json();
+    expect(created.board_id).not.toBe(src.boardId);
+    expect(created).toMatchObject({ name: "Export me", nodes: 2, edges: 1, strokes: 1, images: 1 });
+
+    const dst = sessions.open(created.board_id);
+    expect(dst.collections()).toEqual(src.collections());
+    expect(dst.viewport).toEqual(src.viewport);
+    expect(dst.history.steps).toHaveLength(0);
+    // Persisted: a cold load from the store sees the same content.
+    expect(store.load(created.board_id)!.collections).toEqual(src.collections());
+
+    const bad = await fetch(`http://127.0.0.1:${port}/api/boards/import`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...file, edges: [{ id: "e1", from: "x" }] }),
+    });
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toContain("not an inkwire board file");
+
+    const missing = await fetch(`http://127.0.0.1:${port}/api/boards/b_nope/export`);
+    expect(missing.status).toBe(404);
+  });
+
   it("screenshot with a client attached returns the client's PNG", async () => {
     const client = await connect(boardId);
     await client.nextState();

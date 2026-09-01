@@ -169,7 +169,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "canvas.bind_code",
-    "Attach a source location or endpoint to a node. The ref is resolved against the project root and the call fails if the file does not exist; a missing symbol is a warning, not a failure.",
+    `Attach a source location or endpoint to a node. Refs are resolved against the project root (${deps.projectRoot}); write them relative to it as path/to/file.ts, path/to/file.ts:symbol, or path/to/file.ts#symbol. The call fails if the file does not exist; a missing symbol is a warning, not a failure.`,
     (args: { board_id?: string; node_id: string; ref?: string; endpoint?: string }) => {
       const session = sessions.resolve(args.board_id);
       let bind = { resolved_path: null as string | null, symbol_found: null as boolean | null };
@@ -182,7 +182,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
         ...(args.ref !== undefined ? { ref: args.ref } : {}),
         ...(args.endpoint !== undefined ? { endpoint: args.endpoint } : {}),
       });
-      return text({ ...result, ...bind });
+      return text({ ...result, ...bind, project_root: deps.projectRoot });
     },
   );
 

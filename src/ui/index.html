@@ -37,11 +37,15 @@
         <label class="seg-opt" title="undo — ⌘Z" id="btn-undo"><input type="radio" name="hist"><span>↶ undo</span></label>
         <label class="seg-opt" title="redo — ⇧⌘Z" id="btn-redo"><input type="radio" name="hist"><span>redo ↷</span></label>
       </div>
+      <button class="btn btn-secondary" id="btn-export" title="download this board as a file" style="font-size: 13px; white-space: nowrap">export</button>
+      <button class="btn btn-secondary" id="btn-import" title="load a board file as a new board" style="font-size: 13px; white-space: nowrap">import</button>
+      <input type="file" id="import-file" accept=".json,application/json" hidden>
       <button class="btn btn-secondary" id="btn-screenshot" style="font-size: 13px; white-space: nowrap">canvas.screenshot</button>
       <button class="btn btn-primary blueprint" id="btn-infer" style="font-size: 13px; white-space: nowrap">
         <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
         infer_structure
       </button>
+      <button class="btn btn-secondary" id="btn-panel" style="font-size: 13px; white-space: nowrap">panel ▸</button>
     </div>
   </header>
 
@@ -69,9 +73,11 @@
         <span>scroll = zoom · space-drag = pan · del = delete · ⌘Z / ⇧⌘Z = undo, redo</span>
       </div>
       <div id="flash"></div>
+      <div id="toast" hidden></div>
     </div>
 
     <aside>
+      <div id="aside-resizer" title="drag to resize the panel"></div>
       <div id="inspector" hidden></div>
       <div class="seg" id="tabs"></div>
       <div id="panelbody">

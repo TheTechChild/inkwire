@@ -8,13 +8,17 @@ export interface BindResult {
   symbol_found: boolean | null; // null when no symbol was given
 }
 
-export function validateRef(projectRoot: string, ref: string): BindResult {
-  const colon = ref.lastIndexOf(":");
-  // A colon after the last path separator separates file from symbol.
+/** Split `path/to/file.ts:symbol` or `path/to/file.ts#symbol` into its parts. */
+export function splitRef(ref: string): { file: string; symbol: string | null } {
+  // A `:` or `#` after the last path separator separates file from symbol.
   const sep = Math.max(ref.lastIndexOf("/"), ref.lastIndexOf("\\"));
-  const hasSymbol = colon > sep && colon > 0;
-  const filePart = hasSymbol ? ref.slice(0, colon) : ref;
-  const symbol = hasSymbol ? ref.slice(colon + 1) : null;
+  const cut = Math.max(ref.lastIndexOf(":"), ref.lastIndexOf("#"));
+  if (cut > sep && cut > 0) return { file: ref.slice(0, cut), symbol: ref.slice(cut + 1) || null };
+  return { file: ref, symbol: null };
+}
+
+export function validateRef(projectRoot: string, ref: string): BindResult {
+  const { file: filePart, symbol } = splitRef(ref);
 
   const resolved = path.resolve(projectRoot, filePart);
   const rootResolved = path.resolve(projectRoot);

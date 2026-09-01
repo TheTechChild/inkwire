@@ -172,9 +172,22 @@ describe("tool contracts", () => {
 
     const okSymbol = (await call("canvas_bind_code", { node_id: n, ref: "auth.ts:verifyToken" })).json();
     expect(okSymbol.symbol_found).toBe(true);
+    expect(okSymbol.project_root).toBe(projectRoot);
     const state = await getState();
     const node = state.graph.nodes.find((x: { id: string }) => x.id === n);
     expect(node.ref).toBe("auth.ts:verifyToken");
+  });
+
+  it("bind_code: a #symbol suffix is a symbol, not part of the file path", async () => {
+    const n = (await call("canvas_add_node", { label: "auth", kind: "service" })).json().ids[0];
+    const hash = (await call("canvas_bind_code", { node_id: n, ref: "auth.ts#verifyToken" })).json();
+    expect(hash.ok).toBe(true);
+    expect(hash.resolved_path).toBe(path.join(projectRoot, "auth.ts"));
+    expect(hash.symbol_found).toBe(true);
+    const missing = (await call("canvas_bind_code", { node_id: n, ref: "auth.ts#nope" })).json();
+    expect(missing.symbol_found).toBe(false);
+    const state = await getState();
+    expect(state.graph.nodes.find((x: { id: string }) => x.id === n).ref).toBe("auth.ts#nope");
   });
 
   it("infer_structure consumes ink and reports counts", async () => {

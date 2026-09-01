@@ -266,10 +266,11 @@ export class Sessions {
     return session;
   }
 
-  create(name: string): BoardSession {
+  /** New board; with `content`, it starts with that content as step 0 (import). */
+  create(name: string, content?: { collections: Collections; viewport: Viewport }): BoardSession {
     const now = this.deps.now?.() ?? Date.now();
     const id = `b_${randomBytes(3).toString("hex")}`;
-    const stored = this.store.create(id, name, now);
+    const stored = this.store.create(id, name, now, content);
     const session = new BoardSession(stored, { store: this.store, ...this.deps });
     this.sessions.set(id, session);
     return session;

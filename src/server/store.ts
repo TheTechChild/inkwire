@@ -91,11 +91,16 @@ export class Store {
     };
   }
 
-  create(id: string, name: string, now: number): StoredBoard {
+  create(
+    id: string,
+    name: string,
+    now: number,
+    content?: { collections: Collections; viewport: Viewport },
+  ): StoredBoard {
     const board: StoredBoard = {
       meta: { id, name, created_at: now, updated_at: now },
-      collections: emptyCollections(),
-      viewport: DEFAULT_VIEWPORT,
+      collections: content?.collections ?? emptyCollections(),
+      viewport: content?.viewport ?? DEFAULT_VIEWPORT,
     };
     this.save(board, now);
     return board;

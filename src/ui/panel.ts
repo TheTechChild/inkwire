@@ -55,7 +55,69 @@ const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
   ["history.get", "Read the timeline: steps, authors, conflicts. Read-only.", "(limit?) → { head, steps }", null as never],
 ];
 
+const PANEL_KEY = "inkwire.panel";
+const PANEL_DEFAULT_WIDTH = 372;
+const clampPanelWidth = (w: number): number => Math.min(720, Math.max(260, Math.round(w)));
+
+/** Side-panel prefs from localStorage; defaults when absent or unreadable. */
+export function loadPanelPrefs(): App["panel"] {
+  try {
+    const raw = localStorage.getItem(PANEL_KEY);
+    if (raw) {
+      const p = JSON.parse(raw) as { open?: unknown; width?: unknown };
+      return { open: p.open !== false, width: clampPanelWidth(Number(p.width) || PANEL_DEFAULT_WIDTH) };
+    }
+  } catch {
+    // storage unavailable — fall through to defaults
+  }
+  return { open: true, width: PANEL_DEFAULT_WIDTH };
+}
+
+function savePanelPrefs(app: App): void {
+  try {
+    localStorage.setItem(PANEL_KEY, JSON.stringify(app.panel));
+  } catch {
+    // storage unavailable — prefs live for this page only
+  }
+}
+
+export function applyPanel(app: App): void {
+  el("app").classList.toggle("panel-closed", !app.panel.open);
+  el("body").style.setProperty("--panel-w", `${app.panel.width}px`);
+  const btn = el("btn-panel");
+  btn.textContent = app.panel.open ? "panel ▸" : "◂ panel";
+  btn.title = app.panel.open ? "hide the side panel" : "show the side panel";
+}
+
 export function setupPanel(app: App): void {
+  // Side panel: collapse toggle in the header, drag-to-resize on its left edge.
+  applyPanel(app);
+  el("btn-panel").addEventListener("click", () => {
+    app.panel.open = !app.panel.open;
+    savePanelPrefs(app);
+    applyPanel(app);
+  });
+  const resizer = el("aside-resizer");
+  resizer.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    resizer.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const startW = app.panel.width;
+    const move = (ev: PointerEvent) => {
+      app.panel.width = clampPanelWidth(startW + (startX - ev.clientX));
+      applyPanel(app);
+    };
+    const up = () => {
+      resizer.removeEventListener("pointermove", move);
+      resizer.removeEventListener("pointerup", up);
+      resizer.removeEventListener("pointercancel", up);
+      savePanelPrefs(app);
+    };
+    resizer.addEventListener("pointermove", move);
+    resizer.addEventListener("pointerup", up);
+    resizer.addEventListener("pointercancel", up);
+  });
+
   // Header: tool palette.
   const toolSeg = el("toolseg");
   for (const [id, label, key] of TOOLS) {
@@ -80,11 +142,34 @@ export function setupPanel(app: App): void {
     });
   }
 
-  // Undo / redo — they act through history intents, scoped.
-  el("btn-undo").addEventListener("click", () => app.send({ type: "history", action: "undo", scope: app.scope }));
-  el("btn-redo").addEventListener("click", () => app.send({ type: "history", action: "redo", scope: app.scope }));
+  // Undo / redo — they act through history intents, scoped. The buttons are
+  // labels around a radio input, so one click reaches the label twice (once
+  // from the pointer, once re-dispatched from the input); act on the first only.
+  const onLabelClick = (id: string, fn: () => void) =>
+    el(id).addEventListener("click", (e) => {
+      if (e.target instanceof HTMLInputElement) return;
+      fn();
+    });
+  onLabelClick("btn-undo", () => app.send({ type: "history", action: "undo", scope: app.scope }));
+  onLabelClick("btn-redo", () => app.send({ type: "history", action: "redo", scope: app.scope }));
 
   el("btn-screenshot").addEventListener("click", () => void downloadScreenshot(app));
+
+  // Board file export (a download the server names) and import (a new board).
+  el("btn-export").addEventListener("click", () => {
+    const a = document.createElement("a");
+    a.href = `/api/boards/${encodeURIComponent(app.boardId)}/export`;
+    a.download = ""; // filename comes from Content-Disposition
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+  const importFile = el<HTMLInputElement>("import-file");
+  el("btn-import").addEventListener("click", () => {
+    importFile.value = "";
+    importFile.click();
+  });
+  importFile.addEventListener("change", () => void importBoardFile(importFile.files?.[0]));
   el("btn-infer").addEventListener("click", () => app.send({ type: "infer" }));
   el("btn-resetview").addEventListener("click", () => {
     app.view = { x: 40, y: 20, zoom: 1 };
@@ -103,6 +188,35 @@ export function setupPanel(app: App): void {
   }
 
   renderToolsPane(app);
+}
+
+async function importBoardFile(file: File | undefined): Promise<void> {
+  if (!file) return;
+  try {
+    const res = await fetch("/api/boards/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: await file.text(),
+    });
+    const body = (await res.json()) as { board_id?: string; name?: string; error?: string };
+    if (!res.ok || !body.board_id) throw new Error(body.error ?? `server returned ${res.status}`);
+    toast(`imported "${body.name}" — opening it`);
+    location.href = `/?board=${encodeURIComponent(body.board_id)}`;
+  } catch (err) {
+    toast(`import failed: ${err instanceof Error ? err.message : String(err)}`, true);
+  }
+}
+
+let toastTimer: number | null = null;
+export function toast(text: string, isError = false): void {
+  const t = el("toast");
+  t.textContent = text;
+  t.classList.toggle("error", isError);
+  t.hidden = false;
+  if (toastTimer !== null) window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => {
+    t.hidden = true;
+  }, 6000);
 }
 
 export function switchTab(app: App, tab: Tab): void {

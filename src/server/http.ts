@@ -8,6 +8,7 @@ import type { Store } from "./store.js";
 import type { Screenshots } from "./screenshot.js";
 import type { Sessions } from "./session.js";
 import * as mutations from "./mutations.js";
+import { ImportError, exportBoard, exportFilename, importBoard } from "./board-file.js";
 
 const uiDir = fileURLToPath(new URL("../../dist/ui/", import.meta.url));
 
@@ -51,6 +52,58 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HttpDeps)
   if (req.method === "GET" && p === "/api/boards") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ boards: deps.store.list() }));
+    return;
+  }
+
+  // Board file export: the whole board, bitmaps embedded, as a download.
+  const exportMatch = p.match(/^\/api\/boards\/([^/]+)\/export$/);
+  if (req.method === "GET" && exportMatch) {
+    const id = decodeURIComponent(exportMatch[1]!);
+    if (!deps.store.load(id)) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: `board not found: ${id}` }));
+      return;
+    }
+    const file = exportBoard(deps.sessions.open(id), deps.store, Date.now());
+    res.writeHead(200, {
+      "content-type": "application/json",
+      "content-disposition": `attachment; filename="${exportFilename(file.name)}"`,
+    });
+    res.end(JSON.stringify(file, null, 2));
+    return;
+  }
+
+  // Board file import: validate, create a new board with the content.
+  if (req.method === "POST" && p === "/api/boards/import") {
+    const body = await readBody(req);
+    let raw: unknown;
+    try {
+      raw = JSON.parse(body.toString("utf8"));
+    } catch {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "body is not JSON" }));
+      return;
+    }
+    try {
+      const session = importBoard(deps.sessions, deps.store, raw);
+      session.persistNow();
+      const c = session.collections();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          board_id: session.boardId,
+          name: session.meta.name,
+          nodes: c.nodes.length,
+          edges: c.edges.length,
+          strokes: c.strokes.length,
+          images: c.images.length,
+        }),
+      );
+    } catch (err) {
+      if (!(err instanceof ImportError)) throw err;
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
     return;
   }
 
