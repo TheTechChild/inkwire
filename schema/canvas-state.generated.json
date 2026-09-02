@@ -163,6 +163,91 @@
             ],
             "additionalProperties": false
           }
+        },
+        "boundary_edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              },
+              "label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "sync",
+                  "async",
+                  "error"
+                ]
+              },
+              "out_of_scope": {
+                "type": "boolean",
+                "const": true
+              },
+              "crosses_to": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "from",
+              "to",
+              "label",
+              "kind",
+              "out_of_scope",
+              "crosses_to"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "boundary_nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "entry",
+                  "service",
+                  "store",
+                  "transform",
+                  "note",
+                  "state",
+                  "lifeline"
+                ]
+              },
+              "stub": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "id",
+              "label",
+              "kind",
+              "stub"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [
@@ -416,6 +501,105 @@
         "zoom"
       ],
       "additionalProperties": false
+    },
+    "layers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "letter": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 24
+          },
+          "note": {
+            "type": "string"
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "author": {
+            "type": "string",
+            "enum": [
+              "human",
+              "ai"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "letter",
+          "title",
+          "note",
+          "nodes",
+          "author"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "focus": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "layer_id": {
+          "type": "string"
+        },
+        "letter": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "omitted": {
+          "type": "object",
+          "properties": {
+            "nodes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "edges": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "nodes",
+            "edges"
+          ],
+          "additionalProperties": false
+        },
+        "whole_board": {
+          "type": "string",
+          "const": "canvas_get_board"
+        }
+      },
+      "required": [
+        "layer_id",
+        "letter",
+        "title",
+        "note",
+        "omitted",
+        "whole_board"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [
@@ -425,7 +609,9 @@
     "ink",
     "images",
     "history",
-    "viewport"
+    "viewport",
+    "layers",
+    "focus"
   ],
   "additionalProperties": false
 }

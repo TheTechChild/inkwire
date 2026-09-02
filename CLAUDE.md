@@ -40,5 +40,5 @@ Load-bearing rules that are easy to break:
 
 - `tests/helpers.ts` (`Sim`) drives mutations through the same append/fold path as the server, with a fixed-step clock — use it for history tests; coalescing cases control time via `advanceMs`.
 - Property tests (`tests/core/properties.test.ts`, fast-check) assert the eight TESTS.md § 1 invariants. The drop-node regression (drop the add-B step → edge pruned, adding step flagged conflict) lives in `tests/core/fold.test.ts`.
-- Tool contract tests run the real `McpServer` over `InMemoryTransport`; every `get_state` read is validated against the handoff's JSON Schema, so contract drift fails tests.
+- Tool contract tests run the real `McpServer` over `InMemoryTransport`; every `get_state` read is validated against the design-authored JSON Schema in `tests/fixtures/contract/`, so contract drift fails tests. Hand-edit that file when the contract grows; `schema/*.generated.json` is emitted from zod.
 - A CSS gotcha that already bit once: a path like `_ds/industry-*/` inside a CSS comment terminates the comment (`*/`) and can silently swallow following rules.

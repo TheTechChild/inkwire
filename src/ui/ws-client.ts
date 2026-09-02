@@ -8,6 +8,7 @@ export function connectWs(app: App): void {
   let socket: WebSocket | null = null;
   let queue: ClientIntent[] = [];
   let sentViewport = "";
+  let lastFocus: string | null = null;
 
   app.send = (intent) => {
     if (socket && socket.readyState === WebSocket.OPEN) {
@@ -45,6 +46,12 @@ export function connectWs(app: App): void {
       if (!isServerMessage(msg)) return;
       if (msg.type === "state") {
         app.push = msg as StatePush & { type: "state" };
+        // Focus moved (a chip, a digit, or the AI's layers_focus): never keep
+        // an element selected that the human can no longer see.
+        if (msg.state.focus !== lastFocus) {
+          lastFocus = msg.state.focus;
+          app.sel = null;
+        }
         // Adopt the server viewport when someone else moved it (the AI's
         // set_viewport, or another panel) — never mid-gesture, and never
         // when it just echoes what this panel sent.

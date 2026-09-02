@@ -4,7 +4,7 @@
   "title": "Inkwire CanvasState",
   "description": "Return shape of canvas.get_state. Meaning (graph) and placement (layout) are separate fields with independent revision counters.",
   "type": "object",
-  "required": ["board", "graph", "layout", "ink", "images", "history", "viewport"],
+  "required": ["board", "graph", "layout", "ink", "images", "history", "viewport", "layers", "focus"],
   "additionalProperties": false,
   "properties": {
     "board": {
@@ -28,7 +28,17 @@
           "description": "Increments on any change to node or edge semantics. Unchanged by moves."
         },
         "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
-        "edges": { "type": "array", "items": { "$ref": "#/$defs/edge" } }
+        "edges": { "type": "array", "items": { "$ref": "#/$defs/edge" } },
+        "boundary_edges": {
+          "type": "array",
+          "description": "Scoped reads only. Edges with exactly one endpoint in the focused layer.",
+          "items": { "$ref": "#/$defs/boundaryEdge" }
+        },
+        "boundary_nodes": {
+          "type": "array",
+          "description": "Scoped reads only. The far endpoint of every boundary edge, as a stub.",
+          "items": { "$ref": "#/$defs/boundaryNode" }
+        }
       }
     },
     "layout": {
@@ -66,6 +76,37 @@
         "x": { "type": "number" },
         "y": { "type": "number" },
         "zoom": { "type": "number", "minimum": 0.35, "maximum": 2.4 }
+      }
+    },
+    "layers": {
+      "type": "array",
+      "description": "Every layer on the board. Always present, whole-board and scoped.",
+      "items": { "$ref": "#/$defs/layer" }
+    },
+    "focus": {
+      "type": ["string", "null"],
+      "description": "Layer id the human is looking at, shared by every panel on the board. Null when released."
+    },
+    "scope": {
+      "type": "object",
+      "description": "Present only when the read is scoped to a focused layer. omitted is mandatory — counts, not ids.",
+      "required": ["layer_id", "letter", "title", "note", "omitted", "whole_board"],
+      "additionalProperties": false,
+      "properties": {
+        "layer_id": { "type": "string" },
+        "letter": { "type": "string" },
+        "title": { "type": "string" },
+        "note": { "type": "string" },
+        "omitted": {
+          "type": "object",
+          "required": ["nodes", "edges"],
+          "additionalProperties": false,
+          "properties": {
+            "nodes": { "type": "integer", "minimum": 0, "description": "Total nodes minus members." },
+            "edges": { "type": "integer", "minimum": 0, "description": "Total edges minus internal minus boundary." }
+          }
+        },
+        "whole_board": { "const": "canvas_get_board", "description": "The tool that returns the whole board regardless of focus." }
       }
     }
   },
@@ -161,6 +202,50 @@
           "maxItems": 2
         },
         "author": { "$ref": "#/$defs/author" }
+      }
+    },
+    "layer": {
+      "type": "object",
+      "description": "A named subset of nodes. A view over the board, never a container — deleting one deletes nothing.",
+      "required": ["id", "letter", "title", "note", "nodes", "author"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "letter": { "type": "string", "description": "A–Z, first unused; \"?\" once all 26 are taken." },
+        "title": { "type": "string", "maxLength": 24 },
+        "note": { "type": "string", "description": "The AI's one-line rationale; shown on focus." },
+        "nodes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Node ids (notes are nodes). Never edges, never ink."
+        },
+        "author": { "$ref": "#/$defs/author" }
+      }
+    },
+    "boundaryEdge": {
+      "type": "object",
+      "required": ["id", "from", "to", "label", "kind", "out_of_scope", "crosses_to"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "label": { "type": ["string", "null"] },
+        "kind": { "type": "string", "enum": ["sync", "async", "error"] },
+        "out_of_scope": { "const": true },
+        "crosses_to": { "type": "string", "description": "The endpoint outside the layer." }
+      }
+    },
+    "boundaryNode": {
+      "type": "object",
+      "description": "Stub only — no ref, no endpoint, no layout.",
+      "required": ["id", "label", "kind", "stub"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "kind": { "type": "string", "enum": ["entry", "service", "store", "transform", "note", "state", "lifeline"] },
+        "stub": { "const": true }
       }
     },
     "historySummary": {

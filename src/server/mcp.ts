@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { scopeState } from "../core/layers.js";
 import { exportMermaid } from "../core/mermaid.js";
 import { toolArgs } from "../shared/schemas.js";
 import { importBoard } from "./board-file.js";
@@ -13,6 +14,7 @@ import type { Screenshots } from "./screenshot.js";
 import * as mutations from "./mutations.js";
 import { validateRef } from "./bindcode.js";
 import { lintBoard } from "./lint.js";
+import { createLayer, deleteLayer, memberCount, updateLayer } from "./layers.js";
 import type { Store } from "./store.js";
 
 export interface McpDeps {
@@ -118,15 +120,24 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "canvas.get_state",
-    "The board as data: graph (nodes, edges, code bindings), layout in its own field, unresolved ink, images, history summary, viewport. Check graph.revision against what you last read — if only layout.revision moved, the human just tidied the board and the meaning is unchanged.",
+    "What the human is looking at right now. While a layer is focused this returns only that layer — members, internal edges, and the seams: boundary_edges marked out_of_scope with crosses_to, and boundary_nodes as stubs — and scope.omitted says what it left out. For the whole board regardless of focus call canvas_get_board. graph.revision / layout.revision are board-level and never move on a focus change.",
     (args: { board_id?: string; include_ink_geometry?: boolean; include_layout?: boolean }) => {
       const session = sessions.resolve(args.board_id);
-      return text(
-        session.state({
-          includeInkGeometry: args.include_ink_geometry,
-          includeLayout: args.include_layout,
-        }),
-      );
+      const state = session.state({
+        includeInkGeometry: args.include_ink_geometry,
+        includeLayout: args.include_layout,
+      });
+      const layer = session.focusedLayer();
+      return text(layer ? scopeState(state, layer) : state);
+    },
+  );
+
+  register(
+    "canvas.get_board",
+    "The whole board regardless of focus, plus layers[] and focus so you know what the human is looking at. Use when a scoped read is not enough.",
+    (args: { board_id?: string; include_layout?: boolean }) => {
+      const session = sessions.resolve(args.board_id);
+      return text(session.state({ includeLayout: args.include_layout }));
     },
   );
 
@@ -282,6 +293,60 @@ export function buildMcpServer(deps: McpDeps): McpServer {
         head: session.history.head,
         steps: session.historyRows(args.limit).map(({ ahead, index, ...row }) => ({ index, ...row })),
       });
+    },
+  );
+
+  register(
+    "layers.list",
+    "Every layer with its letter, title, member count — and which one the human is looking at.",
+    (args: { board_id?: string }) => {
+      const session = sessions.resolve(args.board_id);
+      return text({
+        focus: session.focus,
+        layers: session.layers.map((l) => ({
+          id: l.id,
+          letter: l.letter,
+          title: l.title,
+          members: memberCount(session, l),
+        })),
+      });
+    },
+  );
+
+  register(
+    "layers.create",
+    "Cut a named subset out of the board. node_ids are the members (notes are nodes; ink and images cannot be members); downstream: true also adds everything reachable from them along edges. Letters auto-assign A–Z; titles cap at 24 chars. Does not change focus.",
+    (args: Parameters<typeof createLayer>[2] & { board_id?: string }) => {
+      const session = sessions.resolve(args.board_id);
+      return text(createLayer(session, AUTHOR, args));
+    },
+  );
+
+  register(
+    "layers.update",
+    "Add or remove members, retitle, or rewrite the note. Elements themselves are untouched.",
+    (args: Parameters<typeof updateLayer>[2] & { board_id?: string }) => {
+      const session = sessions.resolve(args.board_id);
+      return text(updateLayer(session, AUTHOR, args));
+    },
+  );
+
+  register(
+    "layers.focus",
+    "Focus a layer in the human's viewport, or pass null to release. Use sparingly — it moves someone else's screen.",
+    (args: { board_id?: string; layer_id: string | null }) => {
+      const session = sessions.resolve(args.board_id);
+      session.setFocus(args.layer_id, AUTHOR);
+      return text({ ok: true });
+    },
+  );
+
+  register(
+    "layers.delete",
+    "Remove a layer. A layer is a view over the board, so nothing on the board is deleted.",
+    (args: { board_id?: string; layer_id: string }) => {
+      const session = sessions.resolve(args.board_id);
+      return text(deleteLayer(session, AUTHOR, args));
     },
   );
 

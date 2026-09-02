@@ -76,6 +76,16 @@ export interface Collections {
   layout: LayoutMap;
 }
 
+/** A named subset of nodes — a view over the board, never a container. */
+export interface Layer {
+  id: string;
+  letter: string; // "A".."Z", first unused; "?" when all 26 taken
+  title: string; // max 24 chars; "untitled" when empty
+  note: string; // "" when absent
+  nodes: string[]; // node ids (notes are nodes). Never edges, never ink.
+  author: Author;
+}
+
 export interface BoardMeta {
   id: string;
   name: string;
@@ -155,14 +165,54 @@ export interface HistorySummary {
   by_ai: number;
 }
 
+export interface BoundaryEdge {
+  id: string;
+  from: string;
+  to: string;
+  label: string | null;
+  kind: EdgeKind;
+  out_of_scope: true;
+  /** The non-member endpoint. */
+  crosses_to: string;
+}
+
+export interface BoundaryNode {
+  id: string;
+  label: string;
+  kind: NodeKind;
+  stub: true;
+}
+
+export interface ScopeInfo {
+  layer_id: string;
+  letter: string;
+  title: string;
+  note: string;
+  omitted: { nodes: number; edges: number };
+  whole_board: "canvas_get_board";
+}
+
 export interface CanvasState {
   board: { id: string; name: string };
-  graph: { revision: number; nodes: NodeEl[]; edges: EdgeEl[] };
+  graph: {
+    revision: number;
+    nodes: NodeEl[];
+    edges: EdgeEl[];
+    /** Scoped reads only: edges with exactly one member endpoint. */
+    boundary_edges?: BoundaryEdge[];
+    /** Scoped reads only: the far endpoints of boundary_edges, as stubs. */
+    boundary_nodes?: BoundaryNode[];
+  };
   layout: { revision: number; units: "canvas px"; boxes: LayoutMap };
   ink: StrokeSummary[];
   images: ImageEl[];
   history: HistorySummary;
   viewport: Viewport;
+  layers: Layer[];
+  /** Focused layer id, shared by every panel on the board. */
+  focus: string | null;
+  /** Present only when the read is scoped to a focused layer. */
+  scope?: ScopeInfo;
 }
 
 export interface MutationResult {

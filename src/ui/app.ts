@@ -1,10 +1,10 @@
 // Shared UI state + helpers. The server owns board state; this object holds
 // only the view over it (selection, tool, viewport, in-flight gesture).
 import type { ClientIntent, HistoryRow, LogRow, ServerMessage } from "../shared/protocol.js";
-import type { Box, CanvasState, NodeKind, Point } from "../shared/types.js";
+import type { Box, CanvasState, Layer, NodeKind, Point } from "../shared/types.js";
 
 export type Tool = "select" | "pen" | "box" | "arrow" | "text" | "erase";
-export type Tab = "session" | "history" | "state" | "tools";
+export type Tab = "layers" | "session" | "history" | "state" | "tools";
 export type Scope = "all" | "human" | "ai";
 
 export interface Selection {
@@ -39,6 +39,10 @@ export interface App {
   drag: Drag | null;
   /** Side panel: shown or collapsed, and its width in px. Persisted locally. */
   panel: { open: boolean; width: number };
+  /** Show the rim tier (neighbours of a focused layer). Persisted with the panel prefs. */
+  rim: boolean;
+  /** Which payload the STATE tab shows while a layer is focused. */
+  stateView: "scoped" | "board";
   connected: boolean;
   send: (intent: ClientIntent) => void;
   render: () => void;
@@ -67,4 +71,18 @@ export function isServerMessage(raw: unknown): raw is ServerMessage {
 
 export function clampZoom(z: number): number {
   return Math.min(2.4, Math.max(0.35, z));
+}
+
+/** The layer the server says is focused, or null. Focus is shared across panels. */
+export function focusedLayer(app: App): Layer | null {
+  const s = app.push?.state;
+  return s?.layers.find((l) => l.id === s.focus) ?? null;
+}
+
+/** Focus a layer through the server; the focused id again (or null) releases. */
+export function focusLayer(app: App, id: string | null): void {
+  const cur = app.push?.state.focus ?? null;
+  app.send({ type: "layers_focus", layer_id: id !== null && id === cur ? null : id });
+  app.sel = null;
+  app.render();
 }

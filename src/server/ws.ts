@@ -7,6 +7,7 @@ import { clientMessageSchema, type ServerMessage } from "../shared/protocol.js";
 import type { Viewport } from "../shared/types.js";
 import type { Sessions, BoardSession } from "./session.js";
 import * as mutations from "./mutations.js";
+import { deleteLayer, updateLayer } from "./layers.js";
 import type { CaptureBroker } from "./screenshot.js";
 
 export class PanelHub implements CaptureBroker {
@@ -120,6 +121,15 @@ export class PanelHub implements CaptureBroker {
         break;
       case "infer":
         mutations.inferFromInk(session, author, msg.stroke_ids);
+        break;
+      case "layers_focus":
+        session.setFocus(msg.layer_id, author);
+        break;
+      case "layers_update":
+        updateLayer(session, author, msg);
+        break;
+      case "layers_delete":
+        deleteLayer(session, author, msg);
         break;
     }
   }

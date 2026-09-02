@@ -65,12 +65,49 @@ export const viewportSchema = z.strictObject({
   zoom: z.number().min(0.35).max(2.4),
 });
 
+export const layerSchema = z.strictObject({
+  id: z.string(),
+  letter: z.string(),
+  title: z.string().max(24),
+  note: z.string(),
+  nodes: z.array(z.string()),
+  author: authorSchema,
+});
+
+export const boundaryEdgeSchema = z.strictObject({
+  id: z.string(),
+  from: z.string(),
+  to: z.string(),
+  label: z.string().nullable(),
+  kind: edgeKindSchema,
+  out_of_scope: z.literal(true),
+  crosses_to: z.string(),
+});
+
+export const boundaryNodeSchema = z.strictObject({
+  id: z.string(),
+  label: z.string(),
+  kind: nodeKindSchema,
+  stub: z.literal(true),
+});
+
+export const scopeSchema = z.strictObject({
+  layer_id: z.string(),
+  letter: z.string(),
+  title: z.string(),
+  note: z.string(),
+  omitted: z.strictObject({ nodes: z.int().min(0), edges: z.int().min(0) }),
+  whole_board: z.literal("canvas_get_board"),
+});
+
 export const canvasStateSchema = z.strictObject({
   board: z.strictObject({ id: z.string(), name: z.string() }),
   graph: z.strictObject({
     revision: z.int().min(0),
     nodes: z.array(nodeSchema),
     edges: z.array(edgeSchema),
+    boundary_edges: z.array(boundaryEdgeSchema).optional(),
+    boundary_nodes: z.array(boundaryNodeSchema).optional(),
   }),
   layout: z.strictObject({
     revision: z.int().min(0),
@@ -81,6 +118,9 @@ export const canvasStateSchema = z.strictObject({
   images: z.array(imageSchema),
   history: historySummarySchema,
   viewport: viewportSchema,
+  layers: z.array(layerSchema),
+  focus: z.string().nullable(),
+  scope: scopeSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -169,9 +209,28 @@ export const toolArgs = {
     y: z.number(),
     zoom: z.number().min(0.35).max(2.4),
   }),
+  "canvas.get_board": z.object({ ...boardScoped, include_layout: z.boolean().optional() }),
   "canvas.export_mermaid": z.object({ ...boardScoped }),
   "canvas.lint": z.object({ ...boardScoped }),
   "history.get": z.object({ ...boardScoped, limit: z.int().min(1).optional() }),
+  "layers.list": z.object({ ...boardScoped }),
+  "layers.create": z.object({
+    ...boardScoped,
+    node_ids: z.array(z.string()).min(1),
+    title: z.string().optional(),
+    note: z.string().optional(),
+    downstream: z.boolean().optional(),
+  }),
+  "layers.update": z.object({
+    ...boardScoped,
+    layer_id: z.string(),
+    add: z.array(z.string()).optional(),
+    remove: z.array(z.string()).optional(),
+    title: z.string().optional(),
+    note: z.string().optional(),
+  }),
+  "layers.focus": z.object({ ...boardScoped, layer_id: z.string().nullable() }),
+  "layers.delete": z.object({ ...boardScoped, layer_id: z.string() }),
 } as const;
 
 export type ToolName = keyof typeof toolArgs;

@@ -74,6 +74,7 @@
       </div>
       <div id="flash"></div>
       <div id="toast" hidden></div>
+      <div id="layerbar"></div>
     </div>
 
     <aside>
@@ -81,10 +82,12 @@
       <div id="inspector" hidden></div>
       <div class="seg" id="tabs"></div>
       <div id="panelbody">
-        <div class="tabpane" id="pane-session"></div>
+        <div class="tabpane" id="pane-layers"></div>
+        <div class="tabpane" id="pane-session" hidden></div>
         <div class="tabpane" id="pane-history" hidden></div>
         <div class="tabpane" id="pane-state" hidden>
-          <div class="pane-note">RESPONSE · canvas.get_state<br>graph and layout revision independently — moving a box does not change the graph</div>
+          <div class="pane-note" id="statenote"></div>
+          <div class="seg" id="stateseg" style="width: 100%"></div>
           <pre id="statejson"></pre>
         </div>
         <div class="tabpane" id="pane-tools" hidden style="padding: 0; gap: 0"></div>
