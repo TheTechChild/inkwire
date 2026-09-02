@@ -953,22 +953,46 @@ function renderTrace(app: App): void {
   q(".prog").style.width = pct;
   q(".head").style.left = pct;
   const k = Math.floor(info.t);
+  const last = info.nodeIds.length - 1; // the last playable node: below n on a broken path
+  const curNode = Math.min(last, k);
   for (const tick of sc.querySelectorAll<HTMLElement>(".tick")) {
     const j = Number(tick.dataset.j);
     tick.dataset.on = j <= k ? "reached" : "";
-    tick.classList.toggle("cur", j === Math.min(info.nodeIds.length - 1, k));
+    tick.classList.toggle("cur", j === curNode);
   }
+  // Label widths follow the live track width (the aside can resize it without a rebuild).
+  // Below ~90px a slot cannot carry a label: only the current hop, and the first, last and current nodes.
+  const track = q(".track");
+  const slot = 100 / info.n;
+  const dense = track.clientWidth / info.n < 90;
+  track.toggleAttribute("data-dense", dense);
+  const widePct = Math.min(40, 400 / info.n);
+  const wide = `${widePct.toFixed(1)}%`;
+  const near = widePct / 2 / slot + 2; // slots the centred current label reaches past its own, plus an end label's two
   for (const label of sc.querySelectorAll<HTMLElement>(".tick-label")) {
     const j = Number(label.dataset.j);
-    label.dataset.on = j === Math.min(info.nodeIds.length - 1, k) ? "cur" : j <= k ? "reached" : "";
+    const cur = j === curNode;
+    const end = j === 0 || j === info.n;
+    label.dataset.on = cur ? "cur" : j <= k ? "reached" : "";
+    label.hidden = dense && !(cur || (j === 0 && curNode > near) || (j === last && last - curNode > near));
+    label.style.maxWidth = end
+      ? `${(slot * (dense ? 2 : 0.46)).toFixed(1)}%`
+      : cur
+        ? dense
+          ? wide
+          : `calc(${(slot * 0.92).toFixed(1)}% + 8px)` // its padding, so it clips no earlier than its neighbours
+        : `${(slot * 0.92).toFixed(1)}%`;
   }
   for (const hop of sc.querySelectorAll<HTMLElement>(".hop")) {
     const j = Number(hop.dataset.j);
     hop.classList.toggle("lit", !hop.classList.contains("broken") && (j < k || (j === info.i && info.frac >= 0.5)));
+    hop.hidden = dense && j !== info.i;
+    hop.style.maxWidth = dense ? wide : `${(slot * 0.88).toFixed(1)}%`;
   }
   const st = info.path.steps[info.i]!;
   const edge = state.graph.edges.find((e) => e.id === st.edge);
-  const label = (id: string) => state.graph.nodes.find((n) => n.id === id)?.label ?? id;
+  const clip = (s: string) => (s.length > 28 ? `${s.slice(0, 27)}…` : s);
+  const label = (id: string) => clip(state.graph.nodes.find((n) => n.id === id)?.label ?? id);
   q(".cap .kicker").textContent = `HOP ${info.i + 1}/${info.n} · ${st.edge}` + (edge ? ` · ${label(edge.from)} → ${label(edge.to)}` : "");
   q(".cap .text").textContent =
     info.broken && info.i === info.broken.hop - 1
@@ -1016,14 +1040,12 @@ function renderScrubber(app: App, bar: HTMLElement, info: TraceInfo): void {
 
   const track = document.createElement("div");
   track.className = "track";
-  const slot = 100 / info.n;
   info.path.steps.forEach((st, j) => {
     const edge = state.graph.edges.find((e) => e.id === st.edge);
     const hop = document.createElement("span");
     hop.className = "hop" + (info.broken && j === info.broken.hop - 1 ? " broken" : "");
     hop.dataset.j = String(j);
     hop.style.left = `${(((j + 0.5) / info.n) * 100).toFixed(2)}%`;
-    hop.style.maxWidth = `${(slot * 0.88).toFixed(1)}%`;
     hop.textContent = edge?.label || st.edge;
     hop.title = `${st.edge} · ${edge?.label ?? ""}`;
     track.appendChild(hop);
@@ -1044,8 +1066,7 @@ function renderScrubber(app: App, bar: HTMLElement, info: TraceInfo): void {
     label.className = "tick-label";
     label.dataset.j = String(j);
     label.style.left = left;
-    label.style.transform = `translateX(${j === 0 ? "0" : j === info.n ? "-100%" : "-50%"})`;
-    label.style.maxWidth = `${((j === 0 || j === info.n ? slot * 0.46 : slot * 0.92)).toFixed(1)}%`;
+    label.style.transform = `translateX(${j === 0 ? "0" : j === info.n ? "-100%" : "-50%"})`; // widths: renderTrace
     label.textContent = node?.label ?? id;
     label.title = `${id} · ${node?.label ?? ""}`;
     track.append(tick, label);
