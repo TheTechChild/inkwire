@@ -152,6 +152,22 @@ describe("integration", () => {
     await second.close();
   });
 
+  it("DELETE /api/boards/:id drops the row and closes the board's sockets", async () => {
+    const doomed = sessions.create("doomed");
+    const client = await connect(doomed.boardId);
+    await client.nextState();
+    const closed = new Promise<number>((r) => client.socket.on("close", (code) => r(code)));
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/boards/${doomed.boardId}`, { method: "DELETE" });
+    expect(await res.json()).toEqual({ deleted: true, board_id: doomed.boardId });
+    expect(await closed).toBe(4010);
+    expect(store.load(doomed.boardId)).toBeNull();
+    expect(sessions.all().map((s) => s.boardId)).not.toContain(doomed.boardId);
+
+    const missing = await fetch(`http://127.0.0.1:${port}/api/boards/${doomed.boardId}`, { method: "DELETE" });
+    expect(missing.status).toBe(404);
+  });
+
   it("bad intents get an error message naming the offender, then a re-sync", async () => {
     const client = await connect(boardId);
     await client.nextState();

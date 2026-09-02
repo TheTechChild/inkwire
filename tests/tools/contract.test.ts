@@ -26,6 +26,7 @@ const validateState = ajv.compile(handoffSchema);
 
 let client: Client;
 let store: Store;
+let sessions: Sessions;
 let projectRoot: string;
 let boardId: string;
 
@@ -53,7 +54,7 @@ beforeAll(async () => {
   projectRoot = mkdtempSync(path.join(tmpdir(), "inkwire-root-"));
   writeFileSync(path.join(projectRoot, "auth.ts"), "export function verifyToken() {}\n");
   store = new Store(dataDir);
-  const sessions = new Sessions(store, { debounceMs: 50 });
+  sessions = new Sessions(store, { debounceMs: 50 });
   const screenshots = new Screenshots({ requestCapture: () => false }, store.imagesDir);
   const mcp = buildMcpServer({
     sessions,
@@ -259,6 +260,22 @@ describe("tool contracts", () => {
     const board = json().boards.find((b: { id: string }) => b.id === boardId);
     expect(board).toBeTruthy();
     expect(board.nodes).toBeGreaterThan(0);
+  });
+
+  it("boards_delete removes the row, clears the current board, and a late flush cannot resurrect it", async () => {
+    const created = (await call("boards_create", { name: "doomed" })).json();
+    try {
+      await call("canvas_add_node", { label: "x", kind: "service", at: [0, 0] });
+      const stale = sessions.open(created.board_id); // what a disconnecting socket still holds
+      const del = (await call("boards_delete", { board_id: created.board_id })).json();
+      expect(del).toEqual({ deleted: true, board_id: created.board_id });
+      stale.persistNow(); // the disconnect flush — must not resurrect the row
+      expect(store.load(created.board_id)).toBeNull();
+      expect((await call("canvas_get_state")).res.isError).toBe(true); // current pointer cleared
+      expect((await call("boards_delete", { board_id: created.board_id })).text).toMatch(/not found/);
+    } finally {
+      await call("boards_open", { board_id: boardId });
+    }
   });
 
   it("set_viewport returns ok and moves the stored viewport", async () => {

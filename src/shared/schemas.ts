@@ -94,6 +94,7 @@ export const toolArgs = {
   "boards.open": z.object({ board_id: z.string() }),
   "boards.create": z.object({ name: z.string().min(1) }),
   "boards.import": z.object({ path: z.string().min(1) }),
+  "boards.delete": z.object({ board_id: z.string() }),
   "canvas.get_state": z.object({
     ...boardScoped,
     include_ink_geometry: z.boolean().optional(),

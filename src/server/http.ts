@@ -55,6 +55,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HttpDeps)
     return;
   }
 
+  const boardMatch = p.match(/^\/api\/boards\/([^/]+)$/);
+  if (req.method === "DELETE" && boardMatch) {
+    const id = decodeURIComponent(boardMatch[1]!);
+    const deleted = deps.sessions.delete(id);
+    res.writeHead(deleted ? 200 : 404, { "content-type": "application/json" });
+    res.end(JSON.stringify(deleted ? { deleted: true, board_id: id } : { error: `board not found: ${id}` }));
+    return;
+  }
+
   // Board file export: the whole board, bitmaps embedded, as a download.
   const exportMatch = p.match(/^\/api\/boards\/([^/]+)\/export$/);
   if (req.method === "GET" && exportMatch) {
