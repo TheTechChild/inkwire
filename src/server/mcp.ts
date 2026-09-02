@@ -1,4 +1,4 @@
-// MCP tool surface (SPEC § 9, schema/tools.json). Tool-driven mutations are
+// MCP tool surface (SPEC § 9). Tool-driven mutations are
 // recorded with author "ai" — the server assigns authorship, never a tool
 // argument. Wire names use underscores (MCP tool-name charset); the dotted
 // names from the spec appear in descriptions.

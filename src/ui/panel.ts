@@ -35,7 +35,7 @@ const SCOPE_NOTES: Record<Scope, string> = {
   ai: "⌘Z skips claude's last edit in place and keeps everything you drew. Row clicks still rewind the whole timeline.",
 };
 
-// The real tool surface (schema/tools.json). Run buttons exist only where
+// The real tool surface (SPEC § 9). Run buttons exist only where
 // the panel can genuinely act; the rest belong to Claude over MCP.
 const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
   ["boards.list", "Board ids, names, element counts, last touched.", "() → { boards }", null as never],

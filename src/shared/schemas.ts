@@ -124,7 +124,7 @@ export const canvasStateSchema = z.strictObject({
 });
 
 // ---------------------------------------------------------------------------
-// Tool argument schemas (schema/tools.json). board_id is optional everywhere:
+// Tool argument schemas (SPEC § 9; schema/tools.generated.json is emitted from these). board_id is optional everywhere:
 // the session-scoped current board applies when omitted.
 
 const boardScoped = { board_id: z.string().optional() };

@@ -1,6 +1,6 @@
 // The one mutation API (SPEC § 1). MCP handlers pass author "ai"; WebSocket
 // intent handlers pass author "human". Errors name the offending id — never
-// a silent no-op (schema/tools.json conventions).
+// a silent no-op (SPEC § 9 conventions).
 import { inferStructure } from "../core/infer.js";
 import type {
   Author,
