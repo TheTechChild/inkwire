@@ -521,9 +521,10 @@ describe("paths", () => {
 
     const del = (await call("canvas_delete", { id: r })).json();
     expect(del.ids).toContain(qr);
-    // P2 was already broken, so only the newly broken paths are reported.
+    // P2 was already broken at hop 2; it now breaks at hop 1, so it is reported again (by hop, not by path).
     expect(del.paths_affected).toEqual([
       { path_id: "P1", hop: 2, reason: "edge pruned" },
+      { path_id: "P2", hop: 1, reason: "edge pruned" },
       { path_id: "P3", hop: 1, reason: "edge pruned" },
     ]);
     ({ findings } = (await call("canvas_lint")).json());

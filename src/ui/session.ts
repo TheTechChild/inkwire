@@ -130,7 +130,7 @@ export function renderSession(app: App): void {
   // Thread: rebuild only when something in it changed, then scroll to the end.
   const thread = el("thread");
   const entries = s?.thread ?? [];
-  const key = `${entries.length}:${entries.at(-1)?.id ?? ""}:${s?.highlight?.msg_id ?? ""}:${s?.trace?.path_id ?? ""}:${agent}:${JSON.stringify(app.open)}`;
+  const key = `${entries.length}:${entries.at(-1)?.id ?? ""}:${s?.highlight?.msg_id ?? ""}:${s?.trace?.path_id ?? ""}:${app.push?.state.layers.flatMap((l) => l.paths.map((p) => p.id)).join(",") ?? ""}:${agent}:${JSON.stringify(app.open)}`;
   if (key !== threadKey) {
     threadKey = key;
     thread.replaceChildren();
@@ -163,6 +163,7 @@ export function renderSession(app: App): void {
   for (const c of chips) {
     const chip = document.createElement("span");
     chip.className = "ctx-chip";
+    chip.dataset.key = c.key;
     chip.title = c.title;
     const label = document.createElement("span");
     label.textContent = c.label;

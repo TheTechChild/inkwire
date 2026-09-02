@@ -9,6 +9,7 @@ import {
   boardFileSchema,
   type BoardFile,
 } from "../shared/board-file.js";
+import { validateWalk } from "../core/layers.js";
 import { RENDER } from "../shared/tokens.js";
 import type { Collections, EdgeEl, ImageEl, LayoutMap, NodeEl } from "../shared/types.js";
 import type { BoardSession, Sessions } from "./session.js";
@@ -96,6 +97,17 @@ export function importBoard(sessions: Sessions, store: Store, raw: unknown): Boa
   const layout: LayoutMap = {};
   for (const id of [...nodes.map((n) => n.id), ...images.map((i) => i.id)]) {
     layout[id] = file.layout[id] ?? [40, 40, RENDER.nodeDefaultSize[0], RENDER.nodeDefaultSize[1]];
+  }
+
+  // Paths are looked up by id alone and trusted to chain; a hand-merged file must hold both.
+  const pathIds = new Set<string>();
+  for (const layer of file.layers ?? []) {
+    for (const p of layer.paths) {
+      if (pathIds.has(p.id)) throw new ImportError(`duplicate path id: ${p.id}`);
+      pathIds.add(p.id);
+      const err = validateWalk(layer, edges, p.steps);
+      if (err) throw new ImportError(`path ${p.id} on layer ${layer.letter}: ${err}`);
+    }
   }
 
   const collections: Collections = { nodes, edges, strokes: file.strokes, images, layout };

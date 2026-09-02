@@ -581,7 +581,7 @@ export function renderWorld(app: App): void {
       top: `${box[1]}px`,
       width: `${box[2]}px`,
       height: `${box[3]}px`,
-      border: walk
+      border: walk && !selected && !pending
         ? ""
         : lit
         ? "2px solid var(--color-accent-600)"
@@ -590,7 +590,7 @@ export function renderWorld(app: App): void {
           : ai
             ? "1.5px dashed var(--color-accent-500)"
             : "1px solid var(--color-divider)",
-      boxShadow: walk
+      boxShadow: walk && !selected
         ? ""
         : lit
           ? "0 0 0 4px color-mix(in srgb, var(--color-accent) 28%, transparent), var(--shadow-md)"
@@ -707,14 +707,16 @@ function renderLayerChips(app: App, bar: HTMLElement): void {
         hold = h;
       });
       chip.addEventListener("pointerleave", () => {
-        if (hold?.fired) endPeek(app);
+        if (hold && !hold.fired) {
+          window.clearTimeout(hold.timer); // an aborted press must not peek later
+          hold = null;
+        } else if (hold?.fired) endPeek(app);
       });
       const seg = document.createElement("span");
       seg.className = "paths";
       seg.textContent = `▸ ${layer.paths.length}`;
       seg.title = `open the scrubber on ${first.id} — stays open, no loop`;
       seg.addEventListener("pointerdown", (e) => e.stopPropagation());
-      seg.addEventListener("pointerup", (e) => e.stopPropagation());
       seg.addEventListener("click", (e) => {
         e.stopPropagation();
         app.send({ type: "trace_set", path_id: first.id });
@@ -811,7 +813,7 @@ export function traceInfo(app: App): TraceInfo | null {
     t,
     i,
     frac,
-    running: tr.running && (tr.loop || t < nGood),
+    running: tr.running && nGood > 0 && (tr.loop || t < nGood),
     reached: new Set(nodeIds.slice(0, k + 1)),
     current: nodeIds[Math.min(nodeIds.length - 1, k)],
     doneEdges: new Set(steps.slice(0, k).map((st) => st.edge.id)),
@@ -841,13 +843,18 @@ function trackT(app: App, clientX: number): number {
   const info = track && traceInfo(app);
   if (!track || !info) return 0;
   const r = track.getBoundingClientRect();
-  return Math.max(0, Math.min(1, (clientX - r.left) / r.width)) * info.nGood;
+  return Math.max(0, Math.min(1, (clientX - r.left) / r.width)) * info.n; // seek clamps to nGood
 }
 
 /** Seek and pause: patch locally at once, tell the server debounced (60 ms) or now. */
 function seek(app: App, t: number, now: boolean): void {
   const info = traceInfo(app);
-  if (!info || info.peek) return;
+  if (!info || info.peek) {
+    if (seekTimer !== null) window.clearTimeout(seekTimer);
+    seekTimer = null;
+    seekT = null;
+    return;
+  }
   t = Math.min(info.nGood, Math.max(0, t)); // the server clamps the same way, so its echo matches
   app.traceOverride = { t, running: false };
   seekT = t;
@@ -861,9 +868,10 @@ function seek(app: App, t: number, now: boolean): void {
 function flushSeek(app: App): void {
   if (seekTimer !== null) window.clearTimeout(seekTimer);
   seekTimer = null;
-  if (seekT === null) return;
-  app.send({ type: "trace_seek", t: seekT });
+  const t = seekT;
   seekT = null;
+  if (t === null || !app.push?.session.trace) return; // the trace closed under the drag
+  app.send({ type: "trace_seek", t });
 }
 
 /** Keep a rAF chain alive while the trace advances; each frame patches only. */
@@ -966,6 +974,9 @@ function renderTrace(app: App): void {
     info.broken && info.i === info.broken.hop - 1
       ? `hop ${info.broken.hop} is broken — ${st.edge} ${info.broken.reason === "edge pruned" ? "no longer exists" : "leaves the layer"}`
       : st.caption || "no caption on this hop";
+  // The composer's step chip reads the same clock, so what the human sees is what send() puts in the reply.
+  const chip = document.querySelector<HTMLElement>('#ctxrow [data-key="trace"] span');
+  if (chip && !info.peek) chip.textContent = `${info.path.id} · hop ${Math.max(1, Math.ceil(info.t))}/${info.n}`;
 }
 
 /** The timeline across the top of the canvas: three rows, built once per render and patched by renderTrace. */

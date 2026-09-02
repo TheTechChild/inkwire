@@ -4,6 +4,7 @@
 // The hook script is a dumb forwarder; every decision is made here.
 import { execFile } from "node:child_process";
 import type { Highlight } from "../shared/types.js";
+import { playableHops } from "../core/layers.js";
 import { findPath, openTrace } from "./layers.js";
 import type { BoardSession, SendResult, Sessions } from "./session.js";
 
@@ -187,7 +188,8 @@ export function sessionReply(
   }
   let trace: { path: string; hop: number } | null = null;
   if (args.trace) {
-    const n = session.layers.flatMap((l) => l.paths).find((p) => p.id === args.trace!.path)?.steps.length;
+    const hit = session.layers.flatMap((l) => l.paths.map((p) => [l, p] as const)).find(([, p]) => p.id === args.trace!.path);
+    const n = hit ? playableHops(hit[0], session.collections().edges, hit[1]) : 0;
     if (n) {
       trace = { path: args.trace.path, hop: Math.min(n, Math.max(1, args.trace.hop)) };
       ctx.push({ label: `${trace.path} · hop ${trace.hop}/${n}`, title: "the scrubber's position — sent as { path, hop }, ids only" });

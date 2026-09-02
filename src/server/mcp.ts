@@ -277,9 +277,9 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "Remove an element by id. Deleting a node also removes its edges — the result reports every id that went, and paths_affected names the paths whose walk it broke.",
     (args: { board_id?: string; id: string }) => {
       const session = sessions.resolve(args.board_id);
-      const before = new Set(pathsAffected(session.layers, session.collections().edges).map((b) => b.path_id));
+      const before = new Set(pathsAffected(session.layers, session.collections().edges).map((b) => `${b.path_id}:${b.hop}`));
       const result = mutations.deleteElement(session, AUTHOR, args.id);
-      const paths_affected = pathsAffected(session.layers, session.collections().edges).filter((b) => !before.has(b.path_id));
+      const paths_affected = pathsAffected(session.layers, session.collections().edges).filter((b) => !before.has(`${b.path_id}:${b.hop}`));
       return text({ ...result, paths_affected });
     },
   );

@@ -7,6 +7,7 @@ import {
   nextPathId,
   pathNodes,
   pathsAffected,
+  playableHops,
   resolveNodesToSteps,
   validateWalk,
   type PathBreak,
@@ -68,12 +69,12 @@ export function updateLayer(
     ...(args.note !== undefined ? { note: args.note } : {}),
   };
   const edges = session.collections().edges;
-  const before = new Set(pathsAffected([layer], edges).map((b) => b.path_id));
+  const before = new Set(pathsAffected([layer], edges).map((b) => `${b.path_id}:${b.hop}`));
   session.updateLayers(author, `layer ${layer.letter} · update`, (ls) =>
     ls.map((l) => (l.id === layer.id ? next : l)),
   );
   // Only the paths this remove broke — ones already broken are the lint's job.
-  const paths_affected = pathsAffected([next], edges).filter((b) => !before.has(b.path_id));
+  const paths_affected = pathsAffected([next], edges).filter((b) => !before.has(`${b.path_id}:${b.hop}`));
   return { layer_id: layer.id, members: memberCount(session, next), paths_affected };
 }
 
@@ -205,7 +206,7 @@ export function getPath(session: BoardSession, args: { path_id: string }) {
 /** Pin the board trace on a path: from 0 running, or paused at t when given. */
 export function openTrace(session: BoardSession, pathId: string, opts: { t?: number; running?: boolean } = {}): void {
   const { layer, path } = findPath(session, pathId);
-  const n = path.steps.length;
+  const n = playableHops(layer, session.collections().edges, path); // what the panels can show
   session.setTrace({
     layer_id: layer.id,
     path_id: path.id,

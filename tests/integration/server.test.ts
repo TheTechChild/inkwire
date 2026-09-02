@@ -265,6 +265,16 @@ describe("integration", () => {
     });
     expect(v1.status).toBe(200);
     expect(sessions.open((await v1.json()).board_id).layers[0]!.paths).toEqual([]);
+
+    // A path that does not chain, or a duplicated path id, is refused: lookups trust both.
+    const walk = file.layers[0].paths[0];
+    const broken = await fetch(`http://127.0.0.1:${port}/api/boards/import`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...file, layers: [{ ...file.layers[0], paths: [{ ...walk, steps: [walk.steps[0], walk.steps[0]] }] }] }),
+    });
+    expect(broken.status).toBe(400);
+    expect((await broken.json()).error).toContain(`path ${walk.id} on layer A: hop 2`);
   });
 
   it("screenshot with a client attached returns the client's PNG", async () => {

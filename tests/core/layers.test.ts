@@ -11,6 +11,7 @@ import {
   nextLetter,
   nextPathId,
   pathNodes,
+  playableHops,
   pathsAffected,
   resolveNodesToSteps,
   scopeState,
@@ -275,5 +276,16 @@ describe("traceT", () => {
     const period = 3 * HOP_MS + REST_MS;
     expect(traceT(tr({ loop: true }), 3, 1000 + 3 * HOP_MS + REST_MS / 2)).toBe(3); // in the rest window
     expect(traceT(tr({ loop: true }), 3, 1000 + period + HOP_MS)).toBeCloseTo(1, 6);
+  });
+});
+
+describe("playableHops", () => {
+  it("is the whole path when intact and the prefix before the first broken hop", () => {
+    const { edges } = fixture();
+    const l = layer(["a", "b", "c"]);
+    const p = { id: "P1", title: "t", author: "ai" as const, steps: [{ edge: "e1", caption: "", ref: null }, { edge: "e2", caption: "", ref: null }] };
+    expect(playableHops(l, edges, p)).toBe(2);
+    expect(playableHops(l, edges.filter((e) => e.id !== "e2"), p)).toBe(1);
+    expect(playableHops(l, edges.filter((e) => e.id !== "e1"), p)).toBe(0);
   });
 });

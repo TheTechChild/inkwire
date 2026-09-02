@@ -5,6 +5,7 @@
 // session mode and the one blocked session_send.
 import { randomBytes } from "node:crypto";
 import { fold } from "../core/fold.js";
+import { playableHops } from "../core/layers.js";
 import {
   append,
   dropStep,
@@ -288,7 +289,9 @@ export class BoardSession {
   updateTrace(patch: { running?: boolean; loop?: boolean; t?: number }): void {
     const tr = this.trace;
     if (!tr) throw new Error("no trace is open");
-    const n = this.layers.find((l) => l.id === tr.layer_id)?.paths.find((p) => p.id === tr.path_id)?.steps.length ?? 0;
+    const layer = this.layers.find((l) => l.id === tr.layer_id);
+    const path = layer?.paths.find((p) => p.id === tr.path_id);
+    const n = layer && path ? playableHops(layer, this.collections().edges, path) : 0;
     this.trace = {
       ...tr,
       running: patch.running ?? tr.running,

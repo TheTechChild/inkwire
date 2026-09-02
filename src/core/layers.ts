@@ -8,6 +8,7 @@ import type {
   EdgeEl,
   Layer,
   NodeEl,
+  Path,
   PathStep,
 } from "../shared/types.js";
 
@@ -226,6 +227,12 @@ export function pathsAffected(layers: Layer[], edges: EdgeEl[]): PathBreak[] {
     }
   }
   return out;
+}
+
+/** Hops that still play: the whole path, or everything before the first broken hop. */
+export function playableHops(layer: Layer, edges: EdgeEl[], path: Path): number {
+  const b = pathsAffected([{ ...layer, paths: [path] }], edges)[0];
+  return b ? b.hop - 1 : path.steps.length;
 }
 
 // Hop timing. The server stamps t and started_at; every panel derives the
