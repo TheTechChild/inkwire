@@ -5,6 +5,7 @@ import type { App, Scope, Tab, Tool } from "./app.js";
 import { KIND_META, el, focusLayer, focusedLayer } from "./app.js";
 import { liveMembers, scopeState } from "../core/layers.js";
 import { NODE_KINDS, EDGE_KINDS } from "../shared/types.js";
+import { renderSession } from "./session.js";
 
 const TOOLS: [Tool, string, string][] = [
   ["select", "select", "V"],
@@ -38,6 +39,8 @@ const SCOPE_NOTES: Record<Scope, string> = {
 // The real tool surface (SPEC § 9). Run buttons exist only where
 // the panel can genuinely act; the rest belong to Claude over MCP.
 const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
+  ["session.mode", "Flip the mode flag the server holds. On: fails unless permission mode is auto; arms the Stop hook that redirects replies into session_send. Off: releases any pending session_send with mode_off.", "(on: boolean) → { mode, hook }", (app) => switchTab(app, "session")],
+  ["session.send", "Deliver a reply to the Session tab, optionally pointing at elements. Blocks until the human replies (20 min timeout) and returns their message with focus, selection and revision as ids.", "(text, highlight?: { nodes, edges, label }) → { reply, ctx } | { status: mode_off | idle }", (app) => switchTab(app, "session")],
   ["boards.list", "Board ids, names, element counts, last touched.", "() → { boards }", null as never],
   ["boards.open", "Make a board current and return its state.", "(board_id) → CanvasState", null as never],
   ["boards.create", "New empty board.", "(name) → { board_id }", null as never],
@@ -71,22 +74,22 @@ const PANEL_DEFAULT_WIDTH = 372;
 const clampPanelWidth = (w: number): number => Math.min(720, Math.max(260, Math.round(w)));
 
 /** Side-panel prefs (plus the rim setting) from localStorage; defaults when absent or unreadable. */
-export function loadPanelPrefs(): App["panel"] & { rim: boolean } {
+export function loadPanelPrefs(): App["panel"] & { rim: boolean; dim: boolean } {
   try {
     const raw = localStorage.getItem(PANEL_KEY);
     if (raw) {
-      const p = JSON.parse(raw) as { open?: unknown; width?: unknown; rim?: unknown };
-      return { open: p.open !== false, width: clampPanelWidth(Number(p.width) || PANEL_DEFAULT_WIDTH), rim: p.rim !== false };
+      const p = JSON.parse(raw) as { open?: unknown; width?: unknown; rim?: unknown; dim?: unknown };
+      return { open: p.open !== false, width: clampPanelWidth(Number(p.width) || PANEL_DEFAULT_WIDTH), rim: p.rim !== false, dim: p.dim !== false };
     }
   } catch {
     // storage unavailable — fall through to defaults
   }
-  return { open: true, width: PANEL_DEFAULT_WIDTH, rim: true };
+  return { open: true, width: PANEL_DEFAULT_WIDTH, rim: true, dim: true };
 }
 
 function savePanelPrefs(app: App): void {
   try {
-    localStorage.setItem(PANEL_KEY, JSON.stringify({ ...app.panel, rim: app.rim }));
+    localStorage.setItem(PANEL_KEY, JSON.stringify({ ...app.panel, rim: app.rim, dim: app.dim }));
   } catch {
     // storage unavailable — prefs live for this page only
   }
@@ -404,35 +407,6 @@ function renderInspector(app: App): void {
   box.appendChild(actions);
 }
 
-function renderSession(app: App): void {
-  const pane = el("pane-session");
-  pane.replaceChildren();
-  const log = app.push?.log ?? [];
-  for (const row of [...log].reverse()) {
-    const card = document.createElement("div");
-    card.className = row.author === "ai" ? "card log-card ai" : "card log-card";
-    const kicker = document.createElement("div");
-    kicker.className = "kicker";
-    const who = document.createElement("span");
-    who.textContent = row.author === "ai" ? "CLAUDE" : row.author === "server" ? "SERVER" : "YOU";
-    const time = document.createElement("span");
-    time.className = "time";
-    time.textContent = fmtTime(row.at);
-    kicker.append(who, time);
-    const body = document.createElement("div");
-    body.className = "body";
-    body.textContent = row.text;
-    card.append(kicker, body);
-    pane.appendChild(card);
-  }
-  if (log.length === 0) {
-    const note = document.createElement("div");
-    note.className = "pane-note";
-    note.textContent = "SESSION LOG — every mutation lands here, by author";
-    pane.appendChild(note);
-  }
-}
-
 function renderHistory(app: App): void {
   const pane = el("pane-history");
   pane.replaceChildren();
@@ -560,7 +534,18 @@ function renderLayers(app: App): void {
     savePanelPrefs(app);
     app.render();
   });
-  pane.append(note, rim);
+  const dim = document.createElement("label");
+  dim.className = "pane-note";
+  dim.style.cssText = "display:flex;align-items:center;gap:6px;cursor:pointer";
+  dim.innerHTML = `<input type="checkbox"><span>dim · outside a highlight</span>`;
+  const dimInput = dim.querySelector("input")!;
+  dimInput.checked = app.dim;
+  dimInput.addEventListener("change", () => {
+    app.dim = dimInput.checked;
+    savePanelPrefs(app);
+    app.render();
+  });
+  pane.append(note, rim, dim);
 
   for (const layer of state.layers) {
     const members = liveMembers(layer, state.graph.nodes);
@@ -657,6 +642,10 @@ function renderFooter(app: App): void {
   const conn = el("conn");
   conn.className = app.connected ? "conn" : "conn off";
   conn.textContent = app.connected ? `● mcp connected · ${MCP_TOOLS.length} tools` : "○ reconnecting…";
+  const mode = el("modenote");
+  const inkwire = push?.session.mode === "inkwire";
+  mode.textContent = inkwire ? "mode inkwire · pty muted" : "mode pty";
+  mode.style.color = inkwire ? "var(--color-accent-700)" : "var(--color-neutral-600)";
   if (push) {
     const s = push.state;
     el("counts").textContent = `${s.graph.nodes.length} nodes · ${s.graph.edges.length} edges · ${s.ink.length} ink`;
@@ -671,7 +660,7 @@ function renderFooter(app: App): void {
   el("zoom").textContent = `zoom ${Math.round(app.view.zoom * 100)}%`;
 }
 
-function fmtTime(at: number): string {
+export function fmtTime(at: number): string {
   const t = new Date(at);
   return `${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
 }

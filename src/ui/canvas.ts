@@ -98,6 +98,7 @@ export function setupCanvas(app: App): void {
       app.sel = null;
       app.pendingFrom = null;
       if (app.push?.state.focus) focusLayer(app, null);
+      if (app.push?.session.highlight) app.send({ type: "highlight_set", msg_id: null });
       app.render();
     }
   });
@@ -362,6 +363,13 @@ export function renderWorld(app: App): void {
     focused,
     app.rim,
   );
+  // Highlight: the agent's pointer. Members lift to full strength whatever
+  // their tier; everything else dims (never blurs) when the dim pref is on.
+  const hl = app.push?.session.highlight ?? null;
+  const hlNodes = new Set(hl?.nodes ?? []);
+  const hlEdges = new Set(hl?.edges ?? []);
+  world.dataset.hl = hl ? (app.dim ? "dim" : "on") : "";
+  const hlOf = (member: boolean) => (hl ? (member ? "in" : "out") : "");
 
   // Ink (server strokes + the in-flight pen gesture).
   const strokes: [string, Point[]][] = state.ink.map((s) => [s.id, s.geometry ?? []]);
@@ -370,6 +378,7 @@ export function renderWorld(app: App): void {
     if (pts.length < 2) continue;
     const path = document.createElementNS(SVG_NS, "path");
     path.dataset.tier = t.node(id);
+    path.dataset.hl = hlOf(false);
     path.setAttribute("d", "M " + pts.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join(" L "));
     path.setAttribute("fill", "none");
     path.setAttribute("stroke", "var(--color-text)");
@@ -391,16 +400,18 @@ export function renderWorld(app: App): void {
     g.setAttribute("class", selected ? "edge selected" : "edge");
     const tier = t.edge(e);
     g.dataset.tier = tier;
+    const lit = hlEdges.has(e.id);
+    g.dataset.hl = hlOf(lit);
     const path = document.createElementNS(SVG_NS, "path");
     path.setAttribute("d", `M ${p1[0].toFixed(1)} ${p1[1].toFixed(1)} L ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`);
     path.setAttribute("fill", "none");
-    path.setAttribute("stroke", ai ? "var(--color-accent)" : selected ? "var(--color-text)" : "var(--color-accent-700)");
-    path.setAttribute("stroke-width", selected ? "2" : "1.3");
+    path.setAttribute("stroke", lit ? "var(--color-accent-600)" : ai ? "var(--color-accent)" : selected ? "var(--color-text)" : "var(--color-accent-700)");
+    path.setAttribute("stroke-width", lit ? "2.6" : selected ? "2" : "1.3");
     if (ai || e.kind === "async") path.setAttribute("stroke-dasharray", "6 4");
     path.setAttribute("marker-end", ai ? "url(#arwai)" : "url(#arw)");
     g.appendChild(path);
 
-    const labelText = tier === "in" ? edgeLabel(e, selected) : "";
+    const labelText = tier === "in" || lit ? edgeLabel(e, selected) : "";
     if (labelText) {
       const text = document.createElementNS(SVG_NS, "text");
       text.setAttribute("x", String(mid[0]));
@@ -447,6 +458,7 @@ export function renderWorld(app: App): void {
     const div = document.createElement("div");
     div.className = "image-box";
     div.dataset.tier = t.node(img.id);
+    div.dataset.hl = hlOf(false);
     if (app.sel?.id === img.id) {
       div.style.outline = "1.5px solid var(--color-accent)";
       div.appendChild(resizeHandle());
@@ -473,21 +485,29 @@ export function renderWorld(app: App): void {
     const ai = n.author === "ai";
     const meta = KIND_META[n.kind] ?? KIND_META.note;
 
+    const lit = hlNodes.has(n.id);
     const div = document.createElement("div");
     div.className = "node-box blueprint";
     div.dataset.kind = n.kind;
     div.dataset.tier = t.node(n.id);
+    div.dataset.hl = hlOf(lit);
     Object.assign(div.style, {
       left: `${box[0]}px`,
       top: `${box[1]}px`,
       width: `${box[2]}px`,
       height: `${box[3]}px`,
-      border: selected || pending
-        ? "1.5px solid var(--color-accent)"
-        : ai
-          ? "1.5px dashed var(--color-accent-500)"
-          : "1px solid var(--color-divider)",
-      boxShadow: selected ? "var(--shadow-md)" : "none",
+      border: lit
+        ? "2px solid var(--color-accent-600)"
+        : selected || pending
+          ? "1.5px solid var(--color-accent)"
+          : ai
+            ? "1.5px dashed var(--color-accent-500)"
+            : "1px solid var(--color-divider)",
+      boxShadow: lit
+        ? "0 0 0 4px color-mix(in srgb, var(--color-accent) 28%, transparent), var(--shadow-md)"
+        : selected
+          ? "var(--shadow-md)"
+          : "none",
     });
     for (const corner of ["tl", "tr", "bl", "br"]) {
       const i = document.createElement("i");
@@ -525,12 +545,30 @@ function wrapNote(label: string, box: Box, qz: number): string {
   return wrapText(label, Math.floor((box[2] - 22) / (px * 0.55)), maxLines).join("\n");
 }
 
-/** Chip bar + focus strip over the canvas. Focus itself lives on the server. */
+/** Chip bar + focus strip + highlight strip over the canvas. All three live on the server. */
 function renderLayerBar(app: App): void {
   const bar = el("layerbar");
   bar.replaceChildren();
   const state = app.push?.state;
-  if (!state || state.layers.length === 0) return;
+  if (!state) return;
+  if (state.layers.length > 0) renderLayerChips(app, bar);
+  const hl = app.push?.session.highlight;
+  if (!hl) return;
+  const strip = document.createElement("div");
+  strip.className = "hl-strip";
+  strip.innerHTML = `<span class="diamond">◆</span><span class="kicker">HIGHLIGHT</span><span class="label"></span><span class="count"></span>`;
+  (strip.children[2] as HTMLElement).textContent = hl.label;
+  (strip.children[3] as HTMLElement).textContent = `${hl.nodes.length} nodes · ${hl.edges.length} edges`;
+  const clear = document.createElement("button");
+  clear.textContent = "clear · esc";
+  clear.title = "clear highlight — esc";
+  clear.addEventListener("click", () => app.send({ type: "highlight_set", msg_id: null }));
+  strip.appendChild(clear);
+  bar.appendChild(strip);
+}
+
+function renderLayerChips(app: App, bar: HTMLElement): void {
+  const state = app.push!.state;
   const focused = focusedLayer(app);
   const row = document.createElement("div");
   row.className = "layer-chips";
