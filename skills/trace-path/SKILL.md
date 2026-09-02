@@ -29,7 +29,7 @@ Three pointers, three jobs. Do not mix them up:
 
 6. **Answer at a hop.** The human's reply carries `ctx.trace: { path, hop }` when the scrubber is open. Call `paths_get` for that path — it is small — and answer about *that* hop. To point at a place in the order, send `path: { layer_id, path_id, hop }`; the scrubber seeks there paused. Do not replay from 0 to say "here".
 
-7. **Keep it true.** If you change the board (`canvas_delete`, `canvas_update_edge`), the result names `paths_affected`. Fix the path with `paths_update` (steps replace whole) or delete it. `canvas_lint` reports broken hops.
+7. **Keep it true.** If you change the board (`canvas_delete`, `layers_update` with `remove`), the result names `paths_affected`. Fix the path with `paths_update` (steps replace whole) or delete it. `canvas_lint` reports broken hops.
 
 ## Don't
 
