@@ -34,6 +34,7 @@ function boot(id: string): void {
     dropped: {},
     open: {},
     stateView: "scoped",
+    traceOverride: null,
     connected: false,
     send: () => {},
     render: () => {

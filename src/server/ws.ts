@@ -7,7 +7,7 @@ import { clientMessageSchema, type ServerMessage } from "../shared/protocol.js";
 import type { Viewport } from "../shared/types.js";
 import type { Sessions, BoardSession } from "./session.js";
 import * as mutations from "./mutations.js";
-import { createLayer, deleteLayer, updateLayer } from "./layers.js";
+import { createLayer, deleteLayer, openTrace, updateLayer } from "./layers.js";
 import { sessionMode, sessionReply } from "./session-mode.js";
 import type { CaptureBroker } from "./screenshot.js";
 
@@ -148,6 +148,16 @@ export class PanelHub implements CaptureBroker {
         break;
       case "highlight_set":
         session.setHighlight(msg.msg_id);
+        break;
+      case "trace_set":
+        if (msg.path_id) openTrace(session, msg.path_id, { t: msg.t, running: msg.running });
+        else session.setTrace(null);
+        break;
+      case "trace_seek":
+        session.updateTrace({ t: msg.t, running: false });
+        break;
+      case "trace_run":
+        session.updateTrace({ running: msg.running, loop: msg.loop, t: msg.t });
         break;
     }
   }

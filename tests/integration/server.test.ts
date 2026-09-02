@@ -200,13 +200,21 @@ describe("integration", () => {
     const src = sessions.create("Export me");
     const a = mutations.addNode(src, "human", { label: "gateway", kind: "entry", at: [10, 20] }).ids[0]!;
     const b = mutations.addNode(src, "ai", { label: "auth", kind: "service", at: [300, 20], ref: "auth.ts#verify" }).ids[0]!;
-    mutations.addEdge(src, "ai", { from: a, to: b, kind: "async", label: "token" });
+    const e = mutations.addEdge(src, "ai", { from: a, to: b, kind: "async", label: "token" }).ids[0]!;
     mutations.addStroke(src, "human", [[0, 0], [5, 5], [10, 0]]);
     const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
     const imgSrc = store.saveImage(png, "png");
     mutations.addImage(src, "human", { src: imgSrc, natural: [40, 30], at: [500, 500], size: [40, 30] });
     src.updateLayers("ai", "layer A", () => [
-      { id: "L_1", letter: "A", title: "auth path", note: "", nodes: [a, b], author: "ai", paths: [] },
+      {
+        id: "L_1",
+        letter: "A",
+        title: "auth path",
+        note: "",
+        nodes: [a, b],
+        author: "ai",
+        paths: [{ id: "P1", title: "in", steps: [{ edge: e, caption: "token", ref: null }], author: "ai" }],
+      },
     ]);
 
     const exp = await fetch(`http://127.0.0.1:${port}/api/boards/${src.boardId}/export`);
@@ -214,7 +222,9 @@ describe("integration", () => {
     expect(exp.headers.get("content-disposition")).toBe('attachment; filename="export-me.inkwire.json"');
     const file = await exp.json();
     expect(file.format).toBe("inkwire-board");
+    expect(file.version).toBe(2);
     expect(file.nodes).toHaveLength(2);
+    expect(file.layers[0].paths).toHaveLength(1);
     expect(file.assets[imgSrc]).toBe(`data:image/png;base64,${png.toString("base64")}`);
 
     const imp = await fetch(`http://127.0.0.1:${port}/api/boards/import`, {
@@ -245,6 +255,16 @@ describe("integration", () => {
 
     const missing = await fetch(`http://127.0.0.1:${port}/api/boards/b_nope/export`);
     expect(missing.status).toBe(404);
+
+    // A version 1 file predates paths: its layers import with paths: [].
+    const { paths: _paths, ...v1Layer } = file.layers[0];
+    const v1 = await fetch(`http://127.0.0.1:${port}/api/boards/import`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...file, version: 1, layers: [v1Layer] }),
+    });
+    expect(v1.status).toBe(200);
+    expect(sessions.open((await v1.json()).board_id).layers[0]!.paths).toEqual([]);
   });
 
   it("screenshot with a client attached returns the client's PNG", async () => {

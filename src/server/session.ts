@@ -223,6 +223,9 @@ export class BoardSession {
   updateLayers(author: Author, label: string, fn: (layers: Layer[]) => Layer[]): void {
     this.layers = fn(this.layers);
     if (this.focus && !this.layers.some((l) => l.id === this.focus)) this.focus = null;
+    // A trace whose layer or path is gone closes (layers_delete, paths_delete).
+    const tr = this.trace;
+    if (tr && !this.layers.find((l) => l.id === tr.layer_id)?.paths.some((p) => p.id === tr.path_id)) this.trace = null;
     this.addLog(author, label);
     this.schedulePersist();
     this.notify();
@@ -269,7 +272,30 @@ export class BoardSession {
       const msg = this.thread.find((m) => m.id === msgId);
       if (!msg || msg.type !== "claude" || !msg.highlight) throw new Error(`no highlight on message: ${msgId}`);
       this.highlight = { msgId, ...msg.highlight };
+      this.trace = null; // a trace and a highlight never show together
     }
+    this.notify();
+  }
+
+  /** Open or close the pinned trace. A trace is a stronger pointer than a highlight, so it clears it. */
+  setTrace(trace: Trace | null): void {
+    this.trace = trace;
+    if (trace) this.highlight = null;
+    this.notify();
+  }
+
+  /** Play, pause, loop, seek. t is clamped to the path's hop count and started_at restamped so panels re-derive. */
+  updateTrace(patch: { running?: boolean; loop?: boolean; t?: number }): void {
+    const tr = this.trace;
+    if (!tr) throw new Error("no trace is open");
+    const n = this.layers.find((l) => l.id === tr.layer_id)?.paths.find((p) => p.id === tr.path_id)?.steps.length ?? 0;
+    this.trace = {
+      ...tr,
+      running: patch.running ?? tr.running,
+      loop: patch.loop ?? tr.loop,
+      t: Math.min(n, Math.max(0, patch.t ?? tr.t)),
+      started_at: this.now(),
+    };
     this.notify();
   }
 
@@ -337,7 +363,11 @@ export class BoardSession {
 }
 
 export type SendResult =
-  | { status: "reply"; reply: string; ctx: { focus: string | null; selection: string | null; revision: number } }
+  | {
+      status: "reply";
+      reply: string;
+      ctx: { focus: string | null; selection: string | null; trace: { path: string; hop: number } | null; revision: number };
+    }
   | { status: "mode_off"; note: string }
   | { status: "idle" };
 

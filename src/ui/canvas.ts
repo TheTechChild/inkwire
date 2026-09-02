@@ -3,11 +3,13 @@
 // are pointer-events: none. Gestures commit ONE intent, on release.
 import { edgeEndpoints, resizeBox } from "../core/geometry.js";
 import type { Corner } from "../core/geometry.js";
-import { liveMembers, tiers } from "../core/layers.js";
+import { liveMembers, pathsAffected, tiers, traceT } from "../core/layers.js";
+import type { PathBreak } from "../core/layers.js";
 import { edgeLabel, labelPx, lodFor, monoPx, quantizeZoom, wrapText } from "../core/lod.js";
 import type { App, Drag, Tool } from "./app.js";
 import { KIND_META, clampZoom, el, focusLayer, focusedLayer } from "./app.js";
-import type { Box, Point } from "../shared/types.js";
+import type { Box, EdgeEl, Layer, Path, PathStep, Point, Trace } from "../shared/types.js";
+import { toast } from "./panel.js";
 
 const HINTS: Record<Tool, string> = {
   select: "drag a node to move · drag a corner to resize · drag empty space or middle-drag to pan",
@@ -102,9 +104,49 @@ export function setupCanvas(app: App): void {
       app.pendingFrom = null;
       if (app.push?.state.focus) focusLayer(app, null);
       if (app.push?.session.highlight) app.send({ type: "highlight_set", msg_id: null });
+      if (app.push?.session.trace) app.send({ type: "trace_set", path_id: null });
+      endPeek(app);
       app.render();
     }
+    // The trace: ↵ pins a held peek; ← → step the pinned scrubber a hop.
+    const info = traceInfo(app);
+    if (!info) return;
+    if (info.peek && e.key === "Enter") {
+      e.preventDefault();
+      app.send({ type: "trace_set", path_id: info.path.id, t: info.t, running: true });
+      peek = null;
+      toast("scrubber pinned · loop off · esc closes");
+      app.render();
+    } else if (!info.peek && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      e.preventDefault();
+      seek(app, Math.round(info.t) + (e.key === "ArrowRight" ? 1 : -1), true);
+    }
   });
+  // Chip hold and track scrub both release on window: chips are rebuilt on
+  // every render, so nothing may live on the chip element.
+  window.addEventListener("pointermove", (e) => {
+    if (scrub) seek(app, trackT(app, e.clientX), false);
+  });
+  const release = () => {
+    if (scrub) {
+      scrub = false;
+      flushSeek(app);
+    }
+    const h = hold;
+    if (!h) return;
+    window.clearTimeout(h.timer);
+    if (h.fired) {
+      endPeek(app);
+      // The chip's click follows this pointerup synchronously: keep the fired hold in sight for it.
+      setTimeout(() => {
+        if (hold === h) hold = null;
+      }, 0);
+    } else {
+      hold = null;
+    }
+  };
+  window.addEventListener("pointerup", release);
+  window.addEventListener("pointercancel", release);
   // Gotcha 1: the canvas captures the pointer on pointerdown, which would
   // retarget the gesture away from any button inside it. Stop it at the bar.
   el("layerbar").addEventListener("pointerdown", (e) => e.stopPropagation());
@@ -255,6 +297,16 @@ export function setupCanvas(app: App): void {
 function tiersOf(app: App) {
   const state = app.push?.state;
   if (!state) return tiers({ nodes: [], edges: [], strokes: [], images: [], layout: {} }, null, app.rim);
+  // A playing path takes over the tiers: the walk is "in", the rest of its
+  // layer is the rim, everything else blurs — and hit-testing follows.
+  const info = traceInfo(app);
+  if (info) {
+    const members = liveMembers(info.layer, state.graph.nodes);
+    return {
+      node: (id: string) => (info.onPath.has(id) ? "in" : members.has(id) ? "rim" : "out"),
+      edge: (e: EdgeEl) => (info.pathEdges.has(e.id) ? "in" : members.has(e.from) || members.has(e.to) ? "rim" : "out"),
+    };
+  }
   return tiers(
     { nodes: state.graph.nodes, edges: state.graph.edges, strokes: [], images: state.images, layout: state.layout.boxes },
     focusedLayer(app),
@@ -368,8 +420,13 @@ export function renderWorld(app: App): void {
   grid.style.backgroundPosition = `${v.x.toFixed(0)}px ${v.y.toFixed(0)}px`;
 
   el("canvas").style.cursor = app.space ? "grabbing" : app.tool === "select" ? "default" : "crosshair";
+  const info = traceInfo(app);
   el("hint").textContent =
-    app.tool === "arrow" && app.pendingFrom ? "now click the target node" : HINTS[app.tool];
+    info && !info.peek
+      ? `scrubbing ${info.path.id} · ← → step a hop · esc closes`
+      : app.tool === "arrow" && app.pendingFrom
+        ? "now click the target node"
+        : HINTS[app.tool];
 
   const ink = el("inkgroup");
   const edges = el("edgegroup");
@@ -384,9 +441,12 @@ export function renderWorld(app: App): void {
 
   // Layer tiers: every element resolves to in / rim / out; CSS carries the look.
   const t = tiersOf(app);
+  if (info) world.dataset.trace = "on";
+  else delete world.dataset.trace;
   // Highlight: the agent's pointer. Members lift to full strength whatever
   // their tier; everything else dims (never blurs) when the dim pref is on.
-  const hl = app.push?.session.highlight ?? null;
+  // A trace is the stronger pointer: the highlight reads as null while one plays.
+  const hl = info ? null : (app.push?.session.highlight ?? null);
   const hlNodes = new Set(hl?.nodes ?? []);
   const hlEdges = new Set(hl?.edges ?? []);
   world.dataset.hl = hl ? (app.dim ? "dim" : "on") : "";
@@ -419,6 +479,7 @@ export function renderWorld(app: App): void {
     const { p1, p2, mid } = edgeEndpoints(a, b);
     const g = document.createElementNS(SVG_NS, "g");
     g.setAttribute("class", selected ? "edge selected" : "edge");
+    g.dataset.id = e.id;
     const tier = t.edge(e);
     g.dataset.tier = tier;
     const lit = hlEdges.has(e.id);
@@ -432,7 +493,7 @@ export function renderWorld(app: App): void {
     path.setAttribute("marker-end", ai ? "url(#arwai)" : "url(#arw)");
     g.appendChild(path);
 
-    const labelText = tier === "in" || lit ? edgeLabel(e, selected) : "";
+    const labelText = info ? (info.pathEdges.has(e.id) ? edgeLabel(e, selected) : "") : tier === "in" || lit ? edgeLabel(e, selected) : "";
     if (labelText) {
       const text = document.createElementNS(SVG_NS, "text");
       text.setAttribute("x", String(mid[0]));
@@ -507,28 +568,35 @@ export function renderWorld(app: App): void {
     const meta = KIND_META[n.kind] ?? KIND_META.note;
 
     const lit = hlNodes.has(n.id);
+    const walk = info?.onPath.has(n.id) ?? false;
     const div = document.createElement("div");
     div.className = "node-box blueprint";
+    div.dataset.id = n.id;
     div.dataset.kind = n.kind;
     div.dataset.tier = t.node(n.id);
     div.dataset.hl = hlOf(lit);
+    // Walk nodes leave border and shadow to CSS: inline would beat [data-trace].
     Object.assign(div.style, {
       left: `${box[0]}px`,
       top: `${box[1]}px`,
       width: `${box[2]}px`,
       height: `${box[3]}px`,
-      border: lit
+      border: walk
+        ? ""
+        : lit
         ? "2px solid var(--color-accent-600)"
         : selected || pending
           ? "1.5px solid var(--color-accent)"
           : ai
             ? "1.5px dashed var(--color-accent-500)"
             : "1px solid var(--color-divider)",
-      boxShadow: lit
-        ? "0 0 0 4px color-mix(in srgb, var(--color-accent) 28%, transparent), var(--shadow-md)"
-        : selected
-          ? "var(--shadow-md)"
-          : "none",
+      boxShadow: walk
+        ? ""
+        : lit
+          ? "0 0 0 4px color-mix(in srgb, var(--color-accent) 28%, transparent), var(--shadow-md)"
+          : selected
+            ? "var(--shadow-md)"
+            : "none",
     });
     for (const corner of ["tl", "tr", "bl", "br"]) {
       const i = document.createElement("i");
@@ -551,6 +619,8 @@ export function renderWorld(app: App): void {
     if (selected) div.appendChild(resizeHandle());
     nodes.appendChild(div);
   }
+  renderTrace(app);
+  ensureLoop(app);
 }
 
 /**
@@ -573,8 +643,20 @@ function renderLayerBar(app: App): void {
   const state = app.push?.state;
   if (!state) return;
   if (state.layers.length > 0) renderLayerChips(app, bar);
+  const info = traceInfo(app);
+  if (info) renderScrubber(app, bar, info);
+  else lastScrubberPath = "";
+  const focused = focusedLayer(app);
+  if (focused) {
+    const strip = document.createElement("div");
+    strip.className = "focus-strip";
+    strip.innerHTML = `<span class="meta"></span><span class="note"></span>`;
+    (strip.children[0] as HTMLElement).textContent = `${focused.letter} · ${liveMembers(focused, state.graph.nodes).size}`;
+    (strip.children[1] as HTMLElement).textContent = focused.note;
+    bar.appendChild(strip);
+  }
   const hl = app.push?.session.highlight;
-  if (!hl) return;
+  if (!hl || info) return;
   const strip = document.createElement("div");
   strip.className = "hl-strip";
   strip.innerHTML = `<span class="diamond">◆</span><span class="kicker">HIGHLIGHT</span><span class="label"></span><span class="count"></span>`;
@@ -597,15 +679,48 @@ function renderLayerChips(app: App, bar: HTMLElement): void {
   lead.className = "lead";
   lead.textContent = "LAYERS";
   row.appendChild(lead);
+  const playing = traceInfo(app)?.layer.id ?? null;
   for (const layer of state.layers) {
+    const first = layer.paths[0];
     const chip = document.createElement("button");
-    chip.className = layer.id === state.focus ? "layer-chip on" : "layer-chip";
-    chip.title = layer.note;
+    chip.className = "layer-chip" + (layer.id === state.focus ? " on" : "") + (layer.id === playing ? " playing" : "");
+    chip.title = layer.note + (first ? `\n\nclick = focus · hold = peek ${first.id} · ${first.title} · ▸ = open the scrubber` : "");
     chip.innerHTML = `<span class="letter"></span><span class="title"></span><span class="count"></span>`;
     (chip.children[0] as HTMLElement).textContent = layer.letter;
     (chip.children[1] as HTMLElement).textContent = layer.title;
     (chip.children[2] as HTMLElement).textContent = String(liveMembers(layer, state.graph.nodes).size);
-    chip.addEventListener("click", () => focusLayer(app, layer.id));
+    chip.addEventListener("click", () => {
+      if (hold?.fired) return; // a hold that peeked is not a click
+      focusLayer(app, layer.id);
+    });
+    if (first) {
+      // Hold 230 ms → peek the first path; the window pointerup ends it.
+      chip.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0) return;
+        if (hold) window.clearTimeout(hold.timer);
+        const h = { timer: 0, fired: false };
+        h.timer = window.setTimeout(() => {
+          h.fired = true;
+          peek = { layer_id: layer.id, path_id: first.id, at: Date.now() };
+          app.render();
+        }, 230);
+        hold = h;
+      });
+      chip.addEventListener("pointerleave", () => {
+        if (hold?.fired) endPeek(app);
+      });
+      const seg = document.createElement("span");
+      seg.className = "paths";
+      seg.textContent = `▸ ${layer.paths.length}`;
+      seg.title = `open the scrubber on ${first.id} — stays open, no loop`;
+      seg.addEventListener("pointerdown", (e) => e.stopPropagation());
+      seg.addEventListener("pointerup", (e) => e.stopPropagation());
+      seg.addEventListener("click", (e) => {
+        e.stopPropagation();
+        app.send({ type: "trace_set", path_id: first.id });
+      });
+      chip.appendChild(seg);
+    }
     row.appendChild(chip);
   }
   if (focused) {
@@ -616,14 +731,331 @@ function renderLayerChips(app: App, bar: HTMLElement): void {
     row.appendChild(release);
   }
   bar.appendChild(row);
-  if (focused) {
-    const strip = document.createElement("div");
-    strip.className = "focus-strip";
-    strip.innerHTML = `<span class="meta"></span><span class="note"></span>`;
-    (strip.children[0] as HTMLElement).textContent = `${focused.letter} · ${liveMembers(focused, state.graph.nodes).size}`;
-    (strip.children[1] as HTMLElement).textContent = focused.note;
-    bar.appendChild(strip);
+}
+
+// ---------------------------------------------------------------------------
+// The trace (handoff "Paths"). The server holds the pinned trace; every panel
+// derives t from started_at. A peek is this panel's held gesture and never
+// leaves it. Playback is a rAF chain that patches only — never app.render().
+
+let peek: { layer_id: string; path_id: string; at: number } | null = null;
+let hold: { timer: number; fired: boolean } | null = null;
+let scrub = false;
+let seekTimer: number | null = null;
+let seekT: number | null = null;
+let raf = 0;
+let lastScrubberPath = "";
+
+export interface TraceInfo {
+  tr: Trace;
+  peek: boolean;
+  layer: Layer;
+  path: Path;
+  /** The playable prefix: each step with its edge resolved. */
+  steps: (Omit<PathStep, "edge"> & { edge: EdgeEl })[];
+  nodeIds: string[];
+  n: number;
+  nGood: number;
+  broken: PathBreak | null;
+  t: number;
+  i: number;
+  frac: number;
+  /** Advancing right now — the server's flag, minus a non-loop run that reached the end. */
+  running: boolean;
+  reached: Set<string>;
+  current: string | undefined;
+  doneEdges: Set<string>;
+  active: (Omit<PathStep, "edge"> & { edge: EdgeEl }) | null;
+  onPath: Set<string>;
+  pathEdges: Set<string>;
+}
+
+/** A held peek wins; else the server trace with this panel's unacknowledged seek laid over it. */
+function effectiveTrace(app: App): { tr: Trace; peek: boolean } | null {
+  if (peek) return { tr: { layer_id: peek.layer_id, path_id: peek.path_id, running: true, loop: true, t: 0, started_at: peek.at }, peek: true };
+  const tr = app.push?.session.trace;
+  if (!tr) return null;
+  return { tr: app.traceOverride ? { ...tr, ...app.traceOverride } : tr, peek: false };
+}
+
+/** Everything the canvas, the scrubber and the composer derive from the trace's live t. */
+export function traceInfo(app: App): TraceInfo | null {
+  const state = app.push?.state;
+  const eff = effectiveTrace(app);
+  if (!state || !eff) return null;
+  const { tr } = eff;
+  const layer = state.layers.find((l) => l.id === tr.layer_id);
+  const path = layer?.paths.find((p) => p.id === tr.path_id);
+  if (!layer || !path) return null;
+  const byId = new Map(state.graph.edges.map((e) => [e.id, e]));
+  const broken = pathsAffected([layer], state.graph.edges).find((b) => b.path_id === path.id) ?? null;
+  const n = path.steps.length;
+  const nGood = broken ? broken.hop - 1 : n;
+  const steps = path.steps.slice(0, nGood).map((st) => ({ ...st, edge: byId.get(st.edge)! }));
+  const nodeIds = steps.length ? [steps[0]!.edge.from, ...steps.map((st) => st.edge.to)] : [];
+  const t = traceT(tr, nGood, Date.now());
+  const k = Math.floor(t);
+  // The hop shown: the one in flight, the one just completed at an integral t, or the broken one at the end.
+  const i = Math.min(n - 1, broken && t >= nGood ? nGood : t === k && k > 0 ? k - 1 : k);
+  const frac = t >= nGood ? 1 : t - k;
+  return {
+    tr,
+    peek: eff.peek,
+    layer,
+    path,
+    steps,
+    nodeIds,
+    n,
+    nGood,
+    broken,
+    t,
+    i,
+    frac,
+    running: tr.running && (tr.loop || t < nGood),
+    reached: new Set(nodeIds.slice(0, k + 1)),
+    current: nodeIds[Math.min(nodeIds.length - 1, k)],
+    doneEdges: new Set(steps.slice(0, k).map((st) => st.edge.id)),
+    active: frac > 0 && frac < 1 ? (steps[i] ?? null) : null,
+    onPath: new Set(nodeIds),
+    pathEdges: new Set(steps.map((st) => st.edge.id)),
+  };
+}
+
+function endPeek(app: App): void {
+  if (!peek) return;
+  peek = null;
+  app.render();
+}
+
+/** Play / pause the pinned trace from its live position; at the end, play again from 0. */
+export function togglePlay(app: App): void {
+  const info = traceInfo(app);
+  if (!info || info.peek) return;
+  if (info.running) app.send({ type: "trace_run", running: false, t: info.t });
+  else app.send({ type: "trace_run", running: true, t: info.t >= info.nGood ? 0 : info.t });
+}
+
+/** The track position under clientX, in hops. */
+function trackT(app: App, clientX: number): number {
+  const track = document.querySelector<HTMLElement>(".scrubber .track");
+  const info = track && traceInfo(app);
+  if (!track || !info) return 0;
+  const r = track.getBoundingClientRect();
+  return Math.max(0, Math.min(1, (clientX - r.left) / r.width)) * info.nGood;
+}
+
+/** Seek and pause: patch locally at once, tell the server debounced (60 ms) or now. */
+function seek(app: App, t: number, now: boolean): void {
+  const info = traceInfo(app);
+  if (!info || info.peek) return;
+  t = Math.min(info.nGood, Math.max(0, t)); // the server clamps the same way, so its echo matches
+  app.traceOverride = { t, running: false };
+  seekT = t;
+  renderTrace(app);
+  if (seekTimer !== null) window.clearTimeout(seekTimer);
+  seekTimer = null;
+  if (now) flushSeek(app);
+  else seekTimer = window.setTimeout(() => flushSeek(app), 60);
+}
+
+function flushSeek(app: App): void {
+  if (seekTimer !== null) window.clearTimeout(seekTimer);
+  seekTimer = null;
+  if (seekT === null) return;
+  app.send({ type: "trace_seek", t: seekT });
+  seekT = null;
+}
+
+/** Keep a rAF chain alive while the trace advances; each frame patches only. */
+function ensureLoop(app: App): void {
+  const info = traceInfo(app);
+  if (!info?.running) {
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+    return;
   }
+  if (raf) return;
+  const frame = () => {
+    raf = 0;
+    const cur = traceInfo(app);
+    renderTrace(app);
+    if (cur?.running) raf = requestAnimationFrame(frame);
+    else if (cur) app.render(); // reached the end: the play glyph and the LAYERS card flip once
+  };
+  raf = requestAnimationFrame(frame);
+}
+
+/** Patch the walk's data-trace states, the gold front, and the scrubber from the live t. */
+function renderTrace(app: App): void {
+  const info = traceInfo(app);
+  const group = el("tracegroup");
+  group.replaceChildren();
+  if (!info) return;
+  const state = app.push!.state;
+  const nodes = el("nodelayer");
+  const edges = el("edgegroup");
+  for (const id of info.onPath) {
+    const div = nodes.querySelector<HTMLElement>(`[data-id="${id}"]`);
+    if (div) div.dataset.trace = id === info.current ? "current" : info.reached.has(id) ? "reached" : "ahead";
+  }
+  for (const id of info.pathEdges) {
+    const g = edges.querySelector<SVGGElement>(`[data-id="${id}"]`);
+    if (!g) continue;
+    g.dataset.trace = info.doneEdges.has(id)
+      ? "done"
+      : info.active?.edge.id === id
+        ? info.frac >= 0.5
+          ? "active-lit"
+          : "active"
+        : "ahead";
+  }
+  // The gold front: the hop in flight as a dash the length of the progress, a square head at its tip.
+  if (info.active) {
+    const a = boxOf(app, info.active.edge.from);
+    const b = boxOf(app, info.active.edge.to);
+    if (a && b) {
+      const { p1, p2 } = edgeEndpoints(a, b);
+      const L = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", `M ${p1[0].toFixed(1)} ${p1[1].toFixed(1)} L ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", "var(--color-signal)");
+      path.setAttribute("stroke-width", "3");
+      path.setAttribute("stroke-dasharray", `${(L * info.frac).toFixed(1)} ${(L + 20).toFixed(1)}`);
+      const head = document.createElementNS(SVG_NS, "rect");
+      head.setAttribute("x", (p1[0] + (p2[0] - p1[0]) * info.frac - 4.5).toFixed(1));
+      head.setAttribute("y", (p1[1] + (p2[1] - p1[1]) * info.frac - 4.5).toFixed(1));
+      head.setAttribute("width", "9");
+      head.setAttribute("height", "9");
+      head.setAttribute("fill", "var(--color-signal)");
+      head.setAttribute("stroke", "var(--color-bg)");
+      head.setAttribute("stroke-width", "1.5");
+      group.append(path, head);
+    }
+  }
+
+  // The scrubber.
+  const sc = document.querySelector<HTMLElement>(".scrubber");
+  if (!sc) return;
+  const q = <T extends HTMLElement>(sel: string) => sc.querySelector<T>(sel)!;
+  const atEnd = info.t >= info.nGood;
+  q(".play").textContent = info.running ? "❚❚" : atEnd ? "↺" : "▸";
+  q(".play").title = info.running ? "pause" : atEnd ? "play again" : "play";
+  const pct = `${((info.t / info.n) * 100).toFixed(2)}%`;
+  q(".prog").style.width = pct;
+  q(".head").style.left = pct;
+  const k = Math.floor(info.t);
+  for (const tick of sc.querySelectorAll<HTMLElement>(".tick")) {
+    const j = Number(tick.dataset.j);
+    tick.dataset.on = j <= k ? "reached" : "";
+    tick.classList.toggle("cur", j === Math.min(info.nodeIds.length - 1, k));
+  }
+  for (const label of sc.querySelectorAll<HTMLElement>(".tick-label")) {
+    const j = Number(label.dataset.j);
+    label.dataset.on = j === Math.min(info.nodeIds.length - 1, k) ? "cur" : j <= k ? "reached" : "";
+  }
+  for (const hop of sc.querySelectorAll<HTMLElement>(".hop")) {
+    const j = Number(hop.dataset.j);
+    hop.classList.toggle("lit", !hop.classList.contains("broken") && (j < k || (j === info.i && info.frac >= 0.5)));
+  }
+  const st = info.path.steps[info.i]!;
+  const edge = state.graph.edges.find((e) => e.id === st.edge);
+  const label = (id: string) => state.graph.nodes.find((n) => n.id === id)?.label ?? id;
+  q(".cap .kicker").textContent = `HOP ${info.i + 1}/${info.n} · ${st.edge}` + (edge ? ` · ${label(edge.from)} → ${label(edge.to)}` : "");
+  q(".cap .text").textContent =
+    info.broken && info.i === info.broken.hop - 1
+      ? `hop ${info.broken.hop} is broken — ${st.edge} ${info.broken.reason === "edge pruned" ? "no longer exists" : "leaves the layer"}`
+      : st.caption || "no caption on this hop";
+}
+
+/** The timeline across the top of the canvas: three rows, built once per render and patched by renderTrace. */
+function renderScrubber(app: App, bar: HTMLElement, info: TraceInfo): void {
+  const state = app.push!.state;
+  const { tr } = info;
+  const pinned = !info.peek;
+  const sc = document.createElement("div");
+  sc.className = "scrubber" + (info.path.id !== lastScrubberPath ? " mount" : "") + (pinned ? " pinned" : "");
+  lastScrubberPath = info.path.id;
+  sc.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+  const row = document.createElement("div");
+  row.className = "row1";
+  row.innerHTML = `<button class="play"></button><span class="kicker">PATH</span><span class="ref"></span><span class="title"></span><span class="count"></span><span class="note"></span>`;
+  row.querySelector(".play")!.addEventListener("click", () => togglePlay(app));
+  (row.children[2] as HTMLElement).textContent = `${info.layer.letter} · ${info.path.id}`;
+  (row.children[3] as HTMLElement).textContent = info.path.title;
+  (row.children[4] as HTMLElement).textContent = `${info.n} hops · ${info.nodeIds.length} nodes`;
+  (row.children[5] as HTMLElement).textContent = pinned ? "drag to scrub · ← → step" : "peeking · ↵ keeps it open · release to stop";
+  if (pinned) {
+    const loop = document.createElement("button");
+    loop.className = tr.loop ? "loop on" : "loop";
+    loop.textContent = "↻ loop";
+    loop.title = "loop playback";
+    loop.addEventListener("click", () => {
+      const live = traceInfo(app); // t at click time, not at build time
+      if (live) app.send({ type: "trace_run", running: live.tr.running, loop: !live.tr.loop, t: live.t });
+    });
+    const close = document.createElement("button");
+    close.className = "close";
+    close.textContent = "close · esc";
+    close.title = "close the scrubber — esc";
+    close.addEventListener("click", () => app.send({ type: "trace_set", path_id: null }));
+    row.append(loop, close);
+  }
+
+  const track = document.createElement("div");
+  track.className = "track";
+  const slot = 100 / info.n;
+  info.path.steps.forEach((st, j) => {
+    const edge = state.graph.edges.find((e) => e.id === st.edge);
+    const hop = document.createElement("span");
+    hop.className = "hop" + (info.broken && j === info.broken.hop - 1 ? " broken" : "");
+    hop.dataset.j = String(j);
+    hop.style.left = `${(((j + 0.5) / info.n) * 100).toFixed(2)}%`;
+    hop.style.maxWidth = `${(slot * 0.88).toFixed(1)}%`;
+    hop.textContent = edge?.label || st.edge;
+    hop.title = `${st.edge} · ${edge?.label ?? ""}`;
+    track.appendChild(hop);
+  });
+  const base = document.createElement("div");
+  base.className = "base";
+  const prog = document.createElement("div");
+  prog.className = "prog";
+  track.append(base, prog);
+  info.nodeIds.forEach((id, j) => {
+    const node = state.graph.nodes.find((n) => n.id === id);
+    const left = `${((j / info.n) * 100).toFixed(2)}%`;
+    const tick = document.createElement("div");
+    tick.className = "tick";
+    tick.dataset.j = String(j);
+    tick.style.left = left;
+    const label = document.createElement("span");
+    label.className = "tick-label";
+    label.dataset.j = String(j);
+    label.style.left = left;
+    label.style.transform = `translateX(${j === 0 ? "0" : j === info.n ? "-100%" : "-50%"})`;
+    label.style.maxWidth = `${((j === 0 || j === info.n ? slot * 0.46 : slot * 0.92)).toFixed(1)}%`;
+    label.textContent = node?.label ?? id;
+    label.title = `${id} · ${node?.label ?? ""}`;
+    track.append(tick, label);
+  });
+  const head = document.createElement("div");
+  head.className = "head";
+  track.appendChild(head);
+  if (pinned) {
+    track.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      scrub = true;
+      seek(app, trackT(app, e.clientX), false);
+    });
+  }
+
+  const cap = document.createElement("div");
+  cap.className = "cap";
+  cap.innerHTML = `<span class="kicker"></span><span class="text"></span>`;
+
+  sc.append(row, track, cap);
+  bar.appendChild(sc);
 }
 
 function resizeHandle(): DocumentFragment {

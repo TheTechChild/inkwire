@@ -5,6 +5,7 @@ import { nextLetter } from "../core/layers.js";
 import type { ThreadEntry } from "../shared/types.js";
 import type { App } from "./app.js";
 import { el, focusedLayer } from "./app.js";
+import { traceInfo } from "./canvas.js";
 import { fmtTime, toast } from "./panel.js";
 
 type Agent = "off" | "waiting" | "working";
@@ -44,7 +45,7 @@ function send(app: App): void {
     text: app.draft.trim(),
     focus: chips.find((c) => c.key === "focus")?.id ?? null,
     selection: chips.find((c) => c.key === "sel")?.id ?? null,
-    trace: null,
+    trace: ((c) => (c?.id ? { path: c.id, hop: c.hop! } : null))(chips.find((c) => c.key === "trace")),
   });
   app.draft = "";
   app.dropped = {};
@@ -53,10 +54,11 @@ function send(app: App): void {
 }
 
 interface Chip {
-  key: "focus" | "sel" | "rev";
+  key: "focus" | "sel" | "trace" | "rev";
   id: string | null;
   label: string;
   title: string;
+  hop?: number;
 }
 
 /** What the next message sends with: ids only, minus what the human dropped for this draft. */
@@ -74,6 +76,12 @@ function ctxChips(app: App): Chip[] {
     const edge = sel.type === "edge" ? state.graph.edges.find((e) => e.id === sel.id) : undefined;
     if (node) out.push({ key: "sel", id: node.id, label: `${node.id} · ${node.label.slice(0, 22)}`, title: "selected node — sent as an id" });
     if (edge) out.push({ key: "sel", id: edge.id, label: `${edge.id} · ${(edge.label || "edge").slice(0, 22)}`, title: "selected edge — sent as an id" });
+  }
+  // The scrubber's position rides along as ids: the pinned trace only, never a peek.
+  const tr = traceInfo(app);
+  if (tr && !tr.peek && !app.dropped.trace) {
+    const hop = Math.max(1, Math.ceil(tr.t));
+    out.push({ key: "trace", id: tr.path.id, hop, label: `${tr.path.id} · hop ${hop}/${tr.n}`, title: "the scrubber's position — sent as { path, hop }, ids only" });
   }
   out.push({ key: "rev", id: null, label: `rev ${state.graph.revision}`, title: "graph.revision the message is written against" });
   return out;
@@ -122,7 +130,7 @@ export function renderSession(app: App): void {
   // Thread: rebuild only when something in it changed, then scroll to the end.
   const thread = el("thread");
   const entries = s?.thread ?? [];
-  const key = `${entries.length}:${entries.at(-1)?.id ?? ""}:${s?.highlight?.msg_id ?? ""}:${agent}:${JSON.stringify(app.open)}`;
+  const key = `${entries.length}:${entries.at(-1)?.id ?? ""}:${s?.highlight?.msg_id ?? ""}:${s?.trace?.path_id ?? ""}:${agent}:${JSON.stringify(app.open)}`;
   if (key !== threadKey) {
     threadKey = key;
     thread.replaceChildren();
@@ -164,7 +172,7 @@ export function renderSession(app: App): void {
       x.textContent = "✕";
       x.title = "don't send this";
       x.addEventListener("click", () => {
-        app.dropped[c.key as "focus" | "sel"] = true;
+        app.dropped[c.key as "focus" | "sel" | "trace"] = true;
         app.render();
       });
       chip.appendChild(x);
@@ -263,6 +271,23 @@ function messageCard(app: App, m: ThreadEntry): HTMLElement {
       row.appendChild(toLayer);
     }
     div.appendChild(row);
+  }
+
+  if (m.type === "claude" && m.path) {
+    const { path_id, layer_id } = m.path;
+    const layer = app.push?.state.layers.find((l) => l.id === layer_id);
+    const path = layer?.paths.find((p) => p.id === path_id);
+    const active = app.push?.session.trace?.path_id === path_id;
+    const chip = document.createElement("button");
+    chip.className = active ? "path-chip on" : "path-chip";
+    chip.title = path ? "play this path on the canvas — opens the scrubber" : "this path no longer exists";
+    chip.disabled = !path;
+    chip.innerHTML = `<span class="glyph">▸</span><span class="ref"></span><span class="label"></span><span class="count"></span>`;
+    (chip.children[1] as HTMLElement).textContent = `${layer?.letter ?? "?"} · ${path_id}`;
+    (chip.children[2] as HTMLElement).textContent = path?.title ?? "deleted";
+    (chip.children[3] as HTMLElement).textContent = path ? `${path.steps.length} hops` : "";
+    chip.addEventListener("click", () => app.send({ type: "trace_set", path_id: active ? null : path_id }));
+    div.appendChild(chip);
   }
   return div;
 }

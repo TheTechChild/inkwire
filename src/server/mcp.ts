@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { scopeState } from "../core/layers.js";
+import { pathsAffected, scopeState } from "../core/layers.js";
 import { exportMermaid } from "../core/mermaid.js";
 import { toolArgs } from "../shared/schemas.js";
 import { importBoard } from "./board-file.js";
@@ -14,7 +14,7 @@ import type { Screenshots } from "./screenshot.js";
 import * as mutations from "./mutations.js";
 import { validateRef } from "./bindcode.js";
 import { lintBoard } from "./lint.js";
-import { createLayer, deleteLayer, memberCount, updateLayer } from "./layers.js";
+import { createLayer, createPath, deleteLayer, deletePath, getPath, memberCount, openTrace, updateLayer, updatePath } from "./layers.js";
 import { sessionMode, sessionSend } from "./session-mode.js";
 import type { Store } from "./store.js";
 
@@ -103,8 +103,16 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "session.send",
-    "Deliver a reply to the Session tab, optionally pointing at elements. Blocks until the human replies (20 min timeout) and returns their message with focus, selection and revision as ids.",
-    async (args: { board_id?: string; text: string; highlight?: { nodes: string[]; edges: string[]; label: string } }, extra: any) => {
+    "Deliver a reply to the Session tab, optionally pointing at elements or at a path (or a hop on it). Blocks until the human replies (20 min timeout) and returns their message with focus, selection, scrubber position and revision as ids.",
+    async (
+      args: {
+        board_id?: string;
+        text: string;
+        highlight?: { nodes: string[]; edges: string[]; label: string };
+        path?: { layer_id: string; path_id: string; hop?: number };
+      },
+      extra: any,
+    ) => {
       const session = sessions.resolve(args.board_id);
       // Progress keeps Claude Code's idle timer from cutting the wait short.
       const token = extra?._meta?.progressToken;
@@ -266,10 +274,13 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "canvas.delete",
-    "Remove an element by id. Deleting a node also removes its edges — the result reports every id that went.",
+    "Remove an element by id. Deleting a node also removes its edges — the result reports every id that went, and paths_affected names the paths whose walk it broke.",
     (args: { board_id?: string; id: string }) => {
       const session = sessions.resolve(args.board_id);
-      return text(mutations.deleteElement(session, AUTHOR, args.id));
+      const before = new Set(pathsAffected(session.layers, session.collections().edges).map((b) => b.path_id));
+      const result = mutations.deleteElement(session, AUTHOR, args.id);
+      const paths_affected = pathsAffected(session.layers, session.collections().edges).filter((b) => !before.has(b.path_id));
+      return text({ ...result, paths_affected });
     },
   );
 
@@ -333,11 +344,11 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "canvas.lint",
-    `Static checks against the project root (${deps.projectRoot}), no model: refs to missing files (error), refs whose symbol is gone (warn), nodes with neither ref nor endpoint (warn), error edges with no condition (warn), conditions on a node with a single outgoing edge (warn). Run after a refactor to find board rot. For a semantic audit — does the edge really call what it says — read get_state and check the code yourself.`,
+    `Static checks against the project root (${deps.projectRoot}), no model: refs to missing files (error), refs whose symbol is gone (warn), nodes with neither ref nor endpoint (warn), error edges with no condition (warn), conditions on a node with a single outgoing edge (warn), paths with a broken hop or a hop ref that no longer resolves. Run after a refactor to find board rot. For a semantic audit — does the edge really call what it says — read get_state and check the code yourself.`,
     (args: { board_id?: string }) => {
       const session = sessions.resolve(args.board_id);
       const c = session.collections();
-      const findings = lintBoard(deps.projectRoot, c.nodes, c.edges);
+      const findings = lintBoard(deps.projectRoot, c.nodes, c.edges, session.layers);
       return text({
         project_root: deps.projectRoot,
         errors: findings.filter((f) => f.level === "error").length,
@@ -361,7 +372,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "layers.list",
-    "Every layer with its letter, title, member count — and which one the human is looking at.",
+    "Every layer with its letter, title, member count, paths — and which one the human is looking at.",
     (args: { board_id?: string }) => {
       const session = sessions.resolve(args.board_id);
       return text({
@@ -371,6 +382,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
           letter: l.letter,
           title: l.title,
           members: memberCount(session, l),
+          paths: l.paths.map((p) => ({ id: p.id, title: p.title, hops: p.steps.length })),
         })),
       });
     },
@@ -410,6 +422,58 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     (args: { board_id?: string; layer_id: string }) => {
       const session = sessions.resolve(args.board_id);
       return text(deleteLayer(session, AUTHOR, args));
+    },
+  );
+
+  // Step refs are validated like bind_code: a missing file fails, a missing symbol warns.
+  const refWarnings = (steps: { ref?: string | null }[] | undefined): string[] =>
+    (steps ?? []).flatMap((s, i) =>
+      s.ref && validateRef(deps.projectRoot, s.ref).symbol_found === false ? [`hop ${i + 1}: symbol not found in ${s.ref}`] : [],
+    );
+  const withWarnings = <T extends object>(result: T, warnings: string[]) => text(warnings.length ? { ...result, warnings } : result);
+
+  register(
+    "paths.create",
+    "Write an ordered walk on a layer: one hop per edge, each hop's `to` is the next hop's `from`, every edge inside the layer. Pass nodes and the server resolves the edges, naming both when a pair is joined twice. A caption per hop is what the human reads while it plays; a ref per hop is its citation. Fails naming the first hop that breaks the chain.",
+    (args: Parameters<typeof createPath>[2] & { board_id?: string }) => {
+      const session = sessions.resolve(args.board_id);
+      const warnings = refWarnings(args.steps ?? args.refs?.map((ref) => ({ ref })));
+      return withWarnings(createPath(session, AUTHOR, args), warnings);
+    },
+  );
+
+  register(
+    "paths.update",
+    "Retitle, or replace the steps whole. Steps are set as a list, never patched by index.",
+    (args: Parameters<typeof updatePath>[2] & { board_id?: string }) => {
+      const session = sessions.resolve(args.board_id);
+      const warnings = refWarnings(args.steps);
+      return withWarnings(updatePath(session, AUTHOR, args), warnings);
+    },
+  );
+
+  register("paths.delete", "Remove a path. The layer and the board are untouched.", (args: { board_id?: string; path_id: string }) => {
+    const session = sessions.resolve(args.board_id);
+    return text(deletePath(session, AUTHOR, args));
+  });
+
+  register(
+    "paths.get",
+    "One path with its hops resolved: node labels, refs, edge labels, captions. Small — use it to answer about a hop instead of reading the board.",
+    (args: { board_id?: string; path_id: string }) => {
+      const session = sessions.resolve(args.board_id);
+      return text(getPath(session, args));
+    },
+  );
+
+  register(
+    "paths.play",
+    "Open the scrubber on a path in the human's panel: play it once, or pause at a hop. Moves someone else's screen — use when the reply is about the order.",
+    (args: { board_id?: string; path_id: string; hop?: number }) => {
+      const session = sessions.resolve(args.board_id);
+      openTrace(session, args.path_id, { t: args.hop, running: args.hop === undefined });
+      session.addLog(AUTHOR, `paths_play · ${args.path_id}`);
+      return text({ ok: true });
     },
   );
 

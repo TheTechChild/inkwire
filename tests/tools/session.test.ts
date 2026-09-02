@@ -60,9 +60,9 @@ afterAll(async () => {
 });
 
 describe("session_mode", () => {
-  it("lists 28 tools with the two session tools registered", async () => {
+  it("lists 33 tools with the two session tools registered", async () => {
     const names = (await client.listTools()).tools.map((t) => t.name);
-    expect(names).toHaveLength(28);
+    expect(names).toHaveLength(33);
     expect(names).toContain("session_mode");
     expect(names).toContain("session_send");
   });
@@ -141,6 +141,53 @@ describe("session_send", () => {
     const you = session.thread.at(-1)!;
     expect(you.type === "you" && you.ctx.map((c) => c.label)).toEqual([`${b} · db`, `rev ${session.graphRevision}`]);
     expect(sessions.pending).toBeNull();
+  });
+
+  it("a path pins the trace running and wins over the highlight; the reply's scrubber position comes back as ids", async () => {
+    const session = sessions.open(boardId);
+    const c = (await call("canvas_add_node", { label: "cache", kind: "store" })).json().ids[0];
+    await call("canvas_add_edge", { from: a, to: b });
+    await call("canvas_add_edge", { from: b, to: c });
+    await call("canvas_add_edge", { from: c, to: a });
+    const layerId = (await call("layers_create", { node_ids: [a, b, c], title: "loop" })).json().layer_id;
+    expect((await call("paths_create", { layer_id: layerId, title: "round", nodes: [a, b, c, a] })).json().hops).toBe(3);
+
+    const pending = call("session_send", {
+      text: "Follow this.",
+      highlight: { nodes: [a], edges: [], label: "here" },
+      path: { layer_id: layerId, path_id: "P1" },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    const msg = session.thread.at(-1)!;
+    expect(msg).toMatchObject({ type: "claude", text: "Follow this.", path: { layer_id: layerId, path_id: "P1" } });
+    expect(session.trace).toMatchObject({ layer_id: layerId, path_id: "P1", running: true, loop: false, t: 0 });
+    expect(session.highlight).toBeNull();
+
+    sessionReply(sessions, session, { text: "What is this hop?", focus: null, selection: null, trace: { path: "P1", hop: 2 } });
+    const r = (await pending).json();
+    expect(r.ctx).toEqual({ focus: null, selection: null, trace: { path: "P1", hop: 2 }, revision: session.graphRevision });
+    expect(r.warnings).toBeUndefined();
+    const you = session.thread.at(-1)!;
+    expect(you.type === "you" && you.ctx.map((x) => x.label)).toEqual(["P1 · hop 2/3", `rev ${session.graphRevision}`]);
+  });
+
+  it("an unknown path is dropped into warnings with no chip; a reply's hop clamps to the path, an unknown path is null", async () => {
+    const session = sessions.open(boardId);
+    const pending = call("session_send", { text: "Hmm.", path: { layer_id: "L_x", path_id: "P9" } });
+    await new Promise((r) => setTimeout(r, 10));
+    const msg = session.thread.at(-1)!;
+    expect(msg.type === "claude" && msg.path).toBeUndefined();
+    sessionReply(sessions, session, { text: "ok", focus: null, selection: null, trace: { path: "P1", hop: 9 } });
+    const r = (await pending).json();
+    expect(r.warnings).toEqual(["unknown path dropped: P9"]);
+    expect(r.ctx.trace).toEqual({ path: "P1", hop: 3 });
+
+    const again = call("session_send", { text: "Still." });
+    await new Promise((r) => setTimeout(r, 10));
+    sessionReply(sessions, session, { text: "ok", focus: null, selection: null, trace: { path: "P9", hop: 1 } });
+    expect((await again).json().ctx.trace).toBeNull();
+    const you = session.thread.at(-1)!;
+    expect(you.type === "you" && you.ctx.map((x) => x.label)).toEqual([`rev ${session.graphRevision}`]);
   });
 
   it("a reply with nothing pending is rejected", () => {

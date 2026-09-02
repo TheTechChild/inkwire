@@ -9,7 +9,7 @@ yarn install
 yarn build
 ```
 
-Inkwire ships as a Claude Code plugin: the MCP server, a `Stop` hook, and the `/use-inkwire` and `/back-to-claude-code` commands. Install it once; it then loads in every session:
+Inkwire ships as a Claude Code plugin: the MCP server, a `Stop` hook, the `/use-inkwire` and `/back-to-claude-code` commands, and the model-invocable `trace-path` skill. Install it once; it then loads in every session:
 
 ```sh
 claude plugin marketplace add /path/to/inkwire
@@ -41,7 +41,7 @@ Draw with the pen (P), then press **infer_structure** (or ask Claude to run it).
 
 ## Session tab: talking in the panel
 
-Type `/use-inkwire` in the terminal. Claude flips a server-held mode flag, and from then on delivers replies through the blocking `session_send` tool into the panel's SESSION tab, where you answer from the composer. A reply can carry a **highlight**: node and edge ids the canvas lights up. `/back-to-claude-code` (typed, or the button in the strip) brings replies back to the terminal.
+Type `/use-inkwire` in the terminal. Claude flips a server-held mode flag, and from then on delivers replies through the blocking `session_send` tool into the panel's SESSION tab, where you answer from the composer. A reply can carry a **highlight**: node and edge ids the canvas lights up. It can also carry a **path**: an ordered walk over a layer's edges, one caption per hop, that opens the scrubber across the top of the canvas and plays. Hold a layer chip to peek at its first path; click the chip's `▸` to keep the scrubber open and drag through it. The `/trace-path` skill writes one when you ask "walk me through" or "what happens when". `/back-to-claude-code` (typed, or the button in the strip) brings replies back to the terminal.
 
 Two requirements, both checked by the server when the mode goes on, and both covered by the settings above:
 
