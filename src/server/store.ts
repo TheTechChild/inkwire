@@ -128,6 +128,11 @@ export class Store {
       });
   }
 
+  /** Remove a board row; false when no such board. Bitmaps stay (content-addressed, may be shared). */
+  delete(id: string): boolean {
+    return this.db.prepare("DELETE FROM boards WHERE id = ?").run(id).changes > 0;
+  }
+
   /** Store a bitmap by content hash; returns the server-relative URL. */
   saveImage(data: Buffer, ext: "png" | "jpg"): string {
     const hash = createHash("sha256").update(data).digest("hex").slice(0, 16);

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { toolArgs } from "../../src/shared/schemas.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 let client: Client;
@@ -33,11 +34,12 @@ afterAll(async () => {
 });
 
 describe("stdio transport", () => {
-  it("lists all 19 tools over real pipes", async () => {
+  it("lists every tool in toolArgs over real pipes", async () => {
     const tools = await client.listTools();
-    expect(tools.tools).toHaveLength(19);
+    expect(tools.tools).toHaveLength(Object.keys(toolArgs).length);
     const names = tools.tools.map((t) => t.name);
     expect(names).toContain("boards_create");
+    expect(names).toContain("boards_delete");
     expect(names).toContain("canvas_get_state");
     expect(names).toContain("history_get");
   });

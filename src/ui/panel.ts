@@ -39,6 +39,8 @@ const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
   ["boards.list", "Board ids, names, element counts, last touched.", "() → { boards }", null as never],
   ["boards.open", "Make a board current and return its state.", "(board_id) → CanvasState", null as never],
   ["boards.create", "New empty board.", "(name) → { board_id }", null as never],
+  ["boards.delete", "Delete a board permanently.", "(board_id) → { deleted }", null as never],
+  ["boards.import", "Load a downloaded board file from disk into a new board.", "(path) → { board_id }", null as never],
   ["canvas.get_state", "The graph, layout, ink, and history summary — meaning and placement in separate fields.", "(include_ink_geometry?, include_layout?) → CanvasState", (app) => switchTab(app, "state")],
   ["canvas.screenshot", "Pixels of the current viewport, for reading handwriting and layout.", "(viewport?, fit?) → image", (app) => downloadScreenshot(app)],
   ["canvas.infer_structure", "Turn freehand ink into typed nodes and edges.", "(stroke_ids?) → diff", (app) => app.send({ type: "infer" })],
@@ -52,6 +54,7 @@ const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
   ["canvas.annotate", "Pin a comment to an element as a note node.", "(target_id, text)", null as never],
   ["canvas.set_viewport", "Pan and zoom so the human sees what you mean.", "(x, y, zoom)", null as never],
   ["canvas.export_mermaid", "Serialise the graph as text for the transcript.", "() → string", null as never],
+  ["canvas.lint", "Static checks against the project root: missing refs, unbound nodes, edge shape.", "() → findings", null as never],
   ["history.get", "Read the timeline: steps, authors, conflicts. Read-only.", "(limit?) → { head, steps }", null as never],
 ];
 
@@ -554,7 +557,7 @@ function renderFooter(app: App): void {
   const push = app.push;
   const conn = el("conn");
   conn.className = app.connected ? "conn" : "conn off";
-  conn.textContent = app.connected ? "● mcp connected · 17 tools" : "○ reconnecting…";
+  conn.textContent = app.connected ? `● mcp connected · ${MCP_TOOLS.length} tools` : "○ reconnecting…";
   if (push) {
     const s = push.state;
     el("counts").textContent = `${s.graph.nodes.length} nodes · ${s.graph.edges.length} edges · ${s.ink.length} ink`;

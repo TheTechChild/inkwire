@@ -52,7 +52,12 @@ export class PanelHub implements CaptureBroker {
     }
     set.add(socket);
 
-    const unsubscribe = session.onChange(() => this.push(session));
+    const unsubscribe = session.onChange(() => {
+      if (!session.closed) return this.push(session);
+      // Board deleted: drop in-flight intents rather than apply them to a dead session.
+      socket.removeAllListeners("message");
+      socket.close(4010, "board deleted");
+    });
     socket.on("close", () => {
       set.delete(socket);
       unsubscribe();

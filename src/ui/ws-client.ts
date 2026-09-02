@@ -28,7 +28,13 @@ export function connectWs(app: App): void {
       app.render();
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
+      // 4010: board deleted under us. 4004: board not found on reconnect
+      // (deleted while we were disconnected). Either way, stop retrying.
+      if (event.code === 4010 || event.code === 4004) {
+        location.href = "/";
+        return;
+      }
       app.connected = false;
       app.render();
       setTimeout(open, 1000);

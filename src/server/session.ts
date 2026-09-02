@@ -65,6 +65,8 @@ export class BoardSession {
   readonly log: LogEntry[] = [];
   private listeners = new Set<SessionListener>();
   private persistTimer: NodeJS.Timeout | null = null;
+  /** Set by Sessions.delete: no further persistence, so a late flush cannot resurrect the row. */
+  closed = false;
   private deps: Required<Pick<SessionDeps, "now" | "newId" | "debounceMs">> & { store: Store };
 
   constructor(board: StoredBoard, deps: SessionDeps) {
@@ -189,6 +191,14 @@ export class BoardSession {
     this.notify();
   }
 
+  /** Stop persisting and tell listeners; the hub closes the board's sockets. */
+  close(): void {
+    this.closed = true;
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = null;
+    this.notify();
+  }
+
   addLog(author: Author | "server", text: string): void {
     this.log.push({ author, text, at: this.deps.now() });
     if (this.log.length > 200) this.log.shift();
@@ -240,6 +250,7 @@ export class BoardSession {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
     }
+    if (this.closed) return;
     const now = this.deps.now();
     this.meta = { ...this.meta, updated_at: now };
     this.deps.store.save(
@@ -283,6 +294,16 @@ export class Sessions {
       throw new Error("no board is open — call boards.open or pass board_id");
     }
     return this.open(id);
+  }
+
+  /** Delete a board; false when no such row. The row goes first so a store
+   * failure leaves the session untouched rather than half-evicted. */
+  delete(boardId: string): boolean {
+    if (!this.store.delete(boardId)) return false;
+    this.sessions.get(boardId)?.close();
+    this.sessions.delete(boardId);
+    if (this.currentBoardId === boardId) this.currentBoardId = null;
+    return true;
   }
 
   all(): BoardSession[] {

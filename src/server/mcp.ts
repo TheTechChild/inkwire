@@ -74,6 +74,15 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     },
   );
 
+  register(
+    "boards.delete",
+    "Delete a board permanently: its row leaves the database, open panels are disconnected, and the current-board pointer is cleared if it pointed here. Fails if the id does not exist.",
+    (args: { board_id: string }) => {
+      if (!sessions.delete(args.board_id)) throw new Error(`board not found: ${args.board_id}`);
+      return text({ deleted: true, board_id: args.board_id });
+    },
+  );
+
   register("boards.create", "Create an empty board and make it current.", (args: { name: string }) => {
     const session = sessions.create(args.name);
     sessions.currentBoardId = session.boardId;
@@ -127,6 +136,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     async (args: { board_id?: string; viewport?: { x: number; y: number; zoom: number }; fit?: boolean }) => {
       const session = sessions.resolve(args.board_id);
       const shot = await deps.screenshots().capture(session, args.viewport, args.fit ?? false);
+      if (session.closed) throw new Error(`board deleted during capture: ${session.boardId}`);
       return {
         content: [
           {
