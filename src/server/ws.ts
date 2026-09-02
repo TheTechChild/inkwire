@@ -7,7 +7,8 @@ import { clientMessageSchema, type ServerMessage } from "../shared/protocol.js";
 import type { Viewport } from "../shared/types.js";
 import type { Sessions, BoardSession } from "./session.js";
 import * as mutations from "./mutations.js";
-import { deleteLayer, updateLayer } from "./layers.js";
+import { createLayer, deleteLayer, updateLayer } from "./layers.js";
+import { sessionMode, sessionReply } from "./session-mode.js";
 import type { CaptureBroker } from "./screenshot.js";
 
 export class PanelHub implements CaptureBroker {
@@ -16,7 +17,12 @@ export class PanelHub implements CaptureBroker {
   constructor(
     server: Server,
     private sessions: Sessions,
+    private modeDeps: { focusTerminal?: () => void; pluginRoot?: string } = {},
   ) {
+    // Mode, pending, and notice are server-wide: every board's panels redraw the strip.
+    sessions.onChange(() => {
+      for (const s of sessions.all()) if (this.byBoard.get(s.boardId)?.size) this.push(s);
+    });
     const wss = new WebSocketServer({ server, path: "/ws" });
     // ws re-emits the http server's errors (EADDRINUSE included) on the
     // WebSocketServer; without a listener that throws and kills the process
@@ -131,6 +137,18 @@ export class PanelHub implements CaptureBroker {
       case "layers_delete":
         deleteLayer(session, author, msg);
         break;
+      case "layers_create":
+        createLayer(session, author, msg);
+        break;
+      case "session_reply":
+        sessionReply(this.sessions, session, msg);
+        break;
+      case "session_mode_off":
+        sessionMode(this.sessions, false, this.modeDeps);
+        break;
+      case "highlight_set":
+        session.setHighlight(msg.msg_id);
+        break;
     }
   }
 
@@ -139,7 +157,16 @@ export class PanelHub implements CaptureBroker {
       type: "state",
       state: session.state({ includeInkGeometry: true }),
       history: session.historyRows(),
-      log: session.log.slice(-60),
+      session: {
+        mode: this.sessions.mode,
+        pending: this.sessions.pending !== null,
+        pending_board: this.sessions.pending?.boardId ?? null,
+        notice: this.sessions.notice,
+        thread: session.thread,
+        highlight: session.highlight
+          ? { msg_id: session.highlight.msgId, label: session.highlight.label, nodes: session.highlight.nodes, edges: session.highlight.edges }
+          : null,
+      },
     };
     const targets = only ? [only] : [...(this.byBoard.get(session.boardId) ?? [])];
     for (const socket of targets) this.send(socket, message);

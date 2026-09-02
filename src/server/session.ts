@@ -1,6 +1,8 @@
 // BoardSession: the in-memory heart of the server. Owns the history, the
-// cached fold, and the two revision counters. Every mutation — MCP tool or
-// WebSocket intent — goes through mutate(); there is no other write path.
+// cached fold, the two revision counters, and the Session tab's thread and
+// highlight. Every mutation — MCP tool or WebSocket intent — goes through
+// mutate(); there is no other write path. Sessions holds the server-wide
+// session mode and the one blocked session_send.
 import { randomBytes } from "node:crypto";
 import { fold } from "../core/fold.js";
 import {
@@ -20,9 +22,13 @@ import type {
   CanvasState,
   Collections,
   FoldResult,
+  Highlight,
   History,
   Layer,
   MutationResult,
+  SessionMode,
+  ThreadEntry,
+  ThreadInput,
   Viewport,
 } from "../shared/types.js";
 import type { HistoryRow } from "../shared/protocol.js";
@@ -34,12 +40,16 @@ export interface SessionDeps {
   newId?: (prefix: string) => string;
   /** Persistence debounce in ms (SPEC § 7). */
   debounceMs?: number;
+  /** How long session_send waits for the human before returning idle. */
+  sendTimeoutMs?: number;
 }
 
 export interface LogEntry {
   author: Author | "server";
   text: string;
   at: number;
+  /** Monotonic, survives the ring buffer's shift — callers slice by it, never by index. */
+  seq: number;
 }
 
 export interface MutationSpec {
@@ -66,7 +76,14 @@ export class BoardSession {
   layoutRevision = 0;
   private graphFingerprint: string;
   private layoutFingerprint: string;
+  /** Mutation labels. Not shown anywhere on its own any more: the MCP wrapper
+   * reads the entries a tool call produced to caption its thread entry. */
   readonly log: LogEntry[] = [];
+  logSeq = 0;
+  /** The Session tab: messages and MCP calls, time-ordered. In-memory only. */
+  readonly thread: ThreadEntry[] = [];
+  /** The active highlight, shared by every panel like focus. Not persisted. */
+  highlight: ({ msgId: string } & Highlight) | null = null;
   private listeners = new Set<SessionListener>();
   private persistTimer: NodeJS.Timeout | null = null;
   /** Set by Sessions.delete: no further persistence, so a late flush cannot resurrect the row. */
@@ -146,7 +163,10 @@ export class BoardSession {
     });
     this.history = result.history;
     if (result.truncated > 0) {
-      this.addLog("server", `edit behind head discarded ${result.truncated} step(s) ahead`);
+      const note = `edit behind head discarded ${result.truncated} step(s) ahead`;
+      this.addLog("server", note);
+      // The Session tab is the only place the human sees server notes.
+      this.addThread({ type: "call", name: "server", text: note });
     }
     if (result.recorded) this.addLog(spec.author, spec.label);
     const beforeEdgeIds = new Set(before.edges.map((e) => e.id));
@@ -226,8 +246,28 @@ export class BoardSession {
   }
 
   addLog(author: Author | "server", text: string): void {
-    this.log.push({ author, text, at: this.deps.now() });
+    this.log.push({ author, text, at: this.deps.now(), seq: ++this.logSeq });
     if (this.log.length > 200) this.log.shift();
+  }
+
+  addThread(entry: ThreadInput): ThreadEntry {
+    const full = { ...entry, id: this.newId("m"), at: this.deps.now() } as ThreadEntry;
+    this.thread.push(full);
+    if (this.thread.length > 200) this.thread.shift();
+    this.notify();
+    return full;
+  }
+
+  /** Point at a message's highlight, or clear. The same message again clears (a toggle). */
+  setHighlight(msgId: string | null): void {
+    if (msgId === null || this.highlight?.msgId === msgId) {
+      this.highlight = null;
+    } else {
+      const msg = this.thread.find((m) => m.id === msgId);
+      if (!msg || msg.type !== "claude" || !msg.highlight) throw new Error(`no highlight on message: ${msgId}`);
+      this.highlight = { msgId, ...msg.highlight };
+    }
+    this.notify();
   }
 
   state(opts: { includeInkGeometry?: boolean; includeLayout?: boolean } = {}): CanvasState {
@@ -293,12 +333,67 @@ export class BoardSession {
   }
 }
 
-/** All open sessions plus the MCP-side "current board" pointer. */
+export type SendResult =
+  | { status: "reply"; reply: string; ctx: { focus: string | null; selection: string | null; revision: number } }
+  | { status: "mode_off"; note: string }
+  | { status: "idle" };
+
+/** What the Claude Code hook last told us. Proof the plugin is installed. */
+export interface HookReport {
+  permissionMode: string;
+  /** CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS as the hook saw it; "unset" when absent. */
+  autoBackground: string;
+  sessionId: string | null;
+  at: number;
+}
+
+/** All open sessions plus the MCP-side "current board" pointer, and the
+ * server-wide session mode (one Claude Code process talks to one server). */
 export class Sessions {
   private sessions = new Map<string, BoardSession>();
   currentBoardId: string | null = null;
+  mode: SessionMode = "pty";
+  /** Strip body override shown by the panel: a mode-on failure or the idle timeout. */
+  notice: string | null = null;
+  hook: HookReport | null = null;
+  /** The Claude Code session_id that turned the mode on; other sessions' hooks pass through. */
+  boundSession: string | null = null;
+  /** The blocked session_send, if any. */
+  pending: { boardId: string; resolve: (r: SendResult) => void; timer: NodeJS.Timeout } | null = null;
+  /** Consecutive Stop blocks with no session_send in between — the loop ceiling. */
+  blocks = 0;
+  private listeners = new Set<() => void>();
 
   constructor(private store: Store, private deps: Omit<SessionDeps, "store"> = {}) {}
+
+  get sendTimeoutMs(): number {
+    return this.deps.sendTimeoutMs ?? 20 * 60_000;
+  }
+
+  now(): number {
+    return this.deps.now?.() ?? Date.now();
+  }
+
+  /** Mode, pending, or notice changed: every panel on every board re-renders its strip. */
+  onChange(fn: () => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  notify(): void {
+    for (const fn of this.listeners) fn();
+  }
+
+  /** Release the blocked send with a result; no-op when nothing is pending. */
+  resolvePending(result: SendResult): boolean {
+    const p = this.pending;
+    if (!p) return false;
+    clearTimeout(p.timer);
+    this.pending = null;
+    p.resolve(result);
+    this.notify();
+    return true;
+  }
 
   open(boardId: string): BoardSession {
     const existing = this.sessions.get(boardId);
@@ -339,6 +434,15 @@ export class Sessions {
     this.sessions.get(boardId)?.close();
     this.sessions.delete(boardId);
     if (this.currentBoardId === boardId) this.currentBoardId = null;
+    // A send blocked on this board can never be answered: release it and
+    // hand the conversation back to the terminal.
+    if (this.pending?.boardId === boardId) {
+      this.mode = "pty";
+      this.notice = "board deleted · mode pty";
+      this.blocks = 0;
+      this.boundSession = null;
+      this.resolvePending({ status: "idle" });
+    }
     return true;
   }
 

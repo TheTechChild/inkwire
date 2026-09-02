@@ -89,7 +89,7 @@ beforeAll(async () => {
   store = new Store(dataDir);
   sessions = new Sessions(store, { debounceMs: 60 });
   http.server = createHttpServer({ store, sessions, screenshots: () => screenshots });
-  hub = new PanelHub(http.server, sessions);
+  hub = new PanelHub(http.server, sessions, { focusTerminal: () => {} });
   screenshots = new Screenshots(hub, store.imagesDir);
   await new Promise<void>((r) => http.server!.listen(0, "127.0.0.1", () => r()));
   port = (http.server!.address() as AddressInfo).port;
@@ -329,5 +329,53 @@ describe("integration", () => {
     if (lod === "compact") expect(noteLines.length).toBeLessThanOrEqual(3);
     if (lod === "dot") expect(noteLines.length).toBe(1);
     if (lod === "full") expect(noteLines.length).toBeGreaterThan(3);
+  });
+});
+
+describe("session over WS", () => {
+  type StateMsg = Extract<ServerMessage, { type: "state" }>;
+  /** Pushes fan out on every notify, so drain until one satisfies the predicate. */
+  const until = async (c: PanelClient, pred: (s: StateMsg) => boolean): Promise<StateMsg> => {
+    for (let i = 0; i < 60; i++) {
+      const s = await c.nextState();
+      if (pred(s)) return s;
+    }
+    throw new Error("no matching state push");
+  };
+
+  it("a composer reply resolves the blocked send, the highlight reaches every panel, → layer creates a human layer", async () => {
+    const { hookEvent, sessionSend } = await import("../../src/server/session-mode.js");
+    const session = sessions.open(boardId);
+    const n = mutations.addNode(session, "ai", { label: "hot path", kind: "service", at: [0, 0] }).ids[0]!;
+    hookEvent(sessions, { hook_event_name: "PreToolUse", permission_mode: "auto" }, "0");
+    sessions.mode = "inkwire";
+
+    const c1 = await connect(boardId);
+    const c2 = await connect(boardId);
+
+    const pending = sessionSend(sessions, session, { text: "see this", highlight: { label: "here", nodes: [n], edges: [] } });
+    let s = await until(c2, (m) => m.session.pending);
+    expect(s.session.mode).toBe("inkwire");
+    expect(s.session.highlight).toMatchObject({ label: "here", nodes: [n] });
+    expect(s.session.thread.at(-1)).toMatchObject({ type: "claude", text: "see this" });
+
+    c1.send({ type: "session_reply", text: "ok", focus: null, selection: n });
+    const r = await pending;
+    expect(r).toMatchObject({ status: "reply", reply: "ok", ctx: { selection: n } });
+    s = await until(c2, (m) => !m.session.pending);
+    expect(s.session.thread.at(-1)).toMatchObject({ type: "you", text: "ok" });
+
+    c1.send({ type: "highlight_set", msg_id: null });
+    s = await until(c1, (m) => m.session.highlight === null);
+
+    c1.send({ type: "layers_create", node_ids: [n], title: "here", note: "Kept from a highlight." });
+    s = await until(c1, (m) => m.state.layers.some((l) => l.title === "here"));
+    expect(s.state.layers.find((l) => l.title === "here")).toMatchObject({ author: "human", nodes: [n] });
+
+    c1.send({ type: "session_mode_off" });
+    s = await until(c2, (m) => m.session.mode === "pty");
+    expect(c1.messages.filter((m) => m.type === "error")).toEqual([]);
+    await c1.close();
+    await c2.close();
   });
 });

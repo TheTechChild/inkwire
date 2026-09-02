@@ -583,5 +583,58 @@
     "required": [
       "layer_id"
     ]
+  },
+  "session.mode": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "on": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "on"
+    ]
+  },
+  "session.send": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "text": {
+        "type": "string",
+        "minLength": 1
+      },
+      "highlight": {
+        "type": "object",
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "nodes",
+          "edges",
+          "label"
+        ]
+      }
+    },
+    "required": [
+      "text"
+    ]
   }
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Inkwire entry: MCP over stdio + panel HTTP/WS on 127.0.0.1.
 // stdout belongs to the MCP transport — every log goes to stderr.
+import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig } from "./config.js";
 import { Store } from "./store.js";
@@ -17,7 +18,8 @@ async function main(): Promise<void> {
 
   let screenshots: Screenshots;
   const http = createHttpServer({ store, sessions, screenshots: () => screenshots });
-  const hub = new PanelHub(http, sessions);
+  const pluginRoot = fileURLToPath(new URL("../..", import.meta.url)).replace(/\/$/, "");
+  const hub = new PanelHub(http, sessions, { pluginRoot });
   screenshots = new Screenshots(hub, store.imagesDir);
 
   await new Promise<void>((resolve, reject) => {
@@ -46,6 +48,7 @@ async function main(): Promise<void> {
     store,
     screenshots: () => screenshots,
     projectRoot: config.projectRoot,
+    pluginRoot,
     panelUrl: (boardId) => `http://127.0.0.1:${config.port}/?board=${boardId}`,
   });
   const transport = new StdioServerTransport();
