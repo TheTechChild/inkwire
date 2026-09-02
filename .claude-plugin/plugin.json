@@ -1,0 +1,12 @@
+{
+  "name": "inkwire",
+  "version": "0.1.0",
+  "description": "Shared drawing canvas for collaborating visually with Claude Code: the MCP server, the Stop hook, and the /use-inkwire and /back-to-claude-code commands.",
+  "author": { "name": "Clayton Noyes" },
+  "mcpServers": {
+    "inkwire": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/server/index.js"]
+    }
+  }
+}
