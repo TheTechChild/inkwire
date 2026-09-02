@@ -1,7 +1,8 @@
 // Canvas: grid, pan/zoom, the six tools, hit-testing, and world rendering.
 // All hit-testing happens in world coordinates on the container — node divs
 // are pointer-events: none. Gestures commit ONE intent, on release.
-import { edgeEndpoints } from "../core/geometry.js";
+import { edgeEndpoints, resizeBox } from "../core/geometry.js";
+import type { Corner } from "../core/geometry.js";
 import { liveMembers, tiers } from "../core/layers.js";
 import { edgeLabel, labelPx, lodFor, monoPx, quantizeZoom, wrapText } from "../core/lod.js";
 import type { App, Drag, Tool } from "./app.js";
@@ -9,7 +10,7 @@ import { KIND_META, clampZoom, el, focusLayer, focusedLayer } from "./app.js";
 import type { Box, Point } from "../shared/types.js";
 
 const HINTS: Record<Tool, string> = {
-  select: "drag a node to move · drag its corner to resize · drag empty space to pan",
+  select: "drag a node to move · drag a corner to resize · drag empty space or middle-drag to pan",
   pen: "draw freely — structure comes later",
   box: "drag to place a node",
   arrow: "click the source node",
@@ -19,8 +20,9 @@ const HINTS: Record<Tool, string> = {
 
 const MIN_NODE_SIZE: Point = [80, 44];
 const MIN_IMAGE_SIZE: Point = [24, 24];
-/** Resize handle hit zone, in screen px, anchored at the selected box's bottom-right corner. */
+/** Resize handle hit zone, in screen px, around each corner of the selected box. */
 const HANDLE_PX = 14;
+const CORNERS: Corner[] = ["tl", "tr", "bl", "br"];
 
 export function setupCanvas(app: App): void {
   const host = el("canvas");
@@ -46,6 +48,7 @@ export function setupCanvas(app: App): void {
     "wheel",
     (e) => {
       e.preventDefault();
+      if (app.drag?.type === "pan") return; // a wheel tick mid-pan must not zoom
       const r = host.getBoundingClientRect();
       const f = e.deltaY < 0 ? 1.1 : 1 / 1.1;
       const z = clampZoom(app.view.zoom * f);
@@ -117,6 +120,7 @@ export function setupCanvas(app: App): void {
     host.setPointerCapture(e.pointerId);
     const p = toWorld(e);
     if (e.button === 1 || app.space) {
+      e.preventDefault(); // no compat mousedown → no browser middle-click autoscroll
       app.drag = { type: "pan", sx: e.clientX, sy: e.clientY, ox: app.view.x, oy: app.view.y };
       return;
     }
@@ -154,8 +158,8 @@ export function setupCanvas(app: App): void {
       case "select": {
         const handle = hitResizeHandle(app, p);
         if (handle) {
-          const box = boxOf(app, handle)!;
-          app.drag = { type: "resize", id: handle, origin: box, box };
+          const box = boxOf(app, handle.id)!;
+          app.drag = { type: "resize", id: handle.id, corner: handle.corner, origin: box, box };
           break;
         }
         const n = hitNode(app, p);
@@ -184,7 +188,8 @@ export function setupCanvas(app: App): void {
     const d = app.drag;
     if (!d) {
       if (app.tool === "select" && !app.space) {
-        host.style.cursor = hitResizeHandle(app, toWorld(e)) ? "nwse-resize" : "default";
+        const h = hitResizeHandle(app, toWorld(e));
+        host.style.cursor = !h ? "default" : h.corner === "tl" || h.corner === "br" ? "nwse-resize" : "nesw-resize";
       }
       return;
     }
@@ -210,12 +215,7 @@ export function setupCanvas(app: App): void {
       app.render();
     } else if (d.type === "resize") {
       const min = app.push?.state.images.some((i) => i.id === d.id) ? MIN_IMAGE_SIZE : MIN_NODE_SIZE;
-      d.box = [
-        d.origin[0],
-        d.origin[1],
-        Math.max(min[0], Math.round(p[0] - d.origin[0])),
-        Math.max(min[1], Math.round(p[1] - d.origin[1])),
-      ];
+      d.box = resizeBox(d.origin, d.corner, p, min);
       app.render();
     }
   });
@@ -230,7 +230,7 @@ export function setupCanvas(app: App): void {
       app.send({ type: "move", id: d.id, at: d.at });
     } else if (d.type === "resize") {
       const [x, y, w, h] = d.box;
-      if (w !== d.origin[2] || h !== d.origin[3]) app.send({ type: "move", id: d.id, at: [x, y], size: [w, h] });
+      if (d.box.some((v, i) => v !== d.origin[i])) app.send({ type: "move", id: d.id, at: [x, y], size: [w, h] });
     } else if (d.type === "box") {
       const x = Math.min(d.start[0], d.cur[0]);
       const y = Math.min(d.start[1], d.cur[1]);
@@ -243,6 +243,23 @@ export function setupCanvas(app: App): void {
     }
     app.render();
   });
+
+  host.addEventListener("pointercancel", () => {
+    if (app.drag?.type !== "pan") return;
+    app.drag = null;
+    app.render();
+  });
+}
+
+/** Layer tiers for hit-testing and render alike: blurred (rim/out) elements are inert. */
+function tiersOf(app: App) {
+  const state = app.push?.state;
+  if (!state) return tiers({ nodes: [], edges: [], strokes: [], images: [], layout: {} }, null, app.rim);
+  return tiers(
+    { nodes: state.graph.nodes, edges: state.graph.edges, strokes: [], images: state.images, layout: state.layout.boxes },
+    focusedLayer(app),
+    app.rim,
+  );
 }
 
 function boxOf(app: App, id: string): Box | undefined {
@@ -254,24 +271,29 @@ function boxOf(app: App, id: string): Box | undefined {
   return box;
 }
 
-/** The selected node's or image's bottom-right resize handle, if `p` is on it. */
-function hitResizeHandle(app: App, p: Point): string | null {
+/** The selected node's or image's corner resize handle under `p`, if any. */
+function hitResizeHandle(app: App, p: Point): { id: string; corner: Corner } | null {
   const sel = app.sel;
   if (!sel || sel.type === "edge") return null;
   const box = boxOf(app, sel.id);
   if (!box) return null;
   const hs = HANDLE_PX / app.view.zoom;
-  const right = box[0] + box[2];
-  const bottom = box[1] + box[3];
-  const onX = p[0] >= right - hs && p[0] <= right + hs / 2;
-  const onY = p[1] >= bottom - hs && p[1] <= bottom + hs / 2;
-  return onX && onY ? sel.id : null;
+  // Zone reaches hs into the box and hs/2 outside it, per axis.
+  const near = (v: number, edge: number, outward: 1 | -1) =>
+    outward === 1 ? v >= edge - hs && v <= edge + hs / 2 : v >= edge - hs / 2 && v <= edge + hs;
+  for (const corner of CORNERS) {
+    const onX = corner[1] === "l" ? near(p[0], box[0], -1) : near(p[0], box[0] + box[2], 1);
+    const onY = corner[0] === "t" ? near(p[1], box[1], -1) : near(p[1], box[1] + box[3], 1);
+    if (onX && onY) return { id: sel.id, corner };
+  }
+  return null;
 }
 
 function hitNode(app: App, p: Point): string | null {
   const state = app.push?.state;
   if (!state) return null;
-  const ids = [...state.graph.nodes.map((n) => n.id), ...state.images.map((i) => i.id)];
+  const t = tiersOf(app);
+  const ids = [...state.graph.nodes.map((n) => n.id), ...state.images.map((i) => i.id)].filter((id) => t.node(id) === "in");
   for (let i = ids.length - 1; i >= 0; i--) {
     const box = state.layout.boxes[ids[i]!];
     if (box && p[0] >= box[0] && p[0] <= box[0] + box[2] && p[1] >= box[1] && p[1] <= box[1] + box[3]) {
@@ -282,7 +304,9 @@ function hitNode(app: App, p: Point): string | null {
 }
 
 function hitStroke(app: App, p: Point): string | null {
+  const t = tiersOf(app);
   for (const s of app.push?.state.ink ?? []) {
+    if (t.node(s.id) !== "in") continue;
     if (s.geometry?.some((q) => Math.hypot(q[0] - p[0], q[1] - p[1]) < 12)) return s.id;
   }
   return null;
@@ -291,7 +315,9 @@ function hitStroke(app: App, p: Point): string | null {
 function hitEdge(app: App, p: Point): string | null {
   const state = app.push?.state;
   if (!state) return null;
+  const t = tiersOf(app);
   for (const e of state.graph.edges) {
+    if (t.edge(e) !== "in") continue;
     const a = state.layout.boxes[e.from];
     const b = state.layout.boxes[e.to];
     if (!a || !b) continue;
@@ -357,12 +383,7 @@ export function renderWorld(app: App): void {
   if (!state) return;
 
   // Layer tiers: every element resolves to in / rim / out; CSS carries the look.
-  const focused = focusedLayer(app);
-  const t = tiers(
-    { nodes: state.graph.nodes, edges: state.graph.edges, strokes: [], images: state.images, layout: state.layout.boxes },
-    focused,
-    app.rim,
-  );
+  const t = tiersOf(app);
   // Highlight: the agent's pointer. Members lift to full strength whatever
   // their tier; everything else dims (never blurs) when the dim pref is on.
   const hl = app.push?.session.highlight ?? null;
@@ -605,8 +626,12 @@ function renderLayerChips(app: App, bar: HTMLElement): void {
   }
 }
 
-function resizeHandle(): HTMLElement {
-  const h = document.createElement("i");
-  h.className = "resize-handle";
-  return h;
+function resizeHandle(): DocumentFragment {
+  const f = document.createDocumentFragment();
+  for (const corner of CORNERS) {
+    const h = document.createElement("i");
+    h.className = `resize-handle ${corner}`;
+    f.appendChild(h);
+  }
+  return f;
 }

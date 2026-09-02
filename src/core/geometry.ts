@@ -87,3 +87,19 @@ export function edgeEndpoints(fromBox: Box, toBox: Box, gap = 6): { p1: Point; p
   const p2 = clipToBox(toBox, cf, gap);
   return { p1, p2, mid: [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2] };
 }
+
+export type Corner = "tl" | "tr" | "bl" | "br";
+
+/**
+ * Resize `origin` by dragging `corner` to `p`. The opposite corner is the
+ * anchor; width and height never drop below `min`, and when clamped the box
+ * stays pinned to the anchor. Integer output.
+ */
+export function resizeBox(origin: Box, corner: Corner, p: Point, min: Point): Box {
+  const [x, y, w, h] = origin;
+  const left = corner === "tl" || corner === "bl";
+  const top = corner === "tl" || corner === "tr";
+  const nw = Math.max(min[0], Math.round(left ? x + w - p[0] : p[0] - x));
+  const nh = Math.max(min[1], Math.round(top ? y + h - p[1] : p[1] - y));
+  return [left ? x + w - nw : x, top ? y + h - nh : y, nw, nh];
+}
