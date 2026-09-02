@@ -1,6 +1,7 @@
 // Shared UI state + helpers. The server owns board state; this object holds
 // only the view over it (selection, tool, viewport, in-flight gesture).
 import type { ClientIntent, HistoryRow, ServerMessage, SessionPush } from "../shared/protocol.js";
+import type { Corner } from "../core/geometry.js";
 import type { Box, CanvasState, Layer, NodeKind, Point } from "../shared/types.js";
 
 export type Tool = "select" | "pen" | "box" | "arrow" | "text" | "erase";
@@ -17,7 +18,7 @@ export type Drag =
   | { type: "pen"; points: Point[] }
   | { type: "box"; start: Point; cur: Point }
   | { type: "node"; id: string; dx: number; dy: number; at: Point; moved: boolean }
-  | { type: "resize"; id: string; origin: Box; box: Box };
+  | { type: "resize"; id: string; corner: Corner; origin: Box; box: Box };
 
 export interface StatePush {
   state: CanvasState;
