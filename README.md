@@ -16,6 +16,8 @@ claude plugin marketplace add /path/to/inkwire
 claude plugin install inkwire@inkwire
 ```
 
+Adjust `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` to 0 in your `~/.claude/settings.json`
+
 For a one-off run without installing, `claude --plugin-dir /path/to/inkwire` does the same for that session. Tool names carry the plugin prefix: `mcp__plugin_inkwire_inkwire__boards_create`.
 
 The Session tab (below) needs two settings. Put them in `~/.claude/settings.json` to make them permanent, or in the `.claude/settings.json` of the project you use inkwire from:
@@ -27,7 +29,7 @@ The Session tab (below) needs two settings. Put them in `~/.claude/settings.json
 }
 ```
 
-The canvas works without them. This repo's own `.claude/settings.json` already carries both, for dogfooding.
+The canvas works without them. This repo's own `.claude/settings.json` already carries both.
 
 Then ask Claude to create a board (`boards_create`). The tool result contains the panel URL — open it in your browser:
 
