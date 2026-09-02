@@ -44,6 +44,7 @@ function send(app: App): void {
     text: app.draft.trim(),
     focus: chips.find((c) => c.key === "focus")?.id ?? null,
     selection: chips.find((c) => c.key === "sel")?.id ?? null,
+    trace: null,
   });
   app.draft = "";
   app.dropped = {};

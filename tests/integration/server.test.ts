@@ -206,7 +206,7 @@ describe("integration", () => {
     const imgSrc = store.saveImage(png, "png");
     mutations.addImage(src, "human", { src: imgSrc, natural: [40, 30], at: [500, 500], size: [40, 30] });
     src.updateLayers("ai", "layer A", () => [
-      { id: "L_1", letter: "A", title: "auth path", note: "", nodes: [a, b], author: "ai" },
+      { id: "L_1", letter: "A", title: "auth path", note: "", nodes: [a, b], author: "ai", paths: [] },
     ]);
 
     const exp = await fetch(`http://127.0.0.1:${port}/api/boards/${src.boardId}/export`);

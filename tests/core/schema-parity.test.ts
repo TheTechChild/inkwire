@@ -38,7 +38,7 @@ function sampleState(layers: Layer[] = [], focus: string | null = null): CanvasS
 }
 
 function scopedSample(): CanvasState {
-  const layer: Layer = { id: "L_1", letter: "A", title: "one", note: "why", nodes: ["n1"], author: "ai" };
+  const layer: Layer = { id: "L_1", letter: "A", title: "one", note: "why", nodes: ["n1"], author: "ai", paths: [] };
   return scopeState(sampleState([layer], layer.id), layer);
 }
 

@@ -30,6 +30,7 @@ import type {
   ThreadEntry,
   ThreadInput,
   Viewport,
+  Trace,
 } from "../shared/types.js";
 import type { HistoryRow } from "../shared/protocol.js";
 import type { Store, StoredBoard } from "./store.js";
@@ -84,6 +85,8 @@ export class BoardSession {
   readonly thread: ThreadEntry[] = [];
   /** The active highlight, shared by every panel like focus. Not persisted. */
   highlight: ({ msgId: string } & Highlight) | null = null;
+  /** The pinned trace, shared by every panel like focus. Not persisted; the server never ticks t. */
+  trace: Trace | null = null;
   private listeners = new Set<SessionListener>();
   private persistTimer: NodeJS.Timeout | null = null;
   /** Set by Sessions.delete: no further persistence, so a late flush cannot resurrect the row. */

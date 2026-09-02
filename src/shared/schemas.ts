@@ -65,6 +65,19 @@ export const viewportSchema = z.strictObject({
   zoom: z.number().min(0.35).max(2.4),
 });
 
+export const pathStepSchema = z.strictObject({
+  edge: z.string(),
+  caption: z.string().max(160),
+  ref: z.string().nullable(),
+});
+
+export const pathSchema = z.strictObject({
+  id: z.string(),
+  title: z.string().max(24),
+  steps: z.array(pathStepSchema).min(1),
+  author: authorSchema,
+});
+
 export const layerSchema = z.strictObject({
   id: z.string(),
   letter: z.string(),
@@ -72,6 +85,8 @@ export const layerSchema = z.strictObject({
   note: z.string(),
   nodes: z.array(z.string()),
   author: authorSchema,
+  /** Optional on input so v1 board files import; required on output. */
+  paths: z.array(pathSchema).default([]),
 });
 
 export const boundaryEdgeSchema = z.strictObject({
@@ -98,6 +113,7 @@ export const scopeSchema = z.strictObject({
   note: z.string(),
   omitted: z.strictObject({ nodes: z.int().min(0), edges: z.int().min(0) }),
   whole_board: z.literal("canvas_get_board"),
+  paths: z.array(pathSchema),
 });
 
 export const canvasStateSchema = z.strictObject({
@@ -128,6 +144,11 @@ export const canvasStateSchema = z.strictObject({
 // the session-scoped current board applies when omitted.
 
 const boardScoped = { board_id: z.string().optional() };
+const pathStepArg = z.object({
+  edge: z.string(),
+  caption: z.string().max(160).optional(),
+  ref: z.string().nullable().optional(),
+});
 
 export const toolArgs = {
   "boards.list": z.object({}),
@@ -231,6 +252,25 @@ export const toolArgs = {
   }),
   "layers.focus": z.object({ ...boardScoped, layer_id: z.string().nullable() }),
   "layers.delete": z.object({ ...boardScoped, layer_id: z.string() }),
+  "paths.create": z.object({
+    ...boardScoped,
+    layer_id: z.string(),
+    title: z.string(),
+    steps: z.array(pathStepArg).min(1).optional(),
+    nodes: z.array(z.string()).min(2).optional(),
+    captions: z.array(z.string().max(160)).optional(),
+    refs: z.array(z.string().nullable()).optional(),
+    extend_layer: z.boolean().optional(),
+  }),
+  "paths.update": z.object({
+    ...boardScoped,
+    path_id: z.string(),
+    title: z.string().optional(),
+    steps: z.array(pathStepArg).min(1).optional(),
+  }),
+  "paths.delete": z.object({ ...boardScoped, path_id: z.string() }),
+  "paths.get": z.object({ ...boardScoped, path_id: z.string() }),
+  "paths.play": z.object({ ...boardScoped, path_id: z.string(), hop: z.int().min(1).optional() }),
   "session.mode": z.object({ on: z.boolean() }),
   "session.send": z.object({
     ...boardScoped,
@@ -241,6 +281,9 @@ export const toolArgs = {
         edges: z.array(z.string()),
         label: z.string(),
       })
+      .optional(),
+    path: z
+      .object({ layer_id: z.string(), path_id: z.string(), hop: z.int().min(1).optional() })
       .optional(),
   }),
 } as const;

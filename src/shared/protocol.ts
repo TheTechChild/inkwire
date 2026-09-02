@@ -89,10 +89,29 @@ export const clientIntentSchema = z.discriminatedUnion("type", [
     text: z.string().min(1),
     focus: z.string().nullable(),
     selection: z.string().nullable(),
+    /** The scrubber's position, ids only. */
+    trace: z.object({ path: z.string(), hop: z.int().min(1) }).nullable().default(null),
   }),
   z.object({ type: z.literal("session_mode_off") }),
   /** Toggle a message's highlight as the board's active one; null clears. */
   z.object({ type: z.literal("highlight_set"), msg_id: z.string().nullable() }),
+  // The trace. Path ids are board-unique, so the server resolves by path_id alone.
+  /** Open the scrubber pinned on a path (from 0 running unless t/running are given); null closes it. */
+  z.object({
+    type: z.literal("trace_set"),
+    path_id: z.string().nullable(),
+    t: z.number().min(0).optional(),
+    running: z.boolean().optional(),
+  }),
+  /** A scrub: seek and pause. Only the seeking panel writes t. */
+  z.object({ type: z.literal("trace_seek"), t: z.number().min(0) }),
+  /** Play, pause, loop. t carries the panel's local position so the server never ticks. */
+  z.object({
+    type: z.literal("trace_run"),
+    running: z.boolean(),
+    loop: z.boolean().optional(),
+    t: z.number().min(0).optional(),
+  }),
 ]);
 
 export type ClientIntent = z.infer<typeof clientIntentSchema>;
@@ -132,6 +151,8 @@ export interface SessionPush {
   notice: string | null;
   thread: import("./types.js").ThreadEntry[];
   highlight: ({ msg_id: string } & import("./types.js").Highlight) | null;
+  /** The pinned trace, shared by every panel like focus. Peek is panel-local and never here. */
+  trace: import("./types.js").Trace | null;
 }
 
 export type ServerMessage =

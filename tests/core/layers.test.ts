@@ -13,7 +13,7 @@ import {
 import type { CanvasState, Collections, Layer } from "../../src/shared/types.js";
 
 function layer(nodes: string[], over: Partial<Layer> = {}): Layer {
-  return { id: "L_1", letter: "A", title: "t", note: "why", nodes, author: "ai", ...over };
+  return { id: "L_1", letter: "A", title: "t", note: "why", nodes, author: "ai", paths: [], ...over };
 }
 
 // a -> b -> c, d isolated. Layer = {a, b}.

@@ -35,6 +35,12 @@
   --shadow-lg: 0 12px 32px color-mix(in srgb, #2b2b2d 22%, transparent);
 
   --cv-grid: rgba(29, 31, 32, 0.22);
+
+  /* The traversal gold: the one exception to the mono steel palette. Used for
+     exactly one thing — a path's moving front and what it has reached. Mirrors
+     shared/tokens.ts. A chrome colour: borders, strokes, glyphs, 10–12px kickers. */
+  --color-signal: #b8862a;
+  --color-signal-soft: color-mix(in srgb, var(--color-signal) 30%, transparent);
 }
 
 [data-theme="dark"] {
@@ -53,6 +59,8 @@
   --shadow-md: 0 3px 10px rgba(0,0,0,0.55);
   --shadow-lg: 0 12px 32px rgba(0,0,0,0.6);
   --cv-grid: color-mix(in srgb, #e8ebee 20%, transparent);
+  --color-signal: #e8bd5e;
+  --color-signal-soft: color-mix(in srgb, var(--color-signal) 32%, transparent);
 }
 
 *, *::before, *::after { box-sizing: border-box; }

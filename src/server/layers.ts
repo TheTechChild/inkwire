@@ -37,6 +37,7 @@ export function createLayer(
     note: args.note ?? "",
     nodes,
     author,
+    paths: [],
   };
   session.updateLayers(author, `layer ${layer.letter} · ${layer.title}`, (ls) => [...ls, layer]);
   return { layer_id: layer.id, letter: layer.letter, members: nodes.length };

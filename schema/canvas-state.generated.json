@@ -532,6 +532,64 @@
               "human",
               "ai"
             ]
+          },
+          "paths": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string",
+                  "maxLength": 24
+                },
+                "steps": {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "edge": {
+                        "type": "string"
+                      },
+                      "caption": {
+                        "type": "string",
+                        "maxLength": 160
+                      },
+                      "ref": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "edge",
+                      "caption",
+                      "ref"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "author": {
+                  "type": "string",
+                  "enum": [
+                    "human",
+                    "ai"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "title",
+                "steps",
+                "author"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         "required": [
@@ -540,7 +598,8 @@
           "title",
           "note",
           "nodes",
-          "author"
+          "author",
+          "paths"
         ],
         "additionalProperties": false
       }
@@ -589,6 +648,63 @@
         "whole_board": {
           "type": "string",
           "const": "canvas_get_board"
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 24
+              },
+              "steps": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "edge": {
+                      "type": "string"
+                    },
+                    "caption": {
+                      "type": "string",
+                      "maxLength": 160
+                    },
+                    "ref": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "edge",
+                    "caption",
+                    "ref"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "author": {
+                "type": "string",
+                "enum": [
+                  "human",
+                  "ai"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "steps",
+              "author"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [
@@ -597,7 +713,8 @@
         "title",
         "note",
         "omitted",
-        "whole_board"
+        "whole_board",
+        "paths"
       ],
       "additionalProperties": false
     }

@@ -166,6 +166,7 @@ export class PanelHub implements CaptureBroker {
         highlight: session.highlight
           ? { msg_id: session.highlight.msgId, label: session.highlight.label, nodes: session.highlight.nodes, edges: session.highlight.edges }
           : null,
+        trace: session.trace,
       },
     };
     const targets = only ? [only] : [...(this.byBoard.get(session.boardId) ?? [])];

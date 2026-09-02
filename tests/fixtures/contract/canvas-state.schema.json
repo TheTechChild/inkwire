@@ -90,7 +90,7 @@
     "scope": {
       "type": "object",
       "description": "Present only when the read is scoped to a focused layer. omitted is mandatory — counts, not ids.",
-      "required": ["layer_id", "letter", "title", "note", "omitted", "whole_board"],
+      "required": ["layer_id", "letter", "title", "note", "omitted", "whole_board", "paths"],
       "additionalProperties": false,
       "properties": {
         "layer_id": { "type": "string" },
@@ -106,7 +106,12 @@
             "edges": { "type": "integer", "minimum": 0, "description": "Total edges minus internal minus boundary." }
           }
         },
-        "whole_board": { "const": "canvas_get_board", "description": "The tool that returns the whole board regardless of focus." }
+        "whole_board": { "const": "canvas_get_board", "description": "The tool that returns the whole board regardless of focus." },
+        "paths": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/path" },
+          "description": "The focused layer's paths, full steps."
+        }
       }
     }
   },
@@ -207,7 +212,7 @@
     "layer": {
       "type": "object",
       "description": "A named subset of nodes. A view over the board, never a container — deleting one deletes nothing.",
-      "required": ["id", "letter", "title", "note", "nodes", "author"],
+      "required": ["id", "letter", "title", "note", "nodes", "author", "paths"],
       "additionalProperties": false,
       "properties": {
         "id": { "type": "string" },
@@ -219,7 +224,35 @@
           "items": { "type": "string" },
           "description": "Node ids (notes are nodes). Never edges, never ink."
         },
+        "author": { "$ref": "#/$defs/author" },
+        "paths": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/path" },
+          "description": "Ordered walks over the layer's edges. [] for boards that predate paths."
+        }
+      }
+    },
+    "path": {
+      "type": "object",
+      "description": "An ordering over the layer, never a second copy of the graph: edge ids only. Nodes are derived from the edges.",
+      "required": ["id", "title", "steps", "author"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "description": "P1, P2… first unused across the board." },
+        "title": { "type": "string", "maxLength": 24 },
+        "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/pathStep" } },
         "author": { "$ref": "#/$defs/author" }
+      }
+    },
+    "pathStep": {
+      "type": "object",
+      "description": "One hop: an edge inside the layer, the caption the human reads while it plays, and its citation.",
+      "required": ["edge", "caption", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "edge": { "type": "string", "description": "Edge id, internal to the layer." },
+        "caption": { "type": "string", "maxLength": 160, "description": "\"\" when absent." },
+        "ref": { "type": ["string", "null"], "description": "path/to/file.ts:symbol, validated like bind_code." }
       }
     },
     "boundaryEdge": {
