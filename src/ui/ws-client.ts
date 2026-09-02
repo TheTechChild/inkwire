@@ -9,6 +9,7 @@ export function connectWs(app: App): void {
   let queue: ClientIntent[] = [];
   let sentViewport = "";
   let lastFocus: string | null = null;
+  let lastHighlight: string | null = null;
 
   app.send = (intent) => {
     if (socket && socket.readyState === WebSocket.OPEN) {
@@ -45,12 +46,19 @@ export function connectWs(app: App): void {
       const msg: unknown = JSON.parse(String(event.data));
       if (!isServerMessage(msg)) return;
       if (msg.type === "state") {
-        app.push = msg as StatePush & { type: "state" };
+        app.push = msg as unknown as StatePush & { type: "state" };
         // Focus moved (a chip, a digit, or the AI's layers_focus): never keep
         // an element selected that the human can no longer see.
         if (msg.state.focus !== lastFocus) {
           lastFocus = msg.state.focus;
           app.sel = null;
+        }
+        // A highlight set (by the agent or a chip) tells the eye to look past
+        // the selection: the inspector must not keep showing it.
+        const hl = msg.session.highlight?.msg_id ?? null;
+        if (hl !== lastHighlight) {
+          lastHighlight = hl;
+          if (hl) app.sel = null;
         }
         // Adopt the server viewport when someone else moved it (the AI's
         // set_viewport, or another panel) — never mid-gesture, and never

@@ -1,6 +1,6 @@
 // Shared UI state + helpers. The server owns board state; this object holds
 // only the view over it (selection, tool, viewport, in-flight gesture).
-import type { ClientIntent, HistoryRow, LogRow, ServerMessage } from "../shared/protocol.js";
+import type { ClientIntent, HistoryRow, ServerMessage, SessionPush } from "../shared/protocol.js";
 import type { Box, CanvasState, Layer, NodeKind, Point } from "../shared/types.js";
 
 export type Tool = "select" | "pen" | "box" | "arrow" | "text" | "erase";
@@ -22,7 +22,7 @@ export type Drag =
 export interface StatePush {
   state: CanvasState;
   history: HistoryRow[];
-  log: LogRow[];
+  session: SessionPush;
 }
 
 export interface App {
@@ -41,6 +41,12 @@ export interface App {
   panel: { open: boolean; width: number };
   /** Show the rim tier (neighbours of a focused layer). Persisted with the panel prefs. */
   rim: boolean;
+  /** Dim everything outside an active highlight (handoff highlightOutside: dim | none). Persisted. */
+  dim: boolean;
+  /** Session tab, panel-local: the composer draft, chips dropped for this draft, open call rows. */
+  draft: string;
+  dropped: { focus?: true; sel?: true };
+  open: Record<string, boolean>;
   /** Which payload the STATE tab shows while a layer is focused. */
   stateView: "scoped" | "board";
   connected: boolean;

@@ -226,3 +226,33 @@ export interface MutationResult {
 export function emptyCollections(): Collections {
   return { nodes: [], edges: [], strokes: [], images: [], layout: {} };
 }
+
+// ---------------------------------------------------------------------------
+// Session (handoff "Session"): the mode flag, the thread, and highlights.
+// None of this is persisted — it lives with the running server.
+
+/** Where Claude Code's replies go: the terminal, or the Session tab. One flag per server. */
+export type SessionMode = "pty" | "inkwire";
+
+/** An agent-authored, ephemeral pointer at elements. Not a layer, not focus, not selection. */
+export interface Highlight {
+  label: string; // capped at 40 chars
+  nodes: string[];
+  edges: string[]; // explicit ids, never derived
+}
+
+/** Context the human's reply carried, rendered as a chip: "C · double admin hit", "rev 3". */
+export interface CtxChip {
+  label: string;
+  title: string;
+}
+
+export type ThreadEntry =
+  | { id: string; at: number; type: "you"; text: string; ctx: CtxChip[] }
+  | { id: string; at: number; type: "claude"; text: string; highlight?: Highlight }
+  | { id: string; at: number; type: "call"; name: string; text: string; json?: string };
+
+/** A ThreadEntry before the server stamps id and time (Omit distributed over the union). */
+export type ThreadInput = {
+  [K in ThreadEntry["type"]]: Omit<Extract<ThreadEntry, { type: K }>, "id" | "at">;
+}[ThreadEntry["type"]];

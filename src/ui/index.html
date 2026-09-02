@@ -83,7 +83,20 @@
       <div class="seg" id="tabs"></div>
       <div id="panelbody">
         <div class="tabpane" id="pane-layers"></div>
-        <div class="tabpane" id="pane-session" hidden></div>
+        <div class="tabpane session-pane" id="pane-session" hidden>
+          <div class="mode-strip" id="modestrip"></div>
+          <div class="thread" id="thread"></div>
+          <div class="composer" id="composer">
+            <div class="ctx-row" id="ctxrow"></div>
+            <div class="composer-row">
+              <textarea class="input" id="draft" rows="2" placeholder="reply to claude code…"></textarea>
+              <button class="btn btn-primary blueprint" id="btn-send" title="session_send" disabled>
+                <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                send
+              </button>
+            </div>
+          </div>
+        </div>
         <div class="tabpane" id="pane-history" hidden></div>
         <div class="tabpane" id="pane-state" hidden>
           <div class="pane-note" id="statenote"></div>
@@ -97,6 +110,7 @@
 
   <footer>
     <span class="conn off" id="conn">○ connecting…</span>
+    <span id="modenote"></span>
     <span id="counts"></span>
     <span id="zoom"></span>
     <button class="btn btn-ghost" id="btn-resetview">reset view</button>

@@ -76,6 +76,23 @@ export const clientIntentSchema = z.discriminatedUnion("type", [
   /** Rename is the one layer edit the human owns. */
   z.object({ type: z.literal("layers_update"), layer_id: z.string(), title: z.string().optional() }),
   z.object({ type: z.literal("layers_delete"), layer_id: z.string() }),
+  /** "→ layer" on a highlight: the one create the human owns. */
+  z.object({
+    type: z.literal("layers_create"),
+    node_ids: z.array(z.string()).min(1),
+    title: z.string().optional(),
+    note: z.string().optional(),
+  }),
+  // Session tab. Context travels as ids; the server builds the chips.
+  z.object({
+    type: z.literal("session_reply"),
+    text: z.string().min(1),
+    focus: z.string().nullable(),
+    selection: z.string().nullable(),
+  }),
+  z.object({ type: z.literal("session_mode_off") }),
+  /** Toggle a message's highlight as the board's active one; null clears. */
+  z.object({ type: z.literal("highlight_set"), msg_id: z.string().nullable() }),
 ]);
 
 export type ClientIntent = z.infer<typeof clientIntentSchema>;
@@ -104,10 +121,17 @@ export const captureRequestSchema = z.object({
   fit: z.boolean(),
 });
 
-export interface LogRow {
-  author: "human" | "ai" | "server";
-  text: string;
-  at: number;
+/** The Session tab's slice of server state. Mode and pending are per
+ * server; the thread and the highlight belong to the board. */
+export interface SessionPush {
+  mode: import("./types.js").SessionMode;
+  /** A session_send is blocked on the human, and on which board. */
+  pending: boolean;
+  pending_board: string | null;
+  /** Strip body override: a mode-on failure or the idle timeout. */
+  notice: string | null;
+  thread: import("./types.js").ThreadEntry[];
+  highlight: ({ msg_id: string } & import("./types.js").Highlight) | null;
 }
 
 export type ServerMessage =
@@ -116,7 +140,7 @@ export type ServerMessage =
       /** CanvasState with full ink geometry, for rendering. */
       state: import("./types.js").CanvasState;
       history: HistoryRow[];
-      log: LogRow[];
+      session: SessionPush;
     }
   | { type: "error"; text: string }
   | z.infer<typeof captureRequestSchema>;

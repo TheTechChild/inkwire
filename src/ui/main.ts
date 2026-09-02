@@ -2,6 +2,7 @@
 import { connectWs } from "./ws-client.js";
 import { renderWorld, setupCanvas } from "./canvas.js";
 import { loadPanelPrefs, renderPanel, setupPanel } from "./panel.js";
+import { setupSession } from "./session.js";
 import { el, type App } from "./app.js";
 
 const boardId = new URLSearchParams(location.search).get("board");
@@ -13,7 +14,7 @@ if (!boardId) {
 }
 
 function boot(id: string): void {
-  const { rim, ...panel } = loadPanelPrefs();
+  const { rim, dim, ...panel } = loadPanelPrefs();
   const app: App = {
     boardId: id,
     push: null,
@@ -28,6 +29,10 @@ function boot(id: string): void {
     drag: null,
     panel,
     rim,
+    dim,
+    draft: "",
+    dropped: {},
+    open: {},
     stateView: "scoped",
     connected: false,
     send: () => {},
@@ -45,6 +50,7 @@ function boot(id: string): void {
 
   setupCanvas(app);
   setupPanel(app);
+  setupSession(app);
   connectWs(app);
   app.render();
 }

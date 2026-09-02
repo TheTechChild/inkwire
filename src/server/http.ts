@@ -9,6 +9,7 @@ import type { Screenshots } from "./screenshot.js";
 import type { Sessions } from "./session.js";
 import * as mutations from "./mutations.js";
 import { ImportError, exportBoard, exportFilename, importBoard } from "./board-file.js";
+import { hookEvent } from "./session-mode.js";
 
 const uiDir = fileURLToPath(new URL("../../dist/ui/", import.meta.url));
 
@@ -46,6 +47,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HttpDeps)
   if (req.method === "GET" && p === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true, name: "inkwire" }));
+    return;
+  }
+
+  // Claude Code hook forwarder (hooks/forward.sh): the event JSON in, a
+  // plain-text verdict out — "block\n<reason>", "context\n<text>", or "ok".
+  if (req.method === "POST" && p === "/api/hook") {
+    const body = await readBody(req);
+    let input: unknown = {};
+    try {
+      input = JSON.parse(body.toString("utf8") || "{}");
+    } catch {
+      // not JSON — treat as an empty event; the verdict is still "ok"
+    }
+    const verdict = hookEvent(deps.sessions, (input ?? {}) as Record<string, unknown>, url.searchParams.get("bg") ?? "unset");
+    res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    res.end(verdict.block ? `block\n${verdict.block}` : verdict.context ? `context\n${verdict.context}` : "ok");
     return;
   }
 

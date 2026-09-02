@@ -231,6 +231,18 @@ export const toolArgs = {
   }),
   "layers.focus": z.object({ ...boardScoped, layer_id: z.string().nullable() }),
   "layers.delete": z.object({ ...boardScoped, layer_id: z.string() }),
+  "session.mode": z.object({ on: z.boolean() }),
+  "session.send": z.object({
+    ...boardScoped,
+    text: z.string().min(1),
+    highlight: z
+      .object({
+        nodes: z.array(z.string()),
+        edges: z.array(z.string()),
+        label: z.string(),
+      })
+      .optional(),
+  }),
 } as const;
 
 export type ToolName = keyof typeof toolArgs;

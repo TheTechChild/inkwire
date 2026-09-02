@@ -15,6 +15,7 @@ import * as mutations from "./mutations.js";
 import { validateRef } from "./bindcode.js";
 import { lintBoard } from "./lint.js";
 import { createLayer, deleteLayer, memberCount, updateLayer } from "./layers.js";
+import { sessionMode, sessionSend } from "./session-mode.js";
 import type { Store } from "./store.js";
 
 export interface McpDeps {
@@ -23,6 +24,9 @@ export interface McpDeps {
   screenshots: () => Screenshots;
   projectRoot: string;
   panelUrl: (boardId: string) => string;
+  /** Repo root, for the plugin relaunch hint. */
+  pluginRoot?: string;
+  focusTerminal?: () => void;
 }
 
 const AUTHOR = "ai" as const;
@@ -35,32 +39,91 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
   });
 
+  // Every call lands in the current board's thread as a folded "call" row.
+  // Caption: the mutation labels the call produced, else its arguments.
+  // session_send writes its own message and session_mode its own row.
+  const SELF_RECORDING = new Set<string>(["session.send", "session.mode"]);
+  const BIG_RESULTS = new Set<string>(["canvas.get_state", "canvas.get_board", "canvas.screenshot", "boards.open"]);
+  const current = () => (sessions.currentBoardId ? sessions.open(sessions.currentBoardId) : null);
+  const recordCall = (name: string, args: Record<string, unknown>, s0: ReturnType<typeof current>, seq0: number, result: any) => {
+    const s1 = current();
+    if (!s1 || s1.closed) return;
+    const labels = s1 === s0 ? s1.log.filter((l) => l.seq > seq0).map((l) => l.text) : [];
+    const summary = Object.entries(args ?? {})
+      .filter(([k, v]) => v !== undefined && k !== "board_id")
+      .map(([k, v]) => `${k}=${JSON.stringify(v).slice(0, 48)}`)
+      .join(" · ");
+    const body: string = result?.content?.find((c: any) => c.type === "text")?.text ?? "";
+    const json = BIG_RESULTS.has(name) && !result?.isError ? undefined : body.slice(0, 600);
+    s1.addThread({
+      type: "call",
+      name: name.replace(/\./g, "_"),
+      text: labels.join(" · ") || summary || "no arguments",
+      ...(json ? { json } : {}),
+    });
+  };
+
   // The zod shapes vary per tool; the SDK's generics fight a generic shim,
   // so the registration goes through one deliberately untyped seam. Each
   // handler below is still typed on its own args.
   const register = (
     name: keyof typeof toolArgs,
     description: string,
-    handler: (args: any) => Promise<unknown> | unknown,
+    handler: (args: any, extra: any) => Promise<unknown> | unknown,
   ) => {
     server.registerTool(
       name.replace(/\./g, "_"),
       { description, inputSchema: toolArgs[name].shape as any },
-      (async (args: any) => {
+      (async (args: any, extra: any) => {
+        const s0 = current();
+        const seq0 = s0?.logSeq ?? 0;
+        let result: any;
         try {
-          const result = await handler(args);
-          return result ?? text({ ok: true });
+          result = (await handler(args, extra)) ?? text({ ok: true });
         } catch (err) {
-          return {
+          result = {
             content: [
               { type: "text" as const, text: `error: ${err instanceof Error ? err.message : String(err)}` },
             ],
             isError: true,
           };
         }
+        if (!SELF_RECORDING.has(name)) recordCall(name, args, s0, seq0, result);
+        return result;
       }) as any,
     );
   };
+
+  register(
+    "session.mode",
+    "Flip the mode flag the server holds. On: fails unless permission mode is auto; arms the Stop hook that redirects replies into session_send. Off: releases any pending session_send with mode_off.",
+    (args: { on: boolean }) =>
+      text(sessionMode(sessions, args.on, { pluginRoot: deps.pluginRoot, focusTerminal: deps.focusTerminal })),
+  );
+
+  register(
+    "session.send",
+    "Deliver a reply to the Session tab, optionally pointing at elements. Blocks until the human replies (20 min timeout) and returns their message with focus, selection and revision as ids.",
+    async (args: { board_id?: string; text: string; highlight?: { nodes: string[]; edges: string[]; label: string } }, extra: any) => {
+      const session = sessions.resolve(args.board_id);
+      // Progress keeps Claude Code's idle timer from cutting the wait short.
+      const token = extra?._meta?.progressToken;
+      let ticks = 0;
+      const tick = token !== undefined
+        ? setInterval(() => {
+            void extra.sendNotification?.({
+              method: "notifications/progress",
+              params: { progressToken: token, progress: ++ticks, message: "waiting on the human in the inkwire panel" },
+            });
+          }, 30_000)
+        : null;
+      try {
+        return text(await sessionSend(sessions, session, args, extra?.signal));
+      } finally {
+        if (tick) clearInterval(tick);
+      }
+    },
+  );
 
   register("boards.list", "List boards on this server: id, name, node and edge counts, last touched. Call this first in a session.", () =>
     text({ boards: deps.store.list() }),

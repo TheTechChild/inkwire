@@ -16,7 +16,7 @@ Use **yarn** only. Do not use npm or npx.
 - `yarn dev` — server (tsx watch) + panel (esbuild watch). Panel URL: `http://127.0.0.1:4691/?board=<id>`.
 - `yarn gen:schemas` — regenerate `schema/*.generated.json` from the zod contract.
 
-Env: `INKWIRE_PORT` (default 4691), `INKWIRE_DATA_DIR` (default `~/.inkwire`), `INKWIRE_PROJECT_ROOT` (root for `bind_code` refs). To use from Claude Code: `claude mcp add inkwire -- node <repo>/dist/server/index.js` (build first).
+Env: `INKWIRE_PORT` (default 4691), `INKWIRE_DATA_DIR` (default `~/.inkwire`), `INKWIRE_PROJECT_ROOT` (root for `bind_code` refs). To use from Claude Code, the repo is a plugin (build first): `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0 claude --plugin-dir <repo> --permission-mode auto`. The plugin pieces live at the root: `.claude-plugin/plugin.json` (manifest + the MCP server entry), `hooks/hooks.json` + `hooks/forward.sh`, `skills/use-inkwire`, `skills/back-to-claude-code`. `.claude/skills/ship` is a dev-only skill, not part of the plugin.
 
 ## Architecture
 
@@ -34,6 +34,8 @@ Load-bearing rules that are easy to break:
 - **stdout is the MCP transport.** Log to stderr only. The spawned-stdio smoke test (`tests/tools/stdio-smoke.test.ts`) guards this; in-process tests cannot.
 - **MCP tool names use underscores** (`canvas_add_node`) because the tool-name charset forbids dots; the spec's dotted names appear in descriptions only.
 - Node kinds are the five from the spec **plus `state` and `lifeline`** (product decision, 2026-09-01). Sequence-diagram layout is deferred.
+- **Session mode is per server, not per board** (`Sessions.mode`); the thread and the active highlight are per board and, like focus, shared by every panel and never persisted. `src/server/session-mode.ts` owns the flag, the blocking `session_send` (20 min timeout → `idle` and mode off), and the hook endpoint. The hook script `hooks/forward.sh` is a dumb forwarder to `POST /api/hook`; the server records `permission_mode` and `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` from every event, blocks `Stop` while the mode is on (gives up after 3 in a row), and re-injects the instruction on `SessionStart` `compact`. `session_mode(on)` fails unless a hook event has been seen, the mode is `auto`/`bypassPermissions`, and backgrounding is `0`.
+- Every MCP call lands in the current board's thread as a `call` row (the `register` wrapper in `mcp.ts`); `session_send` and `session_mode` write their own rows. The panel folds runs of calls. There is no `/use-inkwire` button in the panel — it is typed in the terminal.
 - v1 is browser-only for the panel: Claude Code cannot render MCP Apps / embedded UI resources (verified 2026-09-01), so tool results carry the panel URL as text. Do not add MCP Apps embedding without a spike on iframe → 127.0.0.1 WebSocket access.
 
 ## Testing notes
