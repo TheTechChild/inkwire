@@ -2,9 +2,10 @@
 // All hit-testing happens in world coordinates on the container — node divs
 // are pointer-events: none. Gestures commit ONE intent, on release.
 import { edgeEndpoints } from "../core/geometry.js";
-import { edgeLabel, lodFor, monoPx, quantizeZoom } from "../core/lod.js";
+import { liveMembers, tiers } from "../core/layers.js";
+import { edgeLabel, labelPx, lodFor, monoPx, quantizeZoom, wrapText } from "../core/lod.js";
 import type { App, Drag, Tool } from "./app.js";
-import { KIND_META, clampZoom, el } from "./app.js";
+import { KIND_META, clampZoom, el, focusLayer, focusedLayer } from "./app.js";
 import type { Box, Point } from "../shared/types.js";
 
 const HINTS: Record<Tool, string> = {
@@ -88,12 +89,21 @@ export function setupCanvas(app: App): void {
       app.render();
     }
     if (e.key === "Delete" || e.key === "Backspace") deleteSelection(app);
+    // Digits focus the nth layer (letters are taken by the tool shortcuts).
+    if (!meta && /^[1-9]$/.test(e.key)) {
+      const layer = app.push?.state.layers[Number(e.key) - 1];
+      if (layer) focusLayer(app, layer.id);
+    }
     if (e.key === "Escape") {
       app.sel = null;
       app.pendingFrom = null;
+      if (app.push?.state.focus) focusLayer(app, null);
       app.render();
     }
   });
+  // Gotcha 1: the canvas captures the pointer on pointerdown, which would
+  // retarget the gesture away from any button inside it. Stop it at the bar.
+  el("layerbar").addEventListener("pointerdown", (e) => e.stopPropagation());
   window.addEventListener("keyup", (e) => {
     if (e.key === " ") {
       app.space = false;
@@ -342,14 +352,24 @@ export function renderWorld(app: App): void {
   edges.replaceChildren();
   preview.replaceChildren();
   nodes.replaceChildren();
+  renderLayerBar(app);
   if (!state) return;
 
+  // Layer tiers: every element resolves to in / rim / out; CSS carries the look.
+  const focused = focusedLayer(app);
+  const t = tiers(
+    { nodes: state.graph.nodes, edges: state.graph.edges, strokes: [], images: state.images, layout: state.layout.boxes },
+    focused,
+    app.rim,
+  );
+
   // Ink (server strokes + the in-flight pen gesture).
-  const strokes: Point[][] = state.ink.map((s) => s.geometry ?? []);
-  if (app.drag?.type === "pen") strokes.push(app.drag.points);
-  for (const pts of strokes) {
+  const strokes: [string, Point[]][] = state.ink.map((s) => [s.id, s.geometry ?? []]);
+  if (app.drag?.type === "pen") strokes.push(["", app.drag.points]);
+  for (const [id, pts] of strokes) {
     if (pts.length < 2) continue;
     const path = document.createElementNS(SVG_NS, "path");
+    path.dataset.tier = t.node(id);
     path.setAttribute("d", "M " + pts.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join(" L "));
     path.setAttribute("fill", "none");
     path.setAttribute("stroke", "var(--color-text)");
@@ -369,6 +389,8 @@ export function renderWorld(app: App): void {
     const { p1, p2, mid } = edgeEndpoints(a, b);
     const g = document.createElementNS(SVG_NS, "g");
     g.setAttribute("class", selected ? "edge selected" : "edge");
+    const tier = t.edge(e);
+    g.dataset.tier = tier;
     const path = document.createElementNS(SVG_NS, "path");
     path.setAttribute("d", `M ${p1[0].toFixed(1)} ${p1[1].toFixed(1)} L ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`);
     path.setAttribute("fill", "none");
@@ -378,7 +400,7 @@ export function renderWorld(app: App): void {
     path.setAttribute("marker-end", ai ? "url(#arwai)" : "url(#arw)");
     g.appendChild(path);
 
-    const labelText = edgeLabel(e, selected);
+    const labelText = tier === "in" ? edgeLabel(e, selected) : "";
     if (labelText) {
       const text = document.createElementNS(SVG_NS, "text");
       text.setAttribute("x", String(mid[0]));
@@ -424,6 +446,7 @@ export function renderWorld(app: App): void {
     if (!box) continue;
     const div = document.createElement("div");
     div.className = "image-box";
+    div.dataset.tier = t.node(img.id);
     if (app.sel?.id === img.id) {
       div.style.outline = "1.5px solid var(--color-accent)";
       div.appendChild(resizeHandle());
@@ -453,6 +476,7 @@ export function renderWorld(app: App): void {
     const div = document.createElement("div");
     div.className = "node-box blueprint";
     div.dataset.kind = n.kind;
+    div.dataset.tier = t.node(n.id);
     Object.assign(div.style, {
       left: `${box[0]}px`,
       top: `${box[1]}px`,
@@ -478,13 +502,68 @@ export function renderWorld(app: App): void {
     (kicker.children[1] as HTMLElement).textContent = ai ? "· claude" : "";
     const label = document.createElement("div");
     label.className = "node-label";
-    label.textContent = n.label;
+    label.textContent = n.kind === "note" ? wrapNote(n.label, box, qz) : n.label;
     const ref = document.createElement("div");
     ref.className = "node-ref";
     ref.textContent = n.endpoint || n.ref || "unbound";
     div.append(kicker, label, ref);
     if (selected) div.appendChild(resizeHandle());
     nodes.appendChild(div);
+  }
+}
+
+/**
+ * Gotcha 2: -webkit-line-clamp never engages in this engine, so note labels
+ * wrap and clamp in JS (core/lod.ts wrapText) — 3 lines at compact, 1 at dot,
+ * as many as the box holds at full. The label is white-space: pre-line.
+ */
+function wrapNote(label: string, box: Box, qz: number): string {
+  const px = labelPx(qz);
+  const lod = lodFor(qz);
+  // ponytail: 0.55em glyph estimate and 1.1 line-height mirror styles.css; measure if fonts change.
+  const maxLines = lod === "compact" ? 3 : lod === "dot" ? 1 : Math.max(1, Math.floor((box[3] - 16) / (px * 1.1)));
+  return wrapText(label, Math.floor((box[2] - 22) / (px * 0.55)), maxLines).join("\n");
+}
+
+/** Chip bar + focus strip over the canvas. Focus itself lives on the server. */
+function renderLayerBar(app: App): void {
+  const bar = el("layerbar");
+  bar.replaceChildren();
+  const state = app.push?.state;
+  if (!state || state.layers.length === 0) return;
+  const focused = focusedLayer(app);
+  const row = document.createElement("div");
+  row.className = "layer-chips";
+  const lead = document.createElement("span");
+  lead.className = "lead";
+  lead.textContent = "LAYERS";
+  row.appendChild(lead);
+  for (const layer of state.layers) {
+    const chip = document.createElement("button");
+    chip.className = layer.id === state.focus ? "layer-chip on" : "layer-chip";
+    chip.title = layer.note;
+    chip.innerHTML = `<span class="letter"></span><span class="title"></span><span class="count"></span>`;
+    (chip.children[0] as HTMLElement).textContent = layer.letter;
+    (chip.children[1] as HTMLElement).textContent = layer.title;
+    (chip.children[2] as HTMLElement).textContent = String(liveMembers(layer, state.graph.nodes).size);
+    chip.addEventListener("click", () => focusLayer(app, layer.id));
+    row.appendChild(chip);
+  }
+  if (focused) {
+    const release = document.createElement("button");
+    release.className = "layer-release";
+    release.textContent = "show all · esc";
+    release.addEventListener("click", () => focusLayer(app, null));
+    row.appendChild(release);
+  }
+  bar.appendChild(row);
+  if (focused) {
+    const strip = document.createElement("div");
+    strip.className = "focus-strip";
+    strip.innerHTML = `<span class="meta"></span><span class="note"></span>`;
+    (strip.children[0] as HTMLElement).textContent = `${focused.letter} · ${liveMembers(focused, state.graph.nodes).size}`;
+    (strip.children[1] as HTMLElement).textContent = focused.note;
+    bar.appendChild(strip);
   }
 }
 

@@ -21,6 +21,7 @@ import type {
   Collections,
   FoldResult,
   History,
+  Layer,
   MutationResult,
   Viewport,
 } from "../shared/types.js";
@@ -56,6 +57,9 @@ export class BoardSession {
   readonly boardId: string;
   meta: BoardMeta;
   viewport: Viewport;
+  layers: Layer[];
+  /** Focused layer id, one per board, shared by every panel like the viewport. Not persisted. */
+  focus: string | null = null;
   history: History;
   private foldCache: FoldResult;
   graphRevision = 0;
@@ -73,6 +77,7 @@ export class BoardSession {
     this.boardId = board.meta.id;
     this.meta = board.meta;
     this.viewport = board.viewport;
+    this.layers = board.layers;
     this.history = { base: board.collections, steps: [], head: 0 };
     this.foldCache = fold(this.history);
     this.graphFingerprint = this.fingerprintGraph();
@@ -191,6 +196,27 @@ export class BoardSession {
     this.notify();
   }
 
+  /** Layers are a view, not history: no step, no revision bump. Persist and notify only. */
+  updateLayers(author: Author, label: string, fn: (layers: Layer[]) => Layer[]): void {
+    this.layers = fn(this.layers);
+    if (this.focus && !this.layers.some((l) => l.id === this.focus)) this.focus = null;
+    this.addLog(author, label);
+    this.schedulePersist();
+    this.notify();
+  }
+
+  setFocus(layerId: string | null, author: Author): void {
+    const layer = layerId === null ? null : this.layers.find((l) => l.id === layerId);
+    if (layer === undefined) throw new Error(`layer not found: ${layerId}`);
+    this.focus = layerId;
+    this.addLog(author, layer ? `focus · ${layer.letter} ${layer.title}` : "release focus");
+    this.notify();
+  }
+
+  focusedLayer(): Layer | null {
+    return this.layers.find((l) => l.id === this.focus) ?? null;
+  }
+
   /** Stop persisting and tell listeners; the hub closes the board's sockets. */
   close(): void {
     this.closed = true;
@@ -212,6 +238,8 @@ export class BoardSession {
       graphRevision: this.graphRevision,
       layoutRevision: this.layoutRevision,
       viewport: this.viewport,
+      layers: this.layers,
+      focus: this.focus,
       ...opts,
     });
   }
@@ -254,7 +282,12 @@ export class BoardSession {
     const now = this.deps.now();
     this.meta = { ...this.meta, updated_at: now };
     this.deps.store.save(
-      { meta: this.meta, collections: this.foldCache.collections, viewport: this.viewport },
+      {
+        meta: this.meta,
+        collections: this.foldCache.collections,
+        viewport: this.viewport,
+        layers: this.layers,
+      },
       now,
     );
   }
@@ -278,7 +311,10 @@ export class Sessions {
   }
 
   /** New board; with `content`, it starts with that content as step 0 (import). */
-  create(name: string, content?: { collections: Collections; viewport: Viewport }): BoardSession {
+  create(
+    name: string,
+    content?: { collections: Collections; viewport: Viewport; layers?: Layer[] },
+  ): BoardSession {
     const now = this.deps.now?.() ?? Date.now();
     const id = `b_${randomBytes(3).toString("hex")}`;
     const stored = this.store.create(id, name, now, content);

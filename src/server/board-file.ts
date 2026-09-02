@@ -38,6 +38,7 @@ export function exportBoard(session: BoardSession, store: Store, now: number): B
     images: c.images,
     layout: c.layout,
     assets,
+    layers: session.layers,
   };
 }
 
@@ -98,5 +99,9 @@ export function importBoard(sessions: Sessions, store: Store, raw: unknown): Boa
   }
 
   const collections: Collections = { nodes, edges, strokes: file.strokes, images, layout };
-  return sessions.create(file.name, { collections, viewport: file.viewport ?? { x: 0, y: 0, zoom: 1 } });
+  return sessions.create(file.name, {
+    collections,
+    viewport: file.viewport ?? { x: 0, y: 0, zoom: 1 },
+    layers: file.layers ?? [],
+  });
 }

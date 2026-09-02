@@ -183,6 +183,8 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
   display: flex; flex-direction: column; justify-content: center; gap: 3px;
   padding: 8px 11px; background: var(--color-bg);
 }
+/* Gotcha 3: counter-scaled text must not lose the flex-shrink fight against fixed node geometry. */
+.node-kicker, .node-label, .node-ref { flex-shrink: 0; }
 .node-kicker {
   display: flex; align-items: center; gap: 6px;
   font-family: var(--font-mono); font-weight: 500; letter-spacing: 0.09em; line-height: 1.2;
@@ -205,13 +207,14 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
 /* dot: no kicker; edge labels only on the selected edge */
 #world[data-lod="dot"] .node-kicker { display: none; }
 #world[data-lod="dot"] .edge:not(.selected) .edge-label, #world[data-lod="dot"] .edge:not(.selected) .edge-label-bg { display: none; }
-/* notes wrap inside the box; lines clamp by tier (full = unclamped) */
+/* notes: canvas.ts wraps and clamps the text in JS (wrapText); lines arrive joined by newlines */
 #world .node-box[data-kind="note"] .node-label {
-  white-space: normal; overflow-wrap: anywhere; overflow: hidden;
-  display: -webkit-box; -webkit-box-orient: vertical;
+  white-space: pre-line; overflow-wrap: anywhere; overflow: hidden; text-overflow: clip;
 }
-#world[data-lod="compact"] .node-box[data-kind="note"] .node-label { -webkit-line-clamp: 3; }
-#world[data-lod="dot"] .node-box[data-kind="note"] .node-label { -webkit-line-clamp: 1; }
+/* layer tiers (handoff "Derived tiers"): presentation only, no transition */
+#world [data-tier="rim"] { opacity: 0.3; filter: blur(1.4px); }
+#world [data-tier="out"] { opacity: 0.28; filter: blur(3px); }
+#world .edge:not([data-tier="in"]) .edge-label, #world .edge:not([data-tier="in"]) .edge-label-bg { display: none; }
 .resize-handle {
   position: absolute; right: -5px; bottom: -5px; width: 9px; height: 9px;
   background: var(--color-accent); border: 1px solid var(--color-bg);
@@ -235,6 +238,33 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
 }
 #toast.error { border-color: #c96a5a; }
 #toast[hidden] { display: none; }
+
+/* — layers: chip bar + focus strip, an overlay across the top of #canvas — */
+#layerbar {
+  position: absolute; left: 0; right: 0; top: 12px; z-index: 2; pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+}
+.layer-chips { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px; max-width: 92%; pointer-events: auto; }
+.layer-chips .lead { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em; color: var(--color-neutral-600); padding-right: 8px; }
+.layer-chip {
+  display: inline-flex; align-items: center; gap: 8px; padding: 5px 11px; cursor: pointer;
+  border: 1px solid var(--color-divider); border-radius: 0; background: var(--color-bg); color: var(--color-text);
+}
+.layer-chip .letter { font-family: var(--font-mono); font-weight: 500; font-size: 11.5px; letter-spacing: 0.06em; }
+.layer-chip .title { font-family: var(--font-heading); font-weight: 600; font-size: 12.5px; letter-spacing: 0.01em; }
+.layer-chip .count { font-family: var(--font-mono); font-size: 10px; color: var(--color-neutral-600); }
+.layer-chip.on { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-bg); }
+.layer-chip.on .count { color: var(--color-bg); }
+.layer-release {
+  padding: 5px 11px; cursor: pointer; border: 1px solid var(--color-divider); border-radius: 0; background: transparent;
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--color-neutral-700);
+}
+.focus-strip {
+  max-width: 620px; padding: 8px 12px; background: var(--color-bg); border: 1px solid var(--color-accent-300);
+  display: flex; gap: 10px; align-items: flex-start;
+}
+.focus-strip .meta { font-family: var(--font-mono); font-weight: 500; font-size: 11px; letter-spacing: 0.1em; color: var(--color-accent-700); flex-shrink: 0; }
+.focus-strip .note { font-size: 12.5px; line-height: 1.45; color: var(--color-neutral-700); text-wrap: pretty; }
 @keyframes flashcap { 0% { opacity: 0 } 12% { opacity: 1 } 100% { opacity: 0 } }
 @keyframes pulsein { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
 
@@ -282,6 +312,17 @@ aside { position: relative; border-left: 1px solid var(--color-divider); display
 .hist-card.ahead { opacity: 0.4; }
 .hist-card.skipped { opacity: 0.5; }
 .hist-card.skipped .row .label { text-decoration: line-through; }
+
+.layer-card { padding: 10px 11px; gap: 7px; }
+.layer-card.on { border-color: var(--color-accent); background: var(--color-accent-100); }
+.layer-card .meta { display: flex; align-items: baseline; gap: 8px; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.09em; color: var(--color-neutral-600); }
+.layer-card .meta .letter { font-size: 12px; font-weight: 500; color: var(--color-accent-700); }
+.layer-card .meta .by { margin-left: auto; }
+.layer-card .input { font-family: var(--font-heading); font-weight: 600; font-size: 14px; }
+.layer-card .note { font-size: 12px; line-height: 1.45; color: var(--color-neutral-700); text-wrap: pretty; }
+.layer-card .actions { display: flex; gap: 8px; align-items: center; }
+.layer-card .actions .btn-secondary { flex: 1; font-size: 12px; }
+.layer-card .actions .btn-ghost { font-family: var(--font-mono); font-size: 10.5px; }
 
 .pane-note { font-family: var(--font-mono); font-size: 10px; line-height: 1.6; letter-spacing: 0.09em; color: var(--color-neutral-600); }
 #statejson {

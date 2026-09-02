@@ -13,11 +13,12 @@ if (!boardId) {
 }
 
 function boot(id: string): void {
+  const { rim, ...panel } = loadPanelPrefs();
   const app: App = {
     boardId: id,
     push: null,
     tool: "select",
-    tab: "session",
+    tab: "layers",
     scope: "all",
     theme: "dark",
     sel: null,
@@ -25,7 +26,9 @@ function boot(id: string): void {
     space: false,
     view: { x: 40, y: 20, zoom: 1 },
     drag: null,
-    panel: loadPanelPrefs(),
+    panel,
+    rim,
+    stateView: "scoped",
     connected: false,
     send: () => {},
     render: () => {

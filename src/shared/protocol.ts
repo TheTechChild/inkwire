@@ -72,6 +72,10 @@ export const clientIntentSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("set_viewport"), viewport: viewportSchema }),
   /** The header's infer_structure action; author is "human" over this transport. */
   z.object({ type: z.literal("infer"), stroke_ids: z.array(z.string()).optional() }),
+  z.object({ type: z.literal("layers_focus"), layer_id: z.string().nullable() }),
+  /** Rename is the one layer edit the human owns. */
+  z.object({ type: z.literal("layers_update"), layer_id: z.string(), title: z.string().optional() }),
+  z.object({ type: z.literal("layers_delete"), layer_id: z.string() }),
 ]);
 
 export type ClientIntent = z.infer<typeof clientIntentSchema>;

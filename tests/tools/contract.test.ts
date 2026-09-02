@@ -16,7 +16,7 @@ import { Store } from "../../src/server/store.js";
 const handoffSchema = JSON.parse(
   readFileSync(
     fileURLToPath(
-      new URL("../../design_handoff_inkwire/schema/canvas-state.schema.json", import.meta.url),
+      new URL("../fixtures/contract/canvas-state.schema.json", import.meta.url),
     ),
     "utf8",
   ),
@@ -283,5 +283,104 @@ describe("tool contracts", () => {
     expect(json().ok).toBe(true);
     const state = await getState();
     expect(state.viewport).toEqual({ x: 10, y: 20, zoom: 1.5 });
+  });
+});
+
+describe("layers", () => {
+  let a: string;
+  let b: string;
+  let c: string;
+  let edgeBC: string;
+
+  beforeAll(async () => {
+    a = (await call("canvas_add_node", { label: "la", kind: "entry", at: [0, 0] })).json().ids[0];
+    b = (await call("canvas_add_node", { label: "lb", kind: "service", at: [300, 0] })).json().ids[0];
+    c = (await call("canvas_add_node", { label: "lc", kind: "store", at: [600, 0] })).json().ids[0];
+    await call("canvas_add_edge", { from: a, to: b });
+    edgeBC = (await call("canvas_add_edge", { from: b, to: c })).json().ids[0];
+  });
+
+  it("create assigns letters A then B, caps the title, and touches neither history nor revisions", async () => {
+    const s0 = await getState();
+    const l1 = (await call("layers_create", { node_ids: [a, b], title: "x".repeat(40), note: "why" })).json();
+    expect(l1).toMatchObject({ letter: "A", members: 2 });
+    const l2 = (await call("layers_create", { node_ids: [a], downstream: true })).json();
+    expect(l2).toMatchObject({ letter: "B", members: 3 }); // a → b → c
+    const list = (await call("layers_list")).json();
+    expect(list.focus).toBeNull();
+    expect(list.layers.map((l: { title: string }) => l.title)).toEqual(["x".repeat(24), "untitled"]);
+    const s1 = await getState();
+    expect(s1.graph.revision).toBe(s0.graph.revision);
+    expect(s1.layout.revision).toBe(s0.layout.revision);
+    expect(s1.history.steps).toBe(s0.history.steps);
+    expect(s1.layers).toHaveLength(2);
+    await call("layers_delete", { layer_id: l2.layer_id });
+  });
+
+  it("focus scopes get_state; get_board and revisions do not move; mutations stay unscoped", async () => {
+    const whole = await getState();
+    const layerId = whole.layers[0].id;
+    expect((await call("layers_focus", { layer_id: layerId })).json()).toEqual({ ok: true });
+
+    const scoped = await getState(); // validates against the handoff schema
+    expect(scoped.focus).toBe(layerId);
+    expect(scoped.scope).toMatchObject({ layer_id: layerId, letter: "A", whole_board: "canvas_get_board" });
+    expect(scoped.graph.nodes.map((n: { id: string }) => n.id).sort()).toEqual([a, b].sort());
+    expect(scoped.graph.edges).toHaveLength(1);
+    expect(scoped.graph.boundary_edges).toEqual([
+      expect.objectContaining({ id: edgeBC, out_of_scope: true, crosses_to: c }),
+    ]);
+    expect(scoped.graph.boundary_nodes).toEqual([{ id: c, label: "lc", kind: "store", stub: true }]);
+    expect(scoped.ink).toEqual([]);
+    expect(scoped.scope.omitted.nodes).toBe(whole.graph.nodes.length - 2);
+    expect(scoped.scope.omitted.edges).toBe(whole.graph.edges.length - 2);
+    expect(Object.keys(scoped.layout.boxes).sort()).toEqual([a, b].sort());
+    expect(scoped.graph.revision).toBe(whole.graph.revision);
+    expect(scoped.layout.revision).toBe(whole.layout.revision);
+    expect(scoped.history.steps).toBe(whole.history.steps);
+
+    const board = (await call("canvas_get_board")).json();
+    expect(board.focus).toBe(layerId);
+    expect(board.scope).toBeUndefined();
+    expect(board.graph.nodes).toHaveLength(whole.graph.nodes.length);
+
+    // Scoping is read-only: an out-of-scope id is still writable.
+    const upd = (await call("canvas_update_node", { node_id: c, label: "lc2" })).json();
+    expect(upd.ok).toBe(true);
+    expect(upd.graph_revision).toBe(whole.graph.revision + 1);
+
+    await call("layers_focus", { layer_id: null });
+    const released = await getState();
+    expect(released.focus).toBeNull();
+    expect(released.scope).toBeUndefined();
+    expect(released.graph.revision).toBe(whole.graph.revision + 1);
+    expect(released.layout.revision).toBe(whole.layout.revision);
+  });
+
+  it("update adds and removes members and rejects unknown node ids; focus rejects unknown layers", async () => {
+    const layerId = (await getState()).layers[0].id;
+    expect((await call("layers_update", { layer_id: layerId, add: [c], remove: [a] })).json()).toEqual({
+      layer_id: layerId,
+      members: 2,
+    });
+    const bad = await call("layers_update", { layer_id: layerId, add: ["n_ghost"] });
+    expect(bad.res.isError).toBe(true);
+    expect(bad.text).toContain("node not found: n_ghost");
+    const badFocus = await call("layers_focus", { layer_id: "L_ghost" });
+    expect(badFocus.res.isError).toBe(true);
+    expect(badFocus.text).toContain("layer not found: L_ghost");
+  });
+
+  it("delete clears focus when focused and leaves the board untouched", async () => {
+    const before = await getState();
+    const layerId = before.layers[0].id;
+    await call("layers_focus", { layer_id: layerId });
+    expect((await call("layers_delete", { layer_id: layerId })).json()).toEqual({ ok: true });
+    const after = await getState();
+    expect(after.focus).toBeNull();
+    expect(after.layers).toHaveLength(0);
+    expect(after.graph.nodes).toHaveLength(before.graph.nodes.length);
+    expect(after.graph.revision).toBe(before.graph.revision);
+    expect(after.history.steps).toBe(before.history.steps);
   });
 });

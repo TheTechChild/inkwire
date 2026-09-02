@@ -99,6 +99,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise<void>((r) => http.server!.close(() => r()));
+  sessions.persistAll(); // flush pending debounce timers before the db goes away
   store.close();
 });
 
@@ -204,6 +205,9 @@ describe("integration", () => {
     const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
     const imgSrc = store.saveImage(png, "png");
     mutations.addImage(src, "human", { src: imgSrc, natural: [40, 30], at: [500, 500], size: [40, 30] });
+    src.updateLayers("ai", "layer A", () => [
+      { id: "L_1", letter: "A", title: "auth path", note: "", nodes: [a, b], author: "ai" },
+    ]);
 
     const exp = await fetch(`http://127.0.0.1:${port}/api/boards/${src.boardId}/export`);
     expect(exp.status).toBe(200);
@@ -226,6 +230,7 @@ describe("integration", () => {
     const dst = sessions.open(created.board_id);
     expect(dst.collections()).toEqual(src.collections());
     expect(dst.viewport).toEqual(src.viewport);
+    expect(dst.layers).toEqual(src.layers);
     expect(dst.history.steps).toHaveLength(0);
     // Persisted: a cold load from the store sees the same content.
     expect(store.load(created.board_id)!.collections).toEqual(src.collections());

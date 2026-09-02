@@ -7,6 +7,7 @@ import type {
   FoldResult,
   History,
   HistorySummary,
+  Layer,
   StrokeSummary,
   Viewport,
 } from "../shared/types.js";
@@ -18,6 +19,8 @@ export interface StateInput {
   graphRevision: number;
   layoutRevision: number;
   viewport: Viewport;
+  layers: Layer[];
+  focus: string | null;
   includeInkGeometry?: boolean;
   includeLayout?: boolean;
 }
@@ -80,5 +83,7 @@ export function buildCanvasState(input: StateInput): CanvasState {
     images: c.images,
     history: historySummary(input.history, input.foldResult),
     viewport: input.viewport,
+    layers: input.layers,
+    focus: input.focus,
   };
 }

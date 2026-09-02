@@ -5,13 +5,14 @@ import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { BoardMeta, Collections, Viewport } from "../shared/types.js";
+import type { BoardMeta, Collections, Layer, Viewport } from "../shared/types.js";
 import { emptyCollections } from "../shared/types.js";
 
 export interface StoredBoard {
   meta: BoardMeta;
   collections: Collections;
   viewport: Viewport;
+  layers: Layer[];
 }
 
 export interface BoardListing {
@@ -44,8 +45,15 @@ export class Store {
       layout      TEXT NOT NULL,
       ink         TEXT NOT NULL,
       images      TEXT NOT NULL,
-      viewport    TEXT NOT NULL
+      viewport    TEXT NOT NULL,
+      layers      TEXT NOT NULL DEFAULT '[]'
     )`);
+    // Migration for rows created before layers existed; "duplicate column" is the steady state.
+    try {
+      this.db.exec("ALTER TABLE boards ADD COLUMN layers TEXT NOT NULL DEFAULT '[]'");
+    } catch {
+      /* column already exists */
+    }
   }
 
   list(): BoardListing[] {
@@ -88,6 +96,7 @@ export class Store {
         layout: layout.boxes,
       },
       viewport: JSON.parse(row.viewport as string),
+      layers: JSON.parse((row.layers as string | undefined) ?? "[]"),
     };
   }
 
@@ -95,12 +104,13 @@ export class Store {
     id: string,
     name: string,
     now: number,
-    content?: { collections: Collections; viewport: Viewport },
+    content?: { collections: Collections; viewport: Viewport; layers?: Layer[] },
   ): StoredBoard {
     const board: StoredBoard = {
       meta: { id, name, created_at: now, updated_at: now },
       collections: content?.collections ?? emptyCollections(),
       viewport: content?.viewport ?? DEFAULT_VIEWPORT,
+      layers: content?.layers ?? [],
     };
     this.save(board, now);
     return board;
@@ -109,11 +119,11 @@ export class Store {
   save(board: StoredBoard, now: number): void {
     this.db
       .prepare(
-        `INSERT INTO boards (id, name, created_at, updated_at, graph, layout, ink, images, viewport)
-         VALUES (@id, @name, @created_at, @updated_at, @graph, @layout, @ink, @images, @viewport)
+        `INSERT INTO boards (id, name, created_at, updated_at, graph, layout, ink, images, viewport, layers)
+         VALUES (@id, @name, @created_at, @updated_at, @graph, @layout, @ink, @images, @viewport, @layers)
          ON CONFLICT(id) DO UPDATE SET
            name = @name, updated_at = @updated_at, graph = @graph, layout = @layout,
-           ink = @ink, images = @images, viewport = @viewport`,
+           ink = @ink, images = @images, viewport = @viewport, layers = @layers`,
       )
       .run({
         id: board.meta.id,
@@ -125,6 +135,7 @@ export class Store {
         ink: JSON.stringify(board.collections.strokes),
         images: JSON.stringify(board.collections.images),
         viewport: JSON.stringify(board.viewport),
+        layers: JSON.stringify(board.layers),
       });
   }
 

@@ -7,6 +7,7 @@ import {
   boxSchema,
   edgeSchema,
   imageSchema,
+  layerSchema,
   nodeSchema,
   pointSchema,
   viewportSchema,
@@ -30,6 +31,7 @@ export const boardFileSchema = z.object({
   layout: z.record(z.string(), boxSchema),
   /** Bitmaps for images[].src, keyed by that src, as base64 data: URIs. */
   assets: z.record(z.string(), z.string()).optional(),
+  layers: z.array(layerSchema).optional(),
 });
 
 export type BoardFile = z.infer<typeof boardFileSchema>;

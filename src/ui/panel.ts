@@ -2,7 +2,8 @@
 import { captureBoard } from "./capture.js";
 import { deleteSelection } from "./canvas.js";
 import type { App, Scope, Tab, Tool } from "./app.js";
-import { KIND_META, el } from "./app.js";
+import { KIND_META, el, focusLayer, focusedLayer } from "./app.js";
+import { liveMembers, scopeState } from "../core/layers.js";
 import { NODE_KINDS, EDGE_KINDS } from "../shared/types.js";
 
 const TOOLS: [Tool, string, string][] = [
@@ -15,6 +16,7 @@ const TOOLS: [Tool, string, string][] = [
 ];
 
 const TABS: [Tab, string][] = [
+  ["layers", "LAYERS"],
   ["session", "SESSION"],
   ["history", "HISTORY"],
   ["state", "STATE"],
@@ -41,7 +43,8 @@ const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
   ["boards.create", "New empty board.", "(name) → { board_id }", null as never],
   ["boards.delete", "Delete a board permanently.", "(board_id) → { deleted }", null as never],
   ["boards.import", "Load a downloaded board file from disk into a new board.", "(path) → { board_id }", null as never],
-  ["canvas.get_state", "The graph, layout, ink, and history summary — meaning and placement in separate fields.", "(include_ink_geometry?, include_layout?) → CanvasState", (app) => switchTab(app, "state")],
+  ["canvas.get_state", "What the human is looking at right now — only the focused layer, with its seams and what it omitted.", "(include_ink_geometry?, include_layout?) → CanvasState", (app) => { app.stateView = "scoped"; switchTab(app, "state"); }],
+  ["canvas.get_board", "The whole board regardless of focus, plus layers[] and focus.", "(include_layout?) → CanvasState", (app) => { app.stateView = "board"; switchTab(app, "state"); }],
   ["canvas.screenshot", "Pixels of the current viewport, for reading handwriting and layout.", "(viewport?, fit?) → image", (app) => downloadScreenshot(app)],
   ["canvas.infer_structure", "Turn freehand ink into typed nodes and edges.", "(stroke_ids?) → diff", (app) => app.send({ type: "infer" })],
   ["canvas.add_node", "Place a node on the shared board.", "(label, kind, at?, size?) → id", null as never],
@@ -56,29 +59,34 @@ const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
   ["canvas.export_mermaid", "Serialise the graph as text for the transcript.", "() → string", null as never],
   ["canvas.lint", "Static checks against the project root: missing refs, unbound nodes, edge shape.", "() → findings", null as never],
   ["history.get", "Read the timeline: steps, authors, conflicts. Read-only.", "(limit?) → { head, steps }", null as never],
+  ["layers.list", "Every layer with its letter, title, member count — and which one the human is looking at.", "() → { focus, layers }", (app) => switchTab(app, "layers")],
+  ["layers.create", "Cut a named subset out of the board. downstream: true also adds everything reachable along edges.", "(node_ids, title?, note?, downstream?) → { layer_id, letter, members }", null as never],
+  ["layers.update", "Add or remove members, retitle, or rewrite the note. Elements themselves are untouched.", "(layer_id, add?, remove?, title?, note?) → { layer_id, members }", null as never],
+  ["layers.focus", "Focus a layer in the human's viewport, or pass null to release. It moves someone else's screen.", "(layer_id | null) → { ok }", (app) => focusLayer(app, app.push?.state.focus ? null : (app.push?.state.layers[0]?.id ?? null))],
+  ["layers.delete", "Remove a layer. A layer is a view over the board, so nothing on the board is deleted.", "(layer_id) → { ok }", null as never],
 ];
 
 const PANEL_KEY = "inkwire.panel";
 const PANEL_DEFAULT_WIDTH = 372;
 const clampPanelWidth = (w: number): number => Math.min(720, Math.max(260, Math.round(w)));
 
-/** Side-panel prefs from localStorage; defaults when absent or unreadable. */
-export function loadPanelPrefs(): App["panel"] {
+/** Side-panel prefs (plus the rim setting) from localStorage; defaults when absent or unreadable. */
+export function loadPanelPrefs(): App["panel"] & { rim: boolean } {
   try {
     const raw = localStorage.getItem(PANEL_KEY);
     if (raw) {
-      const p = JSON.parse(raw) as { open?: unknown; width?: unknown };
-      return { open: p.open !== false, width: clampPanelWidth(Number(p.width) || PANEL_DEFAULT_WIDTH) };
+      const p = JSON.parse(raw) as { open?: unknown; width?: unknown; rim?: unknown };
+      return { open: p.open !== false, width: clampPanelWidth(Number(p.width) || PANEL_DEFAULT_WIDTH), rim: p.rim !== false };
     }
   } catch {
     // storage unavailable — fall through to defaults
   }
-  return { open: true, width: PANEL_DEFAULT_WIDTH };
+  return { open: true, width: PANEL_DEFAULT_WIDTH, rim: true };
 }
 
 function savePanelPrefs(app: App): void {
   try {
-    localStorage.setItem(PANEL_KEY, JSON.stringify(app.panel));
+    localStorage.setItem(PANEL_KEY, JSON.stringify({ ...app.panel, rim: app.rim }));
   } catch {
     // storage unavailable — prefs live for this page only
   }
@@ -190,6 +198,20 @@ export function setupPanel(app: App): void {
     tabs.appendChild(opt);
   }
 
+  // STATE tab: which payload to show while a layer is focused.
+  const stateSeg = el("stateseg");
+  for (const view of ["scoped", "board"] as const) {
+    const opt = document.createElement("label");
+    opt.className = "seg-opt";
+    opt.style.cssText = "flex:1;justify-content:center;padding:6px 4px;font-family:var(--font-mono);font-size:10.5px";
+    opt.innerHTML = `<input type="radio" name="stateview"><span>${view}</span>`;
+    opt.querySelector("input")!.addEventListener("change", () => {
+      app.stateView = view;
+      app.render();
+    });
+    stateSeg.appendChild(opt);
+  }
+
   renderToolsPane(app);
 }
 
@@ -260,6 +282,7 @@ export function renderPanel(app: App): void {
   for (const [id] of TABS) {
     el(`pane-${id}`).hidden = app.tab !== id;
   }
+  if (app.tab === "layers") renderLayers(app);
   if (app.tab === "session") renderSession(app);
   if (app.tab === "history") renderHistory(app);
   if (app.tab === "state") renderState(app);
@@ -515,13 +538,89 @@ function renderHistory(app: App): void {
   pane.appendChild(base);
 }
 
+function renderLayers(app: App): void {
+  const pane = el("pane-layers");
+  // Never rebuild under the user's caret (the title input).
+  if (document.activeElement instanceof HTMLInputElement && document.activeElement.type === "text" && pane.contains(document.activeElement)) return;
+  pane.replaceChildren();
+  const state = app.push?.state;
+  if (!state) return;
+
+  const note = document.createElement("div");
+  note.className = "pane-note";
+  note.innerHTML = "LAYERS · cut by the AI, focused by you<br>a layer is a view over the board — deleting one deletes nothing";
+  const rim = document.createElement("label");
+  rim.className = "pane-note";
+  rim.style.cssText = "display:flex;align-items:center;gap:6px;cursor:pointer";
+  rim.innerHTML = `<input type="checkbox"><span>rim · show neighbours</span>`;
+  const rimInput = rim.querySelector("input")!;
+  rimInput.checked = app.rim;
+  rimInput.addEventListener("change", () => {
+    app.rim = rimInput.checked;
+    savePanelPrefs(app);
+    app.render();
+  });
+  pane.append(note, rim);
+
+  for (const layer of state.layers) {
+    const members = liveMembers(layer, state.graph.nodes);
+    const edges = state.graph.edges.filter((e) => members.has(e.from) && members.has(e.to)).length;
+    const on = layer.id === state.focus;
+    const card = document.createElement("div");
+    card.className = on ? "card layer-card on" : "card layer-card";
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.innerHTML = `<span class="letter"></span><span></span><span class="by"></span>`;
+    (meta.children[0] as HTMLElement).textContent = layer.letter;
+    (meta.children[1] as HTMLElement).textContent = `${members.size} elements · ${edges} edges`;
+    (meta.children[2] as HTMLElement).textContent = layer.author;
+
+    const title = document.createElement("input");
+    title.className = "input";
+    title.maxLength = 24;
+    title.value = layer.title;
+    title.addEventListener("change", () => app.send({ type: "layers_update", layer_id: layer.id, title: title.value }));
+
+    const body = document.createElement("div");
+    body.className = "note";
+    body.textContent = layer.note;
+
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const focus = document.createElement("button");
+    focus.className = "btn btn-secondary";
+    focus.textContent = on ? "release" : "focus";
+    focus.addEventListener("click", () => focusLayer(app, on ? null : layer.id));
+    const del = document.createElement("button");
+    del.className = "btn btn-ghost";
+    del.textContent = "delete";
+    del.addEventListener("click", () => app.send({ type: "layers_delete", layer_id: layer.id }));
+    actions.append(focus, del);
+
+    card.append(meta, title, body, actions);
+    pane.appendChild(card);
+  }
+}
+
 function renderState(app: App): void {
   const push = app.push;
   if (!push) return;
+  // Scoped = what canvas.get_state returns while a layer is focused; board = canvas.get_board.
+  const focused = focusedLayer(app);
+  const scoped = focused !== null && app.stateView === "scoped";
+  el("stateseg").style.display = focused ? "" : "none";
+  for (const input of el("stateseg").querySelectorAll("input")) {
+    input.checked = (input.nextElementSibling?.textContent ?? "") === app.stateView;
+  }
+  el("statenote").innerHTML = scoped
+    ? `RESPONSE · canvas.get_state — scoped to ${focused.letter}<br>members, internal edges, and the seams; scope.omitted says what it left out`
+    : `RESPONSE · ${focused ? "canvas.get_board — the whole board regardless of focus" : "canvas.get_state — no layer focused"}<br>graph and layout revision independently — moving a box does not change the graph`;
+  const state = scoped ? scopeState(push.state, focused) : push.state;
   // Show the default get_state shape: point counts, not polylines.
   const display = {
-    ...push.state,
-    ink: push.state.ink.map(({ geometry, ...rest }) => ({
+    ...state,
+    ink: state.ink.map(({ geometry, ...rest }) => ({
       ...rest,
       points: geometry?.length ?? rest.points ?? 0,
     })),
