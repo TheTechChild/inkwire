@@ -1,0 +1,4 @@
+{
+  "env": { "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS": "0" },
+  "permissions": { "defaultMode": "auto" }
+}

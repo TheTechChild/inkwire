@@ -9,13 +9,25 @@ yarn install
 yarn build
 ```
 
-Inkwire ships as a Claude Code plugin: the MCP server, a `Stop` hook, and the `/use-inkwire` and `/back-to-claude-code` commands. Launch Claude Code with the plugin from your project:
+Inkwire ships as a Claude Code plugin: the MCP server, a `Stop` hook, and the `/use-inkwire` and `/back-to-claude-code` commands. Install it once; it then loads in every session:
 
 ```sh
-CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0 claude --plugin-dir /path/to/inkwire --permission-mode auto
+claude plugin marketplace add /path/to/inkwire
+claude plugin install inkwire@inkwire
 ```
 
-The env var and the permission mode matter only for the Session tab (below); the canvas works without them. Tool names carry the plugin prefix: `mcp__plugin_inkwire_inkwire__boards_create`.
+For a one-off run without installing, `claude --plugin-dir /path/to/inkwire` does the same for that session. Tool names carry the plugin prefix: `mcp__plugin_inkwire_inkwire__boards_create`.
+
+The Session tab (below) needs two settings. Put them in `~/.claude/settings.json` to make them permanent, or in the `.claude/settings.json` of the project you use inkwire from:
+
+```json
+{
+  "env": { "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS": "0" },
+  "permissions": { "defaultMode": "auto" }
+}
+```
+
+The canvas works without them. This repo's own `.claude/settings.json` already carries both, for dogfooding.
 
 Then ask Claude to create a board (`boards_create`). The tool result contains the panel URL — open it in your browser:
 
@@ -29,9 +41,9 @@ Draw with the pen (P), then press **infer_structure** (or ask Claude to run it).
 
 Type `/use-inkwire` in the terminal. Claude flips a server-held mode flag, and from then on delivers replies through the blocking `session_send` tool into the panel's SESSION tab, where you answer from the composer. A reply can carry a **highlight**: node and edge ids the canvas lights up. `/back-to-claude-code` (typed, or the button in the strip) brings replies back to the terminal.
 
-Two requirements, both checked by the server when the mode goes on:
+Two requirements, both checked by the server when the mode goes on, and both covered by the settings above:
 
-- Permission mode `auto` or `bypassPermissions` — nobody is at the terminal to approve prompts.
+- Permission mode `auto` or `bypassPermissions` — nobody is at the terminal to approve prompts. Switching modes inside the session works too; the check runs when `/use-inkwire` does.
 - `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` — otherwise Claude Code moves the blocking call to a background task after two minutes.
 
 The mode is not persisted; a server restart returns to the terminal. A `session_send` that waits 20 minutes with no answer returns `idle` and flips the mode back.

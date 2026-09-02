@@ -16,7 +16,7 @@ Use **yarn** only. Do not use npm or npx.
 - `yarn dev` — server (tsx watch) + panel (esbuild watch). Panel URL: `http://127.0.0.1:4691/?board=<id>`.
 - `yarn gen:schemas` — regenerate `schema/*.generated.json` from the zod contract.
 
-Env: `INKWIRE_PORT` (default 4691), `INKWIRE_DATA_DIR` (default `~/.inkwire`), `INKWIRE_PROJECT_ROOT` (root for `bind_code` refs). To use from Claude Code, the repo is a plugin (build first): `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0 claude --plugin-dir <repo> --permission-mode auto`. The plugin pieces live at the root: `.claude-plugin/plugin.json` (manifest + the MCP server entry), `hooks/hooks.json` + `hooks/forward.sh`, `skills/use-inkwire`, `skills/back-to-claude-code`. `.claude/skills/ship` is a dev-only skill, not part of the plugin.
+Env: `INKWIRE_PORT` (default 4691), `INKWIRE_DATA_DIR` (default `~/.inkwire`), `INKWIRE_PROJECT_ROOT` (root for `bind_code` refs). To use from Claude Code, the repo is a plugin and its own one-plugin marketplace (build first): `claude plugin marketplace add <repo>` then `claude plugin install inkwire@inkwire`; `claude --plugin-dir <repo>` for a one-off. The plugin pieces live at the root: `.claude-plugin/plugin.json` (manifest + the MCP server entry) and `marketplace.json`, `hooks/hooks.json` + `hooks/forward.sh`, `skills/use-inkwire`, `skills/back-to-claude-code`. The Session tab's two requirements (`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0`, permission mode `auto`) live in `.claude/settings.json` here and in the README for other projects. `.claude/skills/ship` is a dev-only skill, not part of the plugin.
 
 ## Architecture
 

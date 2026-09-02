@@ -1,0 +1,14 @@
+{
+  "name": "inkwire",
+  "description": "The inkwire plugin: a shared drawing canvas for Claude Code.",
+  "owner": {
+    "name": "Clayton Noyes"
+  },
+  "plugins": [
+    {
+      "name": "inkwire",
+      "source": "./",
+      "description": "Shared drawing canvas for collaborating visually with Claude Code: the MCP server, the Stop hook, and the /use-inkwire and /back-to-claude-code commands."
+    }
+  ]
+}
