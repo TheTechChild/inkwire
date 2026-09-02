@@ -958,17 +958,31 @@ function renderTrace(app: App): void {
     tick.dataset.on = j <= k ? "reached" : "";
     tick.classList.toggle("cur", j === Math.min(info.nodeIds.length - 1, k));
   }
+  const dense = !!sc.querySelector<HTMLElement>(".track")?.dataset.dense;
+  const wide = `${Math.min(40, 400 / info.n).toFixed(1)}%`;
+  const curNode = Math.min(info.nodeIds.length - 1, k);
   for (const label of sc.querySelectorAll<HTMLElement>(".tick-label")) {
     const j = Number(label.dataset.j);
-    label.dataset.on = j === Math.min(info.nodeIds.length - 1, k) ? "cur" : j <= k ? "reached" : "";
+    label.dataset.on = j === curNode ? "cur" : j <= k ? "reached" : "";
+    if (dense) {
+      // The ends stay unless the current label (wide, centred) would run into their two slots.
+      const near = Math.min(40, 400 / info.n) / 2 / (100 / info.n) + 2;
+      label.hidden = !(j === curNode || (j === 0 && curNode > near) || (j === info.n && info.n - curNode > near));
+      label.style.maxWidth = j === curNode && j !== 0 && j !== info.n ? wide : "";
+    }
   }
   for (const hop of sc.querySelectorAll<HTMLElement>(".hop")) {
     const j = Number(hop.dataset.j);
     hop.classList.toggle("lit", !hop.classList.contains("broken") && (j < k || (j === info.i && info.frac >= 0.5)));
+    if (dense) {
+      hop.hidden = j !== info.i;
+      hop.style.maxWidth = wide;
+    }
   }
   const st = info.path.steps[info.i]!;
   const edge = state.graph.edges.find((e) => e.id === st.edge);
-  const label = (id: string) => state.graph.nodes.find((n) => n.id === id)?.label ?? id;
+  const clip = (s: string) => (s.length > 28 ? `${s.slice(0, 27)}…` : s);
+  const label = (id: string) => clip(state.graph.nodes.find((n) => n.id === id)?.label ?? id);
   q(".cap .kicker").textContent = `HOP ${info.i + 1}/${info.n} · ${st.edge}` + (edge ? ` · ${label(edge.from)} → ${label(edge.to)}` : "");
   q(".cap .text").textContent =
     info.broken && info.i === info.broken.hop - 1
@@ -1017,6 +1031,9 @@ function renderScrubber(app: App, bar: HTMLElement, info: TraceInfo): void {
   const track = document.createElement("div");
   track.className = "track";
   const slot = 100 / info.n;
+  // Below ~90px a slot cannot carry a label: show only the current hop, and the first, last and current nodes.
+  const dense = (Math.min(bar.clientWidth * 0.92, 900) - 36) / info.n < 90;
+  if (dense) track.dataset.dense = "1";
   info.path.steps.forEach((st, j) => {
     const edge = state.graph.edges.find((e) => e.id === st.edge);
     const hop = document.createElement("span");
@@ -1045,7 +1062,7 @@ function renderScrubber(app: App, bar: HTMLElement, info: TraceInfo): void {
     label.dataset.j = String(j);
     label.style.left = left;
     label.style.transform = `translateX(${j === 0 ? "0" : j === info.n ? "-100%" : "-50%"})`;
-    label.style.maxWidth = `${((j === 0 || j === info.n ? slot * 0.46 : slot * 0.92)).toFixed(1)}%`;
+    label.style.maxWidth = `${(j === 0 || j === info.n ? slot * (dense ? 2 : 0.46) : slot * 0.92).toFixed(1)}%`;
     label.textContent = node?.label ?? id;
     label.title = `${id} · ${node?.label ?? ""}`;
     track.append(tick, label);
