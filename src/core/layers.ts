@@ -8,6 +8,8 @@ import type {
   EdgeEl,
   Layer,
   NodeEl,
+  Path,
+  PathStep,
 } from "../shared/types.js";
 
 export type Tier = "in" | "rim" | "out";
@@ -123,6 +125,130 @@ export function scopeState(state: CanvasState, layer: Layer): CanvasState {
         edges: edges.length - internal.length - boundary.length,
       },
       whole_board: "canvas_get_board",
+      paths: layer.paths,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Paths: an ordered walk over a layer's edges. Pure — the walk rule and the
+// node→edge resolution are shared by the server (paths_*) and the panel
+// (the scrubber's traceInfo).
+
+/** First unused "P{n}" across every layer on the board. */
+export function nextPathId(layers: Layer[]): string {
+  const used = new Set(layers.flatMap((l) => l.paths.map((p) => p.id)));
+  for (let i = 1; i < 1000; i++) if (!used.has(`P${i}`)) return `P${i}`;
+  return "P?";
+}
+
+/** The node sequence a walk visits: [first.from, ...to], over the longest prefix whose edges exist. */
+export function pathNodes(edges: EdgeEl[], steps: PathStep[]): string[] {
+  const byId = new Map(edges.map((e) => [e.id, e]));
+  const out: string[] = [];
+  for (const s of steps) {
+    const e = byId.get(s.edge);
+    if (!e) break;
+    if (out.length === 0) out.push(e.from);
+    out.push(e.to);
+  }
+  return out;
+}
+
+/**
+ * The walk rule. null, or the first failure naming the hop (1-based), in this
+ * order: the edge exists · both ends are in the layer · the chain holds.
+ */
+export function validateWalk(layer: Layer, edges: EdgeEl[], steps: PathStep[]): string | null {
+  const byId = new Map(edges.map((e) => [e.id, e]));
+  // An existing edge's endpoints exist (fold integrity), so layer.nodes is liveMembers here.
+  const members = new Set(layer.nodes);
+  let prev: EdgeEl | null = null;
+  for (let i = 0; i < steps.length; i++) {
+    const hop = i + 1;
+    const e = byId.get(steps[i]!.edge);
+    if (!e) return `hop ${hop}: ${steps[i]!.edge} does not exist`;
+    if (!members.has(e.from) || !members.has(e.to)) return `hop ${hop}: ${e.id} leaves layer ${layer.letter}`;
+    if (prev && e.from !== prev.to) return `hop ${hop}: ${e.id} starts at ${e.from} but hop ${i} ended at ${prev.to}`;
+    prev = e;
+  }
+  return null;
+}
+
+/**
+ * nodes → steps. Each consecutive pair must be joined by exactly one edge in
+ * that direction; a path never walks an edge backwards. Throws naming the hop.
+ */
+export function resolveNodesToSteps(
+  edges: EdgeEl[],
+  nodes: string[],
+  captions: string[] = [],
+  refs: (string | null)[] = [],
+): PathStep[] {
+  const steps: PathStep[] = [];
+  for (let i = 0; i + 1 < nodes.length; i++) {
+    const [a, b] = [nodes[i]!, nodes[i + 1]!];
+    const hop = i + 1;
+    const cands = edges.filter((e) => e.from === a && e.to === b);
+    if (cands.length === 0) throw new Error(`hop ${hop}: no edge ${a} → ${b}`);
+    if (cands.length > 1) {
+      const named = cands.map((e) => `${e.id} (${e.label ?? "no label"})`).join(" and ");
+      throw new Error(`hop ${hop}: ${a} → ${b} is joined by ${named} — pass steps with the edge you mean`);
+    }
+    steps.push({ edge: cands[0]!.id, caption: captions[i] ?? "", ref: refs[i] ?? null });
+  }
+  return steps;
+}
+
+export interface PathBreak {
+  path_id: string;
+  hop: number; // 1-based
+  reason: "edge pruned" | "node left layer";
+}
+
+/** The first broken hop of every path that no longer validates. A deleted node prunes its edges, so "edge pruned" covers it. */
+export function pathsAffected(layers: Layer[], edges: EdgeEl[]): PathBreak[] {
+  const byId = new Map(edges.map((e) => [e.id, e]));
+  const out: PathBreak[] = [];
+  for (const layer of layers) {
+    const members = new Set(layer.nodes);
+    for (const p of layer.paths) {
+      for (let i = 0; i < p.steps.length; i++) {
+        const e = byId.get(p.steps[i]!.edge);
+        if (!e) {
+          out.push({ path_id: p.id, hop: i + 1, reason: "edge pruned" });
+          break;
+        }
+        if (!members.has(e.from) || !members.has(e.to)) {
+          out.push({ path_id: p.id, hop: i + 1, reason: "node left layer" });
+          break;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** Hops that still play: the whole path, or everything before the first broken hop. */
+export function playableHops(layer: Layer, edges: EdgeEl[], path: Path): number {
+  const b = pathsAffected([{ ...layer, paths: [path] }], edges)[0];
+  return b ? b.hop - 1 : path.steps.length;
+}
+
+// Hop timing. The server stamps t and started_at; every panel derives the
+// live position from them so viewers stay in step without streaming t.
+export const HOP_MS = 1100;
+export const REST_MS = 700;
+
+/** Live position 0…n from a trace's base t, its start stamp, and the caller's clock. */
+export function traceT(
+  tr: { t: number; running: boolean; loop: boolean; started_at: number },
+  n: number,
+  now: number,
+): number {
+  if (!tr.running) return Math.min(n, Math.max(0, tr.t));
+  const x = Math.max(0, tr.t) + Math.max(0, now - tr.started_at) / HOP_MS;
+  if (!tr.loop) return Math.min(n, x);
+  // Loop: rest REST_MS at the end, then from 0.
+  return Math.min(n, x % (n + REST_MS / HOP_MS));
 }

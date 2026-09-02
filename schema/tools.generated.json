@@ -584,6 +584,169 @@
       "layer_id"
     ]
   },
+  "paths.create": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "layer_id": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "steps": {
+        "minItems": 1,
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "edge": {
+              "type": "string"
+            },
+            "caption": {
+              "type": "string",
+              "maxLength": 160
+            },
+            "ref": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "edge"
+          ]
+        }
+      },
+      "nodes": {
+        "minItems": 2,
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "captions": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "maxLength": 160
+        }
+      },
+      "refs": {
+        "type": "array",
+        "items": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "extend_layer": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "layer_id",
+      "title"
+    ]
+  },
+  "paths.update": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "path_id": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "steps": {
+        "minItems": 1,
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "edge": {
+              "type": "string"
+            },
+            "caption": {
+              "type": "string",
+              "maxLength": 160
+            },
+            "ref": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "edge"
+          ]
+        }
+      }
+    },
+    "required": [
+      "path_id"
+    ]
+  },
+  "paths.delete": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "path_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "path_id"
+    ]
+  },
+  "paths.get": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "path_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "path_id"
+    ]
+  },
+  "paths.play": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "path_id": {
+        "type": "string"
+      },
+      "hop": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      }
+    },
+    "required": [
+      "path_id"
+    ]
+  },
   "session.mode": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -630,6 +793,26 @@
           "nodes",
           "edges",
           "label"
+        ]
+      },
+      "path": {
+        "type": "object",
+        "properties": {
+          "layer_id": {
+            "type": "string"
+          },
+          "path_id": {
+            "type": "string"
+          },
+          "hop": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "layer_id",
+          "path_id"
         ]
       }
     },

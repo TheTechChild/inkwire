@@ -46,10 +46,12 @@ export interface App {
   dim: boolean;
   /** Session tab, panel-local: the composer draft, chips dropped for this draft, open call rows. */
   draft: string;
-  dropped: { focus?: true; sel?: true };
+  dropped: { focus?: true; sel?: true; trace?: true };
   open: Record<string, boolean>;
   /** Which payload the STATE tab shows while a layer is focused. */
   stateView: "scoped" | "board";
+  /** This panel's unacknowledged seek/pause over the server trace; dropped when the push echoes it. */
+  traceOverride: { t: number; running: boolean } | null;
   connected: boolean;
   send: (intent: ClientIntent) => void;
   render: () => void;

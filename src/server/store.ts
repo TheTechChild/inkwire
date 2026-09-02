@@ -96,7 +96,10 @@ export class Store {
         layout: layout.boxes,
       },
       viewport: JSON.parse(row.viewport as string),
-      layers: JSON.parse((row.layers as string | undefined) ?? "[]"),
+      // Rows written before paths existed have no paths field.
+      layers: (JSON.parse((row.layers as string | undefined) ?? "[]") as (Omit<Layer, "paths"> & { paths?: Layer["paths"] })[]).map(
+        (l) => ({ paths: [], ...l }),
+      ),
     };
   }
 

@@ -35,6 +35,12 @@
   --shadow-lg: 0 12px 32px color-mix(in srgb, #2b2b2d 22%, transparent);
 
   --cv-grid: rgba(29, 31, 32, 0.22);
+
+  /* The traversal gold: the one exception to the mono steel palette. Used for
+     exactly one thing — a path's moving front and what it has reached. Mirrors
+     shared/tokens.ts. A chrome colour: borders, strokes, glyphs, 10–12px kickers. */
+  --color-signal: #b8862a;
+  --color-signal-soft: color-mix(in srgb, var(--color-signal) 30%, transparent);
 }
 
 [data-theme="dark"] {
@@ -53,6 +59,8 @@
   --shadow-md: 0 3px 10px rgba(0,0,0,0.55);
   --shadow-lg: 0 12px 32px rgba(0,0,0,0.6);
   --cv-grid: color-mix(in srgb, #e8ebee 20%, transparent);
+  --color-signal: #e8bd5e;
+  --color-signal-soft: color-mix(in srgb, var(--color-signal) 32%, transparent);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -224,6 +232,19 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
 #world[data-hl="dim"] [data-hl="out"][data-tier="out"] { opacity: 0.28; }
 #world .edge[data-hl="in"] .edge-label, #world .edge[data-hl="in"] .edge-label-bg { display: initial; }
 #world .edge[data-hl="out"] .edge-label, #world .edge[data-hl="out"] .edge-label-bg { display: none; }
+/* trace (handoff "Paths" § 3): the walk is "in", its layer the rim, the rest
+   blurs harder than focus. Walk states ride on data-trace; canvas.ts leaves
+   walk nodes' inline border/shadow empty so these rules win. Gold is for the
+   front and what it has reached — nothing else. */
+#world[data-trace] [data-tier="out"] { opacity: 0.22; filter: blur(3px); }
+#world .node-box[data-trace="reached"], #world .node-box[data-trace="current"] { border: 2px solid var(--color-signal); }
+#world .node-box[data-trace="current"] { box-shadow: 0 0 0 5px var(--color-signal-soft), var(--shadow-md); }
+#world .node-box[data-trace="ahead"] { border: 1.5px solid var(--color-accent-500); opacity: 1; }
+#world .edge[data-trace="ahead"] path, #world .edge[data-trace="active"] path, #world .edge[data-trace="active-lit"] path {
+  stroke: var(--color-accent-500); stroke-width: 1.8;
+}
+#world .edge[data-trace="done"] path { stroke: var(--color-signal); stroke-width: 3; stroke-dasharray: none; marker-end: url(#arwgold); }
+#world .edge[data-trace="done"] .edge-label, #world .edge[data-trace="active-lit"] .edge-label { fill: var(--color-signal); }
 .resize-handle {
   position: absolute; width: 9px; height: 9px;
   background: var(--color-accent); border: 1px solid var(--color-bg);
@@ -262,7 +283,15 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
 .layer-chip {
   display: inline-flex; align-items: center; gap: 8px; padding: 5px 11px; cursor: pointer;
   border: 1px solid var(--color-divider); border-radius: 0; background: var(--color-bg); color: var(--color-text);
+  user-select: none; touch-action: none;
 }
+.layer-chip .paths {
+  display: inline-flex; align-items: center; align-self: stretch; margin: -5px -11px -5px 0; padding: 0 11px 0 8px;
+  border-left: 1px solid var(--color-divider); font-family: var(--font-mono); font-size: 10px; color: var(--color-neutral-600);
+}
+.layer-chip.on .paths { color: var(--color-bg); border-left-color: color-mix(in srgb, var(--color-bg) 40%, transparent); }
+.layer-chip.playing { border-color: var(--color-signal); }
+.layer-chip.playing .paths { color: var(--color-signal); }
 .layer-chip .letter { font-family: var(--font-mono); font-weight: 500; font-size: 11.5px; letter-spacing: 0.06em; }
 .layer-chip .title { font-family: var(--font-heading); font-weight: 600; font-size: 12.5px; letter-spacing: 0.01em; }
 .layer-chip .count { font-family: var(--font-mono); font-size: 10px; color: var(--color-neutral-600); }
@@ -290,6 +319,54 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
   cursor: pointer; border-radius: 0; padding: 3px 8px; margin-left: 4px; background: transparent; color: inherit;
   border: 1px solid color-mix(in srgb, currentColor 45%, transparent); font-family: var(--font-mono); font-size: 10px;
 }
+/* — scrubber (handoff "Paths" § 2): three rows below the chip row — */
+.scrubber {
+  width: min(92%, 900px); display: flex; flex-direction: column; gap: 8px; padding: 8px 12px 10px;
+  background: var(--color-bg); border: 1px solid var(--color-signal); box-shadow: var(--shadow-md); pointer-events: auto;
+}
+.scrubber.mount { animation: pulsein 180ms ease-out; }
+.scrubber .row1 { display: flex; align-items: center; gap: 10px; }
+.scrubber .play {
+  width: 28px; height: 24px; flex-shrink: 0; cursor: pointer; border-radius: 0; border: 0;
+  background: var(--color-signal); color: var(--color-bg); font-family: var(--font-mono); font-size: 11px;
+  display: flex; align-items: center; justify-content: center;
+}
+.scrubber .row1 .kicker { font-family: var(--font-mono); font-weight: 500; font-size: 10px; letter-spacing: 0.1em; color: var(--color-signal); }
+.scrubber .ref { font-family: var(--font-mono); font-size: 10.5px; color: var(--color-neutral-600); white-space: nowrap; flex-shrink: 0; }
+.scrubber .title { font-family: var(--font-heading); font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+.scrubber .count { font-family: var(--font-mono); font-size: 10px; color: var(--color-neutral-600); white-space: nowrap; flex-shrink: 0; }
+.scrubber .note { font-family: var(--font-mono); font-size: 10px; color: var(--color-neutral-500); white-space: nowrap; flex-shrink: 0; }
+.scrubber .loop, .scrubber .close {
+  cursor: pointer; border-radius: 0; padding: 3px 8px; background: transparent; color: var(--color-neutral-700);
+  border: 1px solid var(--color-divider); font-family: var(--font-mono); font-size: 10px; flex-shrink: 0;
+}
+.scrubber .loop.on { background: var(--color-signal); color: var(--color-bg); border-color: var(--color-signal); }
+.scrubber .track { position: relative; height: 54px; margin: 0 6px; touch-action: none; }
+.scrubber.pinned .track { cursor: ew-resize; }
+.scrubber .hop {
+  position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.02em; color: var(--color-neutral-500);
+}
+.scrubber .hop.lit { color: var(--color-signal); }
+.scrubber .hop.broken { text-decoration: line-through; color: var(--color-neutral-500); }
+.scrubber .base { position: absolute; left: 0; right: 0; top: 22px; height: 1px; background: var(--color-neutral-400); }
+.scrubber .prog { position: absolute; left: 0; top: 21px; height: 3px; background: var(--color-signal); }
+.scrubber .tick {
+  position: absolute; top: 16px; width: 7px; height: 7px; transform: translate(-50%, 0);
+  background: var(--color-bg); border: 1.5px solid var(--color-neutral-500);
+}
+.scrubber .tick[data-on="reached"] { background: var(--color-signal); border-color: var(--color-signal); }
+.scrubber .tick.cur { width: 11px; height: 11px; transform: translate(-50%, -2px); }
+.scrubber .tick-label {
+  position: absolute; top: 32px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-family: var(--font-heading); font-weight: 600; font-size: 11px; letter-spacing: 0.01em; color: var(--color-neutral-500);
+}
+.scrubber .tick-label[data-on="reached"] { color: var(--color-neutral-700); }
+.scrubber .tick-label[data-on="cur"] { color: var(--color-text); }
+.scrubber .head { position: absolute; top: 12px; width: 3px; height: 21px; transform: translateX(-50%); background: var(--color-signal); pointer-events: none; }
+.scrubber .cap { display: flex; align-items: baseline; gap: 10px; padding-top: 2px; border-top: 1px dashed var(--color-divider); min-height: 18px; }
+.scrubber .cap .kicker { font-family: var(--font-mono); font-weight: 500; font-size: 10px; letter-spacing: 0.08em; color: var(--color-signal); white-space: nowrap; flex-shrink: 0; }
+.scrubber .cap .text { font-size: 12.5px; line-height: 1.4; color: var(--color-text); text-wrap: pretty; }
 @keyframes flashcap { 0% { opacity: 0 } 12% { opacity: 1 } 100% { opacity: 0 } }
 @keyframes pulsein { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
 @keyframes blink { 0%, 100% { opacity: 1 } 50% { opacity: 0.25 } }
@@ -359,6 +436,17 @@ aside { position: relative; border-left: 1px solid var(--color-divider); display
 .hl-chip .count { margin-left: auto; font-family: var(--font-mono); font-size: 10px; opacity: 0.8; white-space: nowrap; }
 .hl-chip.on { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-bg); }
 .to-layer { font-family: var(--font-mono); font-size: 10px; padding: 4px 8px; color: var(--color-neutral-600); }
+/* path chip (handoff "Paths" § 4): the message that carried a path; filled while it is the pinned trace */
+.path-chip {
+  display: flex; align-items: center; gap: 8px; width: 100%; cursor: pointer; text-align: left; margin-top: 4px;
+  padding: 5px 9px; border-radius: 0; background: transparent; border: 1px solid var(--color-signal); color: var(--color-text);
+}
+.path-chip .glyph, .path-chip .ref { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; color: var(--color-signal); }
+.path-chip .label { font-family: var(--font-heading); font-weight: 600; font-size: 12px; letter-spacing: 0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.path-chip .count { margin-left: auto; font-family: var(--font-mono); font-size: 10px; opacity: 0.8; white-space: nowrap; }
+.path-chip.on { background: var(--color-signal); color: var(--color-bg); }
+.path-chip.on .glyph, .path-chip.on .ref { color: var(--color-bg); }
+.path-chip:disabled { cursor: default; opacity: 0.5; }
 
 .call-group { display: flex; flex-direction: column; gap: 8px; }
 .call-row {
@@ -414,6 +502,19 @@ aside { position: relative; border-left: 1px solid var(--color-divider); display
 .layer-card .meta .by { margin-left: auto; }
 .layer-card .input { font-family: var(--font-heading); font-weight: 600; font-size: 14px; }
 .layer-card .note { font-size: 12px; line-height: 1.45; color: var(--color-neutral-700); text-wrap: pretty; }
+.layer-card .paths { display: flex; flex-direction: column; gap: 4px; }
+.layer-card .paths:empty { display: none; }
+.layer-card .paths .kicker { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em; color: var(--color-neutral-600); }
+.path-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 4px; border: 1px solid var(--color-divider); }
+.path-row.on { border-color: var(--color-signal); background: var(--color-signal-soft); }
+.path-row .play {
+  width: 22px; height: 20px; flex-shrink: 0; cursor: pointer; border-radius: 0; border: 0; background: transparent; color: var(--color-signal);
+  font-family: var(--font-mono); font-size: 10px; display: flex; align-items: center; justify-content: center;
+}
+.path-row.on .play { background: var(--color-signal); color: var(--color-bg); }
+.path-row .id { font-family: var(--font-mono); font-size: 10px; color: var(--color-neutral-600); }
+.path-row .title { font-family: var(--font-heading); font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.path-row .hops { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--color-neutral-600); white-space: nowrap; }
 .layer-card .actions { display: flex; gap: 8px; align-items: center; }
 .layer-card .actions .btn-secondary { flex: 1; font-size: 12px; }
 .layer-card .actions .btn-ghost { font-family: var(--font-mono); font-size: 10.5px; }

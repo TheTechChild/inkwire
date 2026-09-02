@@ -5,6 +5,7 @@
 // session mode and the one blocked session_send.
 import { randomBytes } from "node:crypto";
 import { fold } from "../core/fold.js";
+import { playableHops } from "../core/layers.js";
 import {
   append,
   dropStep,
@@ -30,6 +31,7 @@ import type {
   ThreadEntry,
   ThreadInput,
   Viewport,
+  Trace,
 } from "../shared/types.js";
 import type { HistoryRow } from "../shared/protocol.js";
 import type { Store, StoredBoard } from "./store.js";
@@ -84,6 +86,8 @@ export class BoardSession {
   readonly thread: ThreadEntry[] = [];
   /** The active highlight, shared by every panel like focus. Not persisted. */
   highlight: ({ msgId: string } & Highlight) | null = null;
+  /** The pinned trace, shared by every panel like focus. Not persisted; the server never ticks t. */
+  trace: Trace | null = null;
   private listeners = new Set<SessionListener>();
   private persistTimer: NodeJS.Timeout | null = null;
   /** Set by Sessions.delete: no further persistence, so a late flush cannot resurrect the row. */
@@ -220,6 +224,9 @@ export class BoardSession {
   updateLayers(author: Author, label: string, fn: (layers: Layer[]) => Layer[]): void {
     this.layers = fn(this.layers);
     if (this.focus && !this.layers.some((l) => l.id === this.focus)) this.focus = null;
+    // A trace whose layer or path is gone closes (layers_delete, paths_delete).
+    const tr = this.trace;
+    if (tr && !this.layers.find((l) => l.id === tr.layer_id)?.paths.some((p) => p.id === tr.path_id)) this.trace = null;
     this.addLog(author, label);
     this.schedulePersist();
     this.notify();
@@ -266,7 +273,32 @@ export class BoardSession {
       const msg = this.thread.find((m) => m.id === msgId);
       if (!msg || msg.type !== "claude" || !msg.highlight) throw new Error(`no highlight on message: ${msgId}`);
       this.highlight = { msgId, ...msg.highlight };
+      this.trace = null; // a trace and a highlight never show together
     }
+    this.notify();
+  }
+
+  /** Open or close the pinned trace. A trace is a stronger pointer than a highlight, so it clears it. */
+  setTrace(trace: Trace | null): void {
+    this.trace = trace;
+    if (trace) this.highlight = null;
+    this.notify();
+  }
+
+  /** Play, pause, loop, seek. t is clamped to the path's hop count and started_at restamped so panels re-derive. */
+  updateTrace(patch: { running?: boolean; loop?: boolean; t?: number }): void {
+    const tr = this.trace;
+    if (!tr) throw new Error("no trace is open");
+    const layer = this.layers.find((l) => l.id === tr.layer_id);
+    const path = layer?.paths.find((p) => p.id === tr.path_id);
+    const n = layer && path ? playableHops(layer, this.collections().edges, path) : 0;
+    this.trace = {
+      ...tr,
+      running: patch.running ?? tr.running,
+      loop: patch.loop ?? tr.loop,
+      t: Math.min(n, Math.max(0, patch.t ?? tr.t)),
+      started_at: this.now(),
+    };
     this.notify();
   }
 
@@ -334,7 +366,11 @@ export class BoardSession {
 }
 
 export type SendResult =
-  | { status: "reply"; reply: string; ctx: { focus: string | null; selection: string | null; revision: number } }
+  | {
+      status: "reply";
+      reply: string;
+      ctx: { focus: string | null; selection: string | null; trace: { path: string; hop: number } | null; revision: number };
+    }
   | { status: "mode_off"; note: string }
   | { status: "idle" };
 

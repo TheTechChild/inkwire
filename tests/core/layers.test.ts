@@ -4,16 +4,25 @@ import { describe, expect, it } from "vitest";
 import { Sim, makeEdge, makeNode } from "../helpers.js";
 import { buildCanvasState } from "../../src/core/state.js";
 import {
+  HOP_MS,
+  REST_MS,
   downstream,
   liveMembers,
   nextLetter,
+  nextPathId,
+  pathNodes,
+  playableHops,
+  pathsAffected,
+  resolveNodesToSteps,
   scopeState,
   tiers,
+  traceT,
+  validateWalk,
 } from "../../src/core/layers.js";
-import type { CanvasState, Collections, Layer } from "../../src/shared/types.js";
+import type { CanvasState, Collections, Layer, Path } from "../../src/shared/types.js";
 
 function layer(nodes: string[], over: Partial<Layer> = {}): Layer {
-  return { id: "L_1", letter: "A", title: "t", note: "why", nodes, author: "ai", ...over };
+  return { id: "L_1", letter: "A", title: "t", note: "why", nodes, author: "ai", paths: [], ...over };
 }
 
 // a -> b -> c, d isolated. Layer = {a, b}.
@@ -184,5 +193,99 @@ describe("layer properties", () => {
         for (const b of s.graph.boundary_nodes!) expect(members.has(b.id)).toBe(false);
       }),
     );
+  });
+});
+
+// Paths: a → b → c plus a second a → b edge (e4) for the ambiguity case.
+const step = (edge: string) => ({ edge, caption: "", ref: null });
+const pathOf = (id: string, ...edges: string[]): Path => ({ id, title: "t", steps: edges.map(step), author: "ai" });
+const walkEdges = () => [makeEdge("e1", "a", "b"), makeEdge("e2", "b", "c"), makeEdge("e3", "d", "c")];
+
+describe("validateWalk", () => {
+  const L = layer(["a", "b", "c"]);
+  it("null for a chained walk inside the layer; revisits are legal", () => {
+    expect(validateWalk(L, walkEdges(), [step("e1"), step("e2")])).toBeNull();
+    const back = [...walkEdges(), makeEdge("e5", "b", "a")];
+    expect(validateWalk(L, back, [step("e1"), step("e5"), step("e1")])).toBeNull();
+  });
+  it("names the first failing hop: missing edge, then leaves layer, then broken chain", () => {
+    expect(validateWalk(L, walkEdges(), [step("e1"), step("e19")])).toBe("hop 2: e19 does not exist");
+    expect(validateWalk(L, walkEdges(), [step("e1"), step("e2"), step("e3")])).toBe("hop 3: e3 leaves layer A");
+    expect(validateWalk(L, walkEdges(), [step("e2"), step("e1")])).toBe("hop 2: e1 starts at a but hop 1 ended at c");
+  });
+});
+
+describe("resolveNodesToSteps", () => {
+  it("one edge per pair, captions and refs aligned to hops", () => {
+    expect(resolveNodesToSteps(walkEdges(), ["a", "b", "c"], ["first"], [null, "x.ts:y"])).toEqual([
+      { edge: "e1", caption: "first", ref: null },
+      { edge: "e2", caption: "", ref: "x.ts:y" },
+    ]);
+  });
+  it("fails on a missing edge — direction matters", () => {
+    expect(() => resolveNodesToSteps(walkEdges(), ["b", "a"])).toThrow("hop 1: no edge b → a");
+  });
+  it("names both edges when a pair is joined twice", () => {
+    const twice = [...walkEdges(), { ...makeEdge("e4", "a", "b"), label: "miss" }];
+    expect(() => resolveNodesToSteps(twice, ["a", "b"])).toThrow(
+      "hop 1: a → b is joined by e1 (no label) and e4 (miss) — pass steps with the edge you mean",
+    );
+  });
+});
+
+describe("pathsAffected", () => {
+  it("first broken hop only, both reasons; empty while intact", () => {
+    const L = layer(["a", "b", "c"], { paths: [pathOf("P1", "e1", "e2"), pathOf("P2", "e2")] });
+    expect(pathsAffected([L], walkEdges())).toEqual([]);
+    expect(pathsAffected([L], walkEdges().filter((e) => e.id !== "e1"))).toEqual([
+      { path_id: "P1", hop: 1, reason: "edge pruned" },
+    ]);
+    const left = layer(["a", "b"], { paths: [pathOf("P1", "e1", "e2", "e2")] });
+    expect(pathsAffected([left], walkEdges())).toEqual([{ path_id: "P1", hop: 2, reason: "node left layer" }]);
+  });
+});
+
+describe("nextPathId", () => {
+  it("is the first unused P{n} across every layer", () => {
+    expect(nextPathId([])).toBe("P1");
+    const ls = [layer([], { paths: [pathOf("P1", "e1")] }), layer([], { id: "L_2", paths: [pathOf("P3", "e1")] })];
+    expect(nextPathId(ls)).toBe("P2");
+  });
+});
+
+describe("pathNodes", () => {
+  it("derives [from, ...to] and stops at a missing edge", () => {
+    expect(pathNodes(walkEdges(), [step("e1"), step("e2")])).toEqual(["a", "b", "c"]);
+    expect(pathNodes(walkEdges(), [step("e1"), step("e9"), step("e2")])).toEqual(["a", "b"]);
+    expect(pathNodes(walkEdges(), [step("e9")])).toEqual([]);
+  });
+});
+
+describe("traceT", () => {
+  const tr = (over: Partial<Parameters<typeof traceT>[0]>) => ({ t: 0, running: true, loop: false, started_at: 1000, ...over });
+  it("paused holds t, clamped to n", () => {
+    expect(traceT(tr({ running: false, t: 1.5 }), 3, 99999)).toBe(1.5);
+    expect(traceT(tr({ running: false, t: 7 }), 3, 99999)).toBe(3);
+  });
+  it("running advances one hop per HOP_MS from started_at and clamps at the end", () => {
+    expect(traceT(tr({}), 3, 1000 + HOP_MS)).toBe(1);
+    expect(traceT(tr({ t: 1 }), 3, 1000 + HOP_MS / 2)).toBe(1.5);
+    expect(traceT(tr({}), 3, 1000 + 10 * HOP_MS)).toBe(3);
+  });
+  it("loop rests REST_MS at the end, then wraps to 0", () => {
+    const period = 3 * HOP_MS + REST_MS;
+    expect(traceT(tr({ loop: true }), 3, 1000 + 3 * HOP_MS + REST_MS / 2)).toBe(3); // in the rest window
+    expect(traceT(tr({ loop: true }), 3, 1000 + period + HOP_MS)).toBeCloseTo(1, 6);
+  });
+});
+
+describe("playableHops", () => {
+  it("is the whole path when intact and the prefix before the first broken hop", () => {
+    const { edges } = fixture();
+    const l = layer(["a", "b", "c"]);
+    const p = { id: "P1", title: "t", author: "ai" as const, steps: [{ edge: "e1", caption: "", ref: null }, { edge: "e2", caption: "", ref: null }] };
+    expect(playableHops(l, edges, p)).toBe(2);
+    expect(playableHops(l, edges.filter((e) => e.id !== "e2"), p)).toBe(1);
+    expect(playableHops(l, edges.filter((e) => e.id !== "e1"), p)).toBe(0);
   });
 });

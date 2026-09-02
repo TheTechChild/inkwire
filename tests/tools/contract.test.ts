@@ -362,6 +362,7 @@ describe("layers", () => {
     expect((await call("layers_update", { layer_id: layerId, add: [c], remove: [a] })).json()).toEqual({
       layer_id: layerId,
       members: 2,
+      paths_affected: [],
     });
     const bad = await call("layers_update", { layer_id: layerId, add: ["n_ghost"] });
     expect(bad.res.isError).toBe(true);
@@ -382,5 +383,176 @@ describe("layers", () => {
     expect(after.graph.nodes).toHaveLength(before.graph.nodes.length);
     expect(after.graph.revision).toBe(before.graph.revision);
     expect(after.history.steps).toBe(before.history.steps);
+  });
+});
+
+describe("paths", () => {
+  let p: string;
+  let q: string;
+  let r: string;
+  let s: string;
+  let pq: string;
+  let pq2: string;
+  let qr: string;
+  let rs: string;
+  let layerId: string;
+  const session = () => sessions.open(boardId);
+  const listPaths = async () => (await call("layers_list")).json().layers[0].paths;
+
+  beforeAll(async () => {
+    p = (await call("canvas_add_node", { label: "pp", kind: "entry", at: [0, 0] })).json().ids[0];
+    q = (await call("canvas_add_node", { label: "qq", kind: "service", at: [300, 0] })).json().ids[0];
+    r = (await call("canvas_add_node", { label: "rr", kind: "store", at: [600, 0] })).json().ids[0];
+    s = (await call("canvas_add_node", { label: "ss", kind: "transform", at: [900, 0] })).json().ids[0];
+    pq = (await call("canvas_add_edge", { from: p, to: q, label: "call" })).json().ids[0];
+    pq2 = (await call("canvas_add_edge", { from: p, to: q, label: "retry" })).json().ids[0];
+    qr = (await call("canvas_add_edge", { from: q, to: r })).json().ids[0];
+    rs = (await call("canvas_add_edge", { from: r, to: s })).json().ids[0];
+    await call("canvas_bind_code", { node_id: p, ref: "auth.ts:verifyToken" });
+    layerId = (await call("layers_create", { node_ids: [p, q, r], title: "walk" })).json().layer_id;
+  });
+
+  it("create from steps assigns P1, derives the nodes, and layers_list carries it; neither history nor revisions move", async () => {
+    const s0 = await getState();
+    const out = (await call("paths_create", { layer_id: layerId, title: "x".repeat(30), steps: [{ edge: pq, caption: "in" }, { edge: qr }] })).json();
+    expect(out).toEqual({ path_id: "P1", hops: 2, nodes: [p, q, r], layer_extended: [] });
+    expect(await listPaths()).toEqual([{ id: "P1", title: "x".repeat(24), hops: 2 }]);
+    const s1 = await getState();
+    expect(s1.graph.revision).toBe(s0.graph.revision);
+    expect(s1.history.steps).toBe(s0.history.steps);
+    expect(s1.layers[0].paths[0]).toMatchObject({ id: "P1", author: "ai", steps: [{ edge: pq, caption: "in", ref: null }, { edge: qr, caption: "", ref: null }] });
+  });
+
+  it("an edge outside the layer fails with the walk rule's message and creates nothing", async () => {
+    const bad = await call("paths_create", { layer_id: layerId, title: "t", steps: [{ edge: qr }, { edge: rs }] });
+    expect(bad.res.isError).toBe(true);
+    expect(bad.text).toContain(`hop 2: ${rs} leaves layer A`);
+    const ghost = await call("paths_create", { layer_id: layerId, title: "t", steps: [{ edge: "e_ghost" }] });
+    expect(ghost.text).toContain("hop 1: e_ghost does not exist");
+    expect(await listPaths()).toHaveLength(1);
+  });
+
+  it("extend_layer adds the missing endpoints and reports them", async () => {
+    const out = (await call("paths_create", { layer_id: layerId, title: "long", steps: [{ edge: qr }, { edge: rs }], extend_layer: true })).json();
+    expect(out).toEqual({ path_id: "P2", hops: 2, nodes: [q, r, s], layer_extended: [s] });
+    const list = (await call("layers_list")).json().layers[0];
+    expect(list.members).toBe(4);
+    expect(list.paths).toHaveLength(2);
+  });
+
+  it("nodes resolve to edges; a pair joined twice names both edges", async () => {
+    const twice = await call("paths_create", { layer_id: layerId, title: "t", nodes: [p, q] });
+    expect(twice.res.isError).toBe(true);
+    expect(twice.text).toContain(`hop 1: ${p} → ${q} is joined by ${pq} (call) and ${pq2} (retry) — pass steps with the edge you mean`);
+    const none = await call("paths_create", { layer_id: layerId, title: "t", nodes: [q, p] });
+    expect(none.text).toContain(`hop 1: no edge ${q} → ${p}`);
+    const ok = (await call("paths_create", { layer_id: layerId, title: "t", nodes: [q, r], captions: ["reads"] })).json();
+    expect(ok).toMatchObject({ path_id: "P3", hops: 1, nodes: [q, r] });
+    expect((await call("paths_delete", { path_id: "P3" })).json()).toEqual({ ok: true });
+    expect((await listPaths()).map((x: { id: string }) => x.id)).toEqual(["P1", "P2"]);
+    expect((await call("paths_delete", { path_id: "P3" })).text).toContain("path not found: P3");
+  });
+
+  it("update retitles or replaces the steps whole; a bad chain leaves the path unchanged", async () => {
+    expect((await call("paths_update", { path_id: "P1", title: "the walk" })).json()).toEqual({ path_id: "P1", hops: 2 });
+    const bad = await call("paths_update", { path_id: "P1", steps: [{ edge: qr }, { edge: pq }] });
+    expect(bad.res.isError).toBe(true);
+    expect(bad.text).toContain(`hop 2: ${pq} starts at ${p} but hop 1 ended at ${r}`);
+    const got = (await call("paths_get", { path_id: "P1" })).json();
+    expect(got.title).toBe("the walk");
+    expect(got.hops.map((h: { edge: string }) => h.edge)).toEqual([pq, qr]);
+  });
+
+  it("get resolves node labels, refs, edge labels and captions per hop", async () => {
+    const got = (await call("paths_get", { path_id: "P1" })).json();
+    expect(got).toMatchObject({ path_id: "P1", layer_id: layerId });
+    expect(got.hops[0]).toEqual({
+      index: 1,
+      edge: pq,
+      from: { id: p, label: "pp", ref: "auth.ts:verifyToken", endpoint: null },
+      to: { id: q, label: "qq", ref: null, endpoint: null },
+      label: "call",
+      condition: null,
+      caption: "in",
+      ref: null,
+    });
+    expect(got.hops[1]).toMatchObject({ index: 2, edge: qr, label: null, caption: "" });
+  });
+
+  it("play pins the trace: running from 0, or paused at hop (clamped); a highlight closes it", async () => {
+    expect((await call("paths_play", { path_id: "P1" })).json()).toEqual({ ok: true });
+    expect(session().trace).toMatchObject({ layer_id: layerId, path_id: "P1", running: true, loop: false, t: 0 });
+    await call("paths_play", { path_id: "P1", hop: 2 });
+    expect(session().trace).toMatchObject({ path_id: "P1", running: false, t: 2 });
+    await call("paths_play", { path_id: "P1", hop: 9 });
+    expect(session().trace?.t).toBe(2);
+    expect((await call("paths_play", { path_id: "P9" })).text).toContain("path not found: P9");
+    expect(session().log.at(-1)).toMatchObject({ author: "ai", text: "paths_play · P1" });
+    const msg = session().addThread({ type: "claude", text: "look", highlight: { label: "h", nodes: [p], edges: [] } });
+    session().setHighlight(msg.id);
+    expect(session().trace).toBeNull();
+    expect(session().highlight?.msgId).toBe(msg.id);
+    await call("paths_play", { path_id: "P1" });
+    expect(session().highlight).toBeNull();
+  });
+
+  it("a step ref to a missing file fails; a missing symbol warns on the result", async () => {
+    const missing = await call("paths_create", { layer_id: layerId, title: "t", steps: [{ edge: qr, ref: "nope.ts" }] });
+    expect(missing.res.isError).toBe(true);
+    expect(missing.text).toContain("file not found");
+    expect(await listPaths()).toHaveLength(2);
+    const warned = (await call("paths_create", { layer_id: layerId, title: "cited", nodes: [q, r], refs: ["auth.ts:gone"] })).json();
+    expect(warned).toMatchObject({ path_id: "P3", hops: 1, warnings: ["hop 1: symbol not found in auth.ts:gone"] });
+    const fine = (await call("paths_update", { path_id: "P3", steps: [{ edge: qr, ref: "auth.ts:verifyToken" }] })).json();
+    expect(fine).toEqual({ path_id: "P3", hops: 1 });
+    await call("paths_update", { path_id: "P3", steps: [{ edge: qr, ref: "auth.ts:gone" }] });
+  });
+
+  it("layers_update.remove and canvas_delete report paths_affected; lint reports the broken hops and hop refs", async () => {
+    const removed = (await call("layers_update", { layer_id: layerId, remove: [s] })).json();
+    expect(removed.paths_affected).toEqual([{ path_id: "P2", hop: 2, reason: "node left layer" }]);
+    let { findings } = (await call("canvas_lint")).json();
+    expect(findings.filter((f: { target_id: string }) => f.target_id === "P2")).toEqual([
+      { target_id: "P2", check: "path_broken", level: "warn", message: `path P2 hop 2: ${rs} leaves layer A` },
+    ]);
+    expect(findings.filter((f: { target_id: string }) => f.target_id === "P3")).toEqual([
+      { target_id: "P3", check: "path_symbol_missing", level: "warn", message: "path P3 hop 1: symbol gone" },
+    ]);
+
+    const del = (await call("canvas_delete", { id: r })).json();
+    expect(del.ids).toContain(qr);
+    // P2 was already broken at hop 2; it now breaks at hop 1, so it is reported again (by hop, not by path).
+    expect(del.paths_affected).toEqual([
+      { path_id: "P1", hop: 2, reason: "edge pruned" },
+      { path_id: "P2", hop: 1, reason: "edge pruned" },
+      { path_id: "P3", hop: 1, reason: "edge pruned" },
+    ]);
+    ({ findings } = (await call("canvas_lint")).json());
+    expect(findings.find((f: { target_id: string }) => f.target_id === "P1")).toEqual({
+      target_id: "P1", check: "path_broken", level: "warn", message: "path P1 hop 2 references a pruned edge",
+    });
+    // The path survives; get gives nulls for the pruned hop.
+    const got = (await call("paths_get", { path_id: "P1" })).json();
+    expect(got.hops[1]).toMatchObject({ edge: qr, from: null, to: null, label: null });
+  });
+
+  it("scoped get_state carries the layer's paths and validates against the fixture", async () => {
+    await call("layers_focus", { layer_id: layerId });
+    const scoped = await getState();
+    expect(scoped.scope.paths.map((x: { id: string }) => x.id)).toEqual(["P1", "P2", "P3"]);
+    expect(scoped.scope.paths[0].steps[0]).toEqual({ edge: pq, caption: "in", ref: null });
+    await call("layers_focus", { layer_id: null });
+  });
+
+  it("deleting the playing path or its layer closes the trace", async () => {
+    await call("paths_play", { path_id: "P3" });
+    expect(session().trace?.path_id).toBe("P3");
+    await call("paths_delete", { path_id: "P3" });
+    expect(session().trace).toBeNull();
+    await call("paths_play", { path_id: "P1" });
+    expect(session().trace?.path_id).toBe("P1");
+    await call("layers_delete", { layer_id: layerId });
+    expect(session().trace).toBeNull();
+    expect((await call("layers_list")).json().layers).toEqual([]);
   });
 });

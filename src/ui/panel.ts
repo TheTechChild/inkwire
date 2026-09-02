@@ -1,6 +1,6 @@
 // Right panel (inspector + four tabs), header controls, and the footer.
 import { captureBoard } from "./capture.js";
-import { deleteSelection } from "./canvas.js";
+import { deleteSelection, togglePlay, traceInfo } from "./canvas.js";
 import type { App, Scope, Tab, Tool } from "./app.js";
 import { KIND_META, el, focusLayer, focusedLayer } from "./app.js";
 import { liveMembers, scopeState } from "../core/layers.js";
@@ -40,7 +40,7 @@ const SCOPE_NOTES: Record<Scope, string> = {
 // the panel can genuinely act; the rest belong to Claude over MCP.
 const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
   ["session.mode", "Flip the mode flag the server holds. On: fails unless permission mode is auto; arms the Stop hook that redirects replies into session_send. Off: releases any pending session_send with mode_off.", "(on: boolean) → { mode, hook }", (app) => switchTab(app, "session")],
-  ["session.send", "Deliver a reply to the Session tab, optionally pointing at elements. Blocks until the human replies (20 min timeout) and returns their message with focus, selection and revision as ids.", "(text, highlight?: { nodes, edges, label }) → { reply, ctx } | { status: mode_off | idle }", (app) => switchTab(app, "session")],
+  ["session.send", "Deliver a reply to the Session tab, optionally pointing at elements or at a path (or a hop on it). Blocks until the human replies (20 min timeout) and returns their message with focus, selection, scrubber position and revision as ids.", "(text, highlight?: { nodes, edges, label }, path?: { layer_id, path_id, hop? }) → { reply, ctx } | { status: mode_off | idle }", (app) => switchTab(app, "session")],
   ["boards.list", "Board ids, names, element counts, last touched.", "() → { boards }", null as never],
   ["boards.open", "Make a board current and return its state.", "(board_id) → CanvasState", null as never],
   ["boards.create", "New empty board.", "(name) → { board_id }", null as never],
@@ -64,9 +64,18 @@ const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
   ["history.get", "Read the timeline: steps, authors, conflicts. Read-only.", "(limit?) → { head, steps }", null as never],
   ["layers.list", "Every layer with its letter, title, member count — and which one the human is looking at.", "() → { focus, layers }", (app) => switchTab(app, "layers")],
   ["layers.create", "Cut a named subset out of the board. downstream: true also adds everything reachable along edges.", "(node_ids, title?, note?, downstream?) → { layer_id, letter, members }", null as never],
-  ["layers.update", "Add or remove members, retitle, or rewrite the note. Elements themselves are untouched.", "(layer_id, add?, remove?, title?, note?) → { layer_id, members }", null as never],
+  ["layers.update", "Add or remove members, retitle, or rewrite the note. Elements themselves are untouched.", "(layer_id, add?, remove?, title?, note?) → { layer_id, members, paths_affected }", null as never],
   ["layers.focus", "Focus a layer in the human's viewport, or pass null to release. It moves someone else's screen.", "(layer_id | null) → { ok }", (app) => focusLayer(app, app.push?.state.focus ? null : (app.push?.state.layers[0]?.id ?? null))],
   ["layers.delete", "Remove a layer. A layer is a view over the board, so nothing on the board is deleted.", "(layer_id) → { ok }", null as never],
+  ["paths.create", "Write an ordered walk on a layer: one hop per edge, each hop's to is the next hop's from, every edge inside the layer. Pass nodes and the server resolves the edges, naming both when a pair is joined twice. A caption per hop is what the human reads while it plays; a ref per hop is its citation. Fails naming the first hop that breaks the chain.", "(layer_id, title, steps? | nodes? + captions? + refs?, extend_layer?) → { path_id, hops, nodes, layer_extended }", null as never],
+  ["paths.update", "Retitle, or replace the steps whole. Steps are set as a list, never patched by index.", "(path_id, title?, steps?) → { path_id, hops }", null as never],
+  ["paths.delete", "Remove a path. The layer and the board are untouched.", "(path_id) → { ok }", null as never],
+  ["paths.get", "One path with its hops resolved: node labels, refs, edge labels, captions. Small — use it to answer about a hop instead of reading the board.", "(path_id) → { path_id, layer_id, title, hops }", null as never],
+  ["paths.play", "Open the scrubber on a path in the human's panel: play it once, or pause at a hop. Moves someone else's screen — use when the reply is about the order.", "(path_id, hop?) → { ok }", (app) => {
+    const first = app.push?.state.layers.flatMap((l) => l.paths)[0];
+    if (first) app.send({ type: "trace_set", path_id: first.id });
+    else toast("no path on this board — ask claude for paths_create");
+  }],
 ];
 
 const PANEL_KEY = "inkwire.panel";
@@ -571,6 +580,28 @@ function renderLayers(app: App): void {
     body.className = "note";
     body.textContent = layer.note;
 
+    const paths = document.createElement("div");
+    paths.className = "paths";
+    if (layer.paths.length) {
+      const kicker = document.createElement("span");
+      kicker.className = "kicker";
+      kicker.textContent = "PATHS · one hop per edge, in order";
+      paths.appendChild(kicker);
+      const tr = traceInfo(app);
+      for (const p of layer.paths) {
+        const playing = tr?.path.id === p.id;
+        const row = document.createElement("div");
+        row.className = playing ? "path-row on" : "path-row";
+        row.innerHTML = `<button class="play" title="play — opens the scrubber"></button><span class="id"></span><span class="title"></span><span class="hops"></span>`;
+        (row.children[0] as HTMLElement).textContent = playing && tr.running ? "❚❚" : "▸";
+        (row.children[1] as HTMLElement).textContent = p.id;
+        (row.children[2] as HTMLElement).textContent = p.title;
+        (row.children[3] as HTMLElement).textContent = `${p.steps.length} hops`;
+        row.children[0]!.addEventListener("click", () => (playing ? togglePlay(app) : app.send({ type: "trace_set", path_id: p.id })));
+        paths.appendChild(row);
+      }
+    }
+
     const actions = document.createElement("div");
     actions.className = "actions";
     const focus = document.createElement("button");
@@ -583,7 +614,7 @@ function renderLayers(app: App): void {
     del.addEventListener("click", () => app.send({ type: "layers_delete", layer_id: layer.id }));
     actions.append(focus, del);
 
-    card.append(meta, title, body, actions);
+    card.append(meta, title, body, paths, actions);
     pane.appendChild(card);
   }
 }

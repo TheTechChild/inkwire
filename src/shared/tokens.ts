@@ -11,6 +11,7 @@ export interface ThemeTokens {
   accent700: string; // human edges/arrows
   divider: string;
   grid: string;
+  signal: string; // the traversal gold: the moving front of a path and what it has reached. Nothing else.
 }
 
 export const LIGHT: ThemeTokens = {
@@ -21,6 +22,7 @@ export const LIGHT: ThemeTokens = {
   accent700: "#41638a",
   divider: "rgba(29,31,32,0.16)",
   grid: "rgba(29,31,32,0.13)",
+  signal: "#b8862a",
 };
 
 export const DARK: ThemeTokens = {
@@ -31,6 +33,7 @@ export const DARK: ThemeTokens = {
   accent700: "#b6d2ea",
   divider: "rgba(232,235,238,0.16)",
   grid: "rgba(232,235,238,0.10)",
+  signal: "#e8bd5e",
 };
 
 export const RENDER = {

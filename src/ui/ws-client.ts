@@ -10,6 +10,7 @@ export function connectWs(app: App): void {
   let sentViewport = "";
   let lastFocus: string | null = null;
   let lastHighlight: string | null = null;
+  let lastTrace: string | null = null;
 
   app.send = (intent) => {
     if (socket && socket.readyState === WebSocket.OPEN) {
@@ -60,6 +61,17 @@ export function connectWs(app: App): void {
           lastHighlight = hl;
           if (hl) app.sel = null;
         }
+        // A trace opened or closed (a chip, paths_play, a session_send): it is a
+        // stronger pointer than the selection, and any local seek is stale.
+        const tr = msg.session.trace;
+        if ((tr?.path_id ?? null) !== lastTrace) {
+          lastTrace = tr?.path_id ?? null;
+          app.sel = null;
+          app.traceOverride = null;
+        }
+        // The push echoes this panel's seek: the override has done its job.
+        const ov = app.traceOverride;
+        if (ov && (!tr || (tr.t === ov.t && tr.running === ov.running))) app.traceOverride = null;
         // Adopt the server viewport when someone else moved it (the AI's
         // set_viewport, or another panel) — never mid-gesture, and never
         // when it just echoes what this panel sent.

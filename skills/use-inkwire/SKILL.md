@@ -11,6 +11,6 @@ The human is about to leave the terminal for the inkwire panel in the browser.
 2. Call `session_mode` with `on: true`.
    - If it fails, print the error message as it is. It says how to relaunch. Stop.
    - If it succeeds, inkwire mode is on. Follow the `instruction` in the result for the rest of the session.
-3. Deliver every reply with `session_send(text, highlight?)`, and end your turn only after it returns. Open with a short `session_send` that asks what to look at. Point at elements with `highlight: { label, nodes, edges }` when the reply is about specific parts of the board.
-4. A `reply` result carries `ctx` as ids only: the focused layer, the selected element, and `graph.revision`. Call `canvas_get_state` when you need the bodies.
+3. Deliver every reply with `session_send(text, highlight?, path?)`, and end your turn only after it returns. Open with a short `session_send` that asks what to look at. Three pointers: `highlight: { label, nodes, edges }` points at a set, a layer keeps a cut, `path: { layer_id, path_id, hop? }` explains an order (see the `trace-path` skill).
+4. A `reply` result carries `ctx` as ids only: the focused layer, the selected element, the scrubber position (`trace: { path, hop }`), and `graph.revision`. Call `canvas_get_state` when you need the bodies.
 5. On `mode_off` or `idle`, the human is back in the terminal. Reply there and end your turn.

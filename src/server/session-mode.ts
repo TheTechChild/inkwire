@@ -4,12 +4,14 @@
 // The hook script is a dumb forwarder; every decision is made here.
 import { execFile } from "node:child_process";
 import type { Highlight } from "../shared/types.js";
+import { playableHops } from "../core/layers.js";
+import { findPath, openTrace } from "./layers.js";
 import type { BoardSession, SendResult, Sessions } from "./session.js";
 
 export const MODE_ON_INSTRUCTION =
-  "inkwire mode is on: deliver replies with session_send and end your turn only after it returns.";
+  "inkwire mode is on: deliver replies with session_send and end your turn only after it returns. Three pointers: highlight = point at a set, layer = keep a cut, path = explain an order.";
 const STOP_REASON =
-  "inkwire mode is on: the human is in the inkwire panel, not the terminal. Deliver this reply with session_send(text, highlight?) and end your turn only after it returns.";
+  "inkwire mode is on: the human is in the inkwire panel, not the terminal. Deliver this reply with session_send(text, highlight?, path?) and end your turn only after it returns.";
 const IDLE_NOTICE = "claude code timed out · say something in the terminal";
 const MODE_OFF_NOTE = "user returned to the terminal; reply in the PTY";
 /** Stop blocks in a row with no session_send between them before the server gives up. */
@@ -86,6 +88,7 @@ function modeOff(
 export interface SendArgs {
   text: string;
   highlight?: Highlight;
+  path?: { layer_id: string; path_id: string; hop?: number };
 }
 
 /** Append the agent's message, light the highlight, then block until the
@@ -120,8 +123,20 @@ export function sessionSend(
     };
   }
 
-  const msg = session.addThread({ type: "claude", text: args.text, ...(highlight ? { highlight } : {}) });
+  // Path ids are board-unique; layer_id rides along for the chip.
+  let path: { layer_id: string; path_id: string } | undefined;
+  if (args.path) {
+    try {
+      path = { layer_id: findPath(session, args.path.path_id).layer.id, path_id: args.path.path_id };
+    } catch {
+      warnings.push(`unknown path dropped: ${args.path.path_id}`);
+    }
+  }
+
+  const msg = session.addThread({ type: "claude", text: args.text, ...(highlight ? { highlight } : {}), ...(path ? { path } : {}) });
   if (highlight) session.setHighlight(msg.id);
+  // Last, so the trace wins over the highlight: a trace is the stronger pointer.
+  if (path) openTrace(session, path.path_id, { t: args.path!.hop, running: args.path!.hop === undefined });
   sessions.blocks = 0;
 
   return new Promise<SendResult & { warnings?: string[] }>((resolve) => {
@@ -152,7 +167,7 @@ export function sessionSend(
 export function sessionReply(
   sessions: Sessions,
   session: BoardSession,
-  args: { text: string; focus: string | null; selection: string | null },
+  args: { text: string; focus: string | null; selection: string | null; trace?: { path: string; hop: number } | null },
 ): void {
   if (sessions.mode !== "inkwire") throw new Error("pty mode: replies go to the terminal");
   if (!sessions.pending) throw new Error("no session_send is pending; claude code is still working");
@@ -171,6 +186,15 @@ export function sessionReply(
     else if (edge) ctx.push({ label: `${edge.id} · ${(edge.label || "edge").slice(0, 22)}`, title: "selected edge — sent as an id" });
     if (node || edge) selected = args.selection;
   }
+  let trace: { path: string; hop: number } | null = null;
+  if (args.trace) {
+    const hit = session.layers.flatMap((l) => l.paths.map((p) => [l, p] as const)).find(([, p]) => p.id === args.trace!.path);
+    const n = hit ? playableHops(hit[0], session.collections().edges, hit[1]) : 0;
+    if (n) {
+      trace = { path: args.trace.path, hop: Math.min(n, Math.max(1, args.trace.hop)) };
+      ctx.push({ label: `${trace.path} · hop ${trace.hop}/${n}`, title: "the scrubber's position — sent as { path, hop }, ids only" });
+    }
+  }
   ctx.push({ label: `rev ${session.graphRevision}`, title: "graph.revision the message was written against" });
   session.addThread({ type: "you", text: args.text, ctx });
   sessions.resolvePending({
@@ -179,6 +203,7 @@ export function sessionReply(
     ctx: {
       focus: layer ? layer.id : null,
       selection: selected,
+      trace,
       revision: session.graphRevision,
     },
   });

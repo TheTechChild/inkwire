@@ -84,6 +84,23 @@ export interface Layer {
   note: string; // "" when absent
   nodes: string[]; // node ids (notes are nodes). Never edges, never ink.
   author: Author;
+  paths: Path[]; // ordered walks over the layer's edges; [] for older boards
+}
+
+/** One hop of a path: an edge inside the layer, what the human reads while it plays, and its citation. */
+export interface PathStep {
+  edge: string; // edge id, internal to the layer
+  caption: string; // "" when absent; cap 160 chars
+  ref: string | null; // optional "path/to/file.ts:symbol", validated like bind_code
+}
+
+/** An ordering over a layer, never a second copy of the graph: edge ids only.
+ * Nodes are derived: [steps[0].from, ...steps.map(s => s.to)]. Revisits are legal; branching is not. */
+export interface Path {
+  id: string; // "P1", "P2"… first unused across the board
+  title: string; // cap 24, "untitled" when empty
+  steps: PathStep[]; // min 1
+  author: Author;
 }
 
 export interface BoardMeta {
@@ -190,6 +207,7 @@ export interface ScopeInfo {
   note: string;
   omitted: { nodes: number; edges: number };
   whole_board: "canvas_get_board";
+  paths: Path[];
 }
 
 export interface CanvasState {
@@ -247,9 +265,20 @@ export interface CtxChip {
   title: string;
 }
 
+/** The path being played on a board: pinned, shared by every panel, never persisted.
+ * Panels advance t locally from started_at while running; the server never ticks. */
+export interface Trace {
+  layer_id: string;
+  path_id: string;
+  running: boolean;
+  loop: boolean;
+  t: number; // 0 … steps.length; the base position at started_at
+  started_at: number; // server clock (ms) at the last write
+}
+
 export type ThreadEntry =
   | { id: string; at: number; type: "you"; text: string; ctx: CtxChip[] }
-  | { id: string; at: number; type: "claude"; text: string; highlight?: Highlight }
+  | { id: string; at: number; type: "claude"; text: string; highlight?: Highlight; path?: { layer_id: string; path_id: string } }
   | { id: string; at: number; type: "call"; name: string; text: string; json?: string };
 
 /** A ThreadEntry before the server stamps id and time (Omit distributed over the union). */
