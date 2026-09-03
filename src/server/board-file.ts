@@ -40,6 +40,7 @@ export function exportBoard(session: BoardSession, store: Store, now: number): B
     layout: c.layout,
     assets,
     layers: session.layers,
+    drafts: session.drafts,
   };
 }
 
@@ -110,10 +111,19 @@ export function importBoard(sessions: Sessions, store: Store, raw: unknown): Boa
     }
   }
 
+  // Drafts are looked up by id alone, like paths; marks are not validated — a
+  // draft may describe an element that already went, and the board shows it gone.
+  const draftIds = new Set<string>();
+  for (const d of file.drafts ?? []) {
+    if (draftIds.has(d.id)) throw new ImportError(`duplicate draft id: ${d.id}`);
+    draftIds.add(d.id);
+  }
+
   const collections: Collections = { nodes, edges, strokes: file.strokes, images, layout };
   return sessions.create(file.name, {
     collections,
     viewport: file.viewport ?? { x: 0, y: 0, zoom: 1 },
     layers: file.layers ?? [],
+    drafts: file.drafts ?? [],
   });
 }

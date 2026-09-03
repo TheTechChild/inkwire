@@ -216,15 +216,19 @@ describe("integration", () => {
         paths: [{ id: "P1", title: "in", steps: [{ edge: e, caption: "token", ref: null }], author: "ai" }],
       },
     ]);
+    src.updateDrafts("ai", "draft D1", () => [
+      { id: "D1", title: "swap the token flow", note: "why", marks: { [b]: "changed", [e]: "added" }, author: "ai" },
+    ]);
 
     const exp = await fetch(`http://127.0.0.1:${port}/api/boards/${src.boardId}/export`);
     expect(exp.status).toBe(200);
     expect(exp.headers.get("content-disposition")).toBe('attachment; filename="export-me.inkwire.json"');
     const file = await exp.json();
     expect(file.format).toBe("inkwire-board");
-    expect(file.version).toBe(2);
+    expect(file.version).toBe(3);
     expect(file.nodes).toHaveLength(2);
     expect(file.layers[0].paths).toHaveLength(1);
+    expect(file.drafts).toEqual(src.drafts);
     expect(file.assets[imgSrc]).toBe(`data:image/png;base64,${png.toString("base64")}`);
 
     const imp = await fetch(`http://127.0.0.1:${port}/api/boards/import`, {
@@ -241,6 +245,7 @@ describe("integration", () => {
     expect(dst.collections()).toEqual(src.collections());
     expect(dst.viewport).toEqual(src.viewport);
     expect(dst.layers).toEqual(src.layers);
+    expect(dst.drafts).toEqual(src.drafts);
     expect(dst.history.steps).toHaveLength(0);
     // Persisted: a cold load from the store sees the same content.
     expect(store.load(created.board_id)!.collections).toEqual(src.collections());
@@ -265,6 +270,24 @@ describe("integration", () => {
     });
     expect(v1.status).toBe(200);
     expect(sessions.open((await v1.json()).board_id).layers[0]!.paths).toEqual([]);
+
+    // A version 2 file predates drafts: it imports with drafts: [].
+    const v2 = await fetch(`http://127.0.0.1:${port}/api/boards/import`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...file, version: 2, drafts: undefined }),
+    });
+    expect(v2.status).toBe(200);
+    expect(sessions.open((await v2.json()).board_id).drafts).toEqual([]);
+
+    // A duplicated draft id is refused — lookups trust ids to be unique, like paths.
+    const dupDraft = await fetch(`http://127.0.0.1:${port}/api/boards/import`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...file, drafts: [...file.drafts, file.drafts[0]] }),
+    });
+    expect(dupDraft.status).toBe(400);
+    expect((await dupDraft.json()).error).toContain("duplicate draft id: D1");
 
     // A path that does not chain, or a duplicated path id, is refused: lookups trust both.
     const walk = file.layers[0].paths[0];

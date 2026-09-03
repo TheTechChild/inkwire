@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { pathsAffected, scopeState } from "../core/layers.js";
+import { draftsAffectedBy } from "../core/drafts.js";
 import { exportMermaid } from "../core/mermaid.js";
 import { toolArgs } from "../shared/schemas.js";
 import { importBoard } from "./board-file.js";
@@ -15,6 +16,7 @@ import * as mutations from "./mutations.js";
 import { validateRef } from "./bindcode.js";
 import { lintBoard } from "./lint.js";
 import { createLayer, createPath, deleteLayer, deletePath, getPath, memberCount, openTrace, updateLayer, updatePath } from "./layers.js";
+import { createDraft, deleteDraft, getDraft, updateDraft } from "./drafts.js";
 import { sessionMode, sessionSend } from "./session-mode.js";
 import type { Store } from "./store.js";
 
@@ -103,13 +105,14 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "session.send",
-    "Deliver a reply to the Session tab, optionally pointing at elements or at a path (or a hop on it). Blocks until the human replies (20 min timeout) and returns their message with focus, selection, scrubber position and revision as ids.",
+    "Deliver a reply to the Session tab, optionally pointing at elements, at a path (or a hop on it), or at a draft. Blocks until the human replies (20 min timeout) and returns their message with focus, selection, scrubber position, active draft and revision as ids.",
     async (
       args: {
         board_id?: string;
         text: string;
         highlight?: { nodes: string[]; edges: string[]; label: string };
         path?: { layer_id: string; path_id: string; hop?: number };
+        draft?: string;
       },
       extra: any,
     ) => {
@@ -274,13 +277,14 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "canvas.delete",
-    "Remove an element by id. Deleting a node also removes its edges — the result reports every id that went, and paths_affected names the paths whose walk it broke.",
+    "Remove an element by id. Deleting a node also removes its edges — the result reports every id that went, paths_affected names the paths whose walk it broke, and drafts_affected names the draft marks it left gone.",
     (args: { board_id?: string; id: string }) => {
       const session = sessions.resolve(args.board_id);
       const before = new Set(pathsAffected(session.layers, session.collections().edges).map((b) => `${b.path_id}:${b.hop}`));
       const result = mutations.deleteElement(session, AUTHOR, args.id);
       const paths_affected = pathsAffected(session.layers, session.collections().edges).filter((b) => !before.has(`${b.path_id}:${b.hop}`));
-      return text({ ...result, paths_affected });
+      const drafts_affected = draftsAffectedBy(session.drafts, result.ids);
+      return text({ ...result, paths_affected, drafts_affected });
     },
   );
 
@@ -344,11 +348,11 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "canvas.lint",
-    `Static checks against the project root (${deps.projectRoot}), no model: refs to missing files (error), refs whose symbol is gone (warn), nodes with neither ref nor endpoint (warn), error edges with no condition (warn), conditions on a node with a single outgoing edge (warn), paths with a broken hop or a hop ref that no longer resolves. Run after a refactor to find board rot. For a semantic audit — does the edge really call what it says — read get_state and check the code yourself.`,
+    `Static checks against the project root (${deps.projectRoot}), no model: refs to missing files (error), refs whose symbol is gone (warn), nodes with neither ref nor endpoint (warn), error edges with no condition (warn), conditions on a node with a single outgoing edge (warn), paths with a broken hop or a hop ref that no longer resolves, drafts marking an element that no longer exists (warn). Run after a refactor to find board rot. For a semantic audit — does the edge really call what it says — read get_state and check the code yourself.`,
     (args: { board_id?: string }) => {
       const session = sessions.resolve(args.board_id);
       const c = session.collections();
-      const findings = lintBoard(deps.projectRoot, c.nodes, c.edges, session.layers);
+      const findings = lintBoard(deps.projectRoot, c.nodes, c.edges, session.layers, session.drafts);
       return text({
         project_root: deps.projectRoot,
         errors: findings.filter((f) => f.level === "error").length,
@@ -473,6 +477,52 @@ export function buildMcpServer(deps: McpDeps): McpServer {
       const session = sessions.resolve(args.board_id);
       openTrace(session, args.path_id, { t: args.hop, running: args.hop === undefined });
       session.addLog(AUTHOR, `paths_play · ${args.path_id}`);
+      return text({ ok: true });
+    },
+  );
+
+  register(
+    "drafts.create",
+    "Propose a change: a title, a note saying what and why, and marks — element ids with one of removed, changed, added. A draft changes nothing on the board; it says what would. Marks are explicit: mark the edges you mean, the server infers none.",
+    (args: Parameters<typeof createDraft>[2] & { board_id?: string }) => {
+      const session = sessions.resolve(args.board_id);
+      return text(createDraft(session, AUTHOR, args));
+    },
+  );
+
+  register(
+    "drafts.update",
+    "Retitle, rewrite the note, mark or unmark elements. Marking again replaces the role.",
+    (args: Parameters<typeof updateDraft>[2] & { board_id?: string }) => {
+      const session = sessions.resolve(args.board_id);
+      return text(updateDraft(session, AUTHOR, args));
+    },
+  );
+
+  register(
+    "drafts.delete",
+    "Remove a draft. The board is untouched.",
+    (args: { board_id?: string; draft_id: string }) => {
+      const session = sessions.resolve(args.board_id);
+      return text(deleteDraft(session, AUTHOR, args));
+    },
+  );
+
+  register(
+    "drafts.get",
+    "One draft with its marks resolved to labels. Small — use it to answer about a mark instead of reading the board.",
+    (args: { board_id?: string; draft_id: string }) => {
+      const session = sessions.resolve(args.board_id);
+      return text(getDraft(session, args));
+    },
+  );
+
+  register(
+    "drafts.activate",
+    "Show a draft on the human's canvas, or pass null to clear. Shared by every panel; it changes what someone else is looking at.",
+    (args: { board_id?: string; draft_id: string | null }) => {
+      const session = sessions.resolve(args.board_id);
+      session.setActiveDraft(args.draft_id, AUTHOR);
       return text({ ok: true });
     },
   );

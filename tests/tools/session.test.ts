@@ -60,9 +60,9 @@ afterAll(async () => {
 });
 
 describe("session_mode", () => {
-  it("lists 33 tools with the two session tools registered", async () => {
+  it("lists 38 tools with the two session tools registered", async () => {
     const names = (await client.listTools()).tools.map((t) => t.name);
-    expect(names).toHaveLength(33);
+    expect(names).toHaveLength(38);
     expect(names).toContain("session_mode");
     expect(names).toContain("session_send");
   });
@@ -165,7 +165,7 @@ describe("session_send", () => {
 
     sessionReply(sessions, session, { text: "What is this hop?", focus: null, selection: null, trace: { path: "P1", hop: 2 } });
     const r = (await pending).json();
-    expect(r.ctx).toEqual({ focus: null, selection: null, trace: { path: "P1", hop: 2 }, revision: session.graphRevision });
+    expect(r.ctx).toEqual({ focus: null, selection: null, trace: { path: "P1", hop: 2 }, draft: null, revision: session.graphRevision });
     expect(r.warnings).toBeUndefined();
     const you = session.thread.at(-1)!;
     expect(you.type === "you" && you.ctx.map((x) => x.label)).toEqual(["P1 · hop 2/3", `rev ${session.graphRevision}`]);
@@ -188,6 +188,32 @@ describe("session_send", () => {
     expect((await again).json().ctx.trace).toBeNull();
     const you = session.thread.at(-1)!;
     expect(you.type === "you" && you.ctx.map((x) => x.label)).toEqual([`rev ${session.graphRevision}`]);
+  });
+
+  it("a draft activates on send and shows a thread chip; unknown draft is dropped into warnings; a reply's draft comes back as ctx.draft", async () => {
+    const session = sessions.open(boardId);
+    const draftId = (await call("drafts_create", { title: "d" })).json().draft_id;
+
+    const pending = call("session_send", { text: "About this change.", draft: draftId });
+    await new Promise((r) => setTimeout(r, 10));
+    const msg = session.thread.at(-1)!;
+    expect(msg).toMatchObject({ type: "claude", text: "About this change.", draft: draftId });
+    expect(session.activeDraft).toBe(draftId);
+
+    sessionReply(sessions, session, { text: "ok", focus: null, selection: null, draft: draftId });
+    const r = (await pending).json();
+    expect(r.ctx.draft).toBe(draftId);
+    const you = session.thread.at(-1)!;
+    expect(you.type === "you" && you.ctx.map((x) => x.label)).toContain(`${draftId} · d`);
+
+    const pending2 = call("session_send", { text: "Hmm.", draft: "D9" });
+    await new Promise((r) => setTimeout(r, 10));
+    const dropped = session.thread.at(-1)!;
+    expect(dropped.type === "claude" && dropped.draft).toBeUndefined();
+    sessionReply(sessions, session, { text: "ok", focus: null, selection: null });
+    const r2 = (await pending2).json();
+    expect(r2.warnings).toEqual(["unknown draft dropped: D9"]);
+    expect(r2.ctx.draft).toBeNull();
   });
 
   it("a reply with nothing pending is rejected", () => {

@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { BoardMeta, Collections, Layer, Viewport } from "../shared/types.js";
+import type { BoardMeta, Collections, Draft, Layer, Viewport } from "../shared/types.js";
 import { emptyCollections } from "../shared/types.js";
 
 export interface StoredBoard {
@@ -13,6 +13,7 @@ export interface StoredBoard {
   collections: Collections;
   viewport: Viewport;
   layers: Layer[];
+  drafts: Draft[];
 }
 
 export interface BoardListing {
@@ -46,11 +47,17 @@ export class Store {
       ink         TEXT NOT NULL,
       images      TEXT NOT NULL,
       viewport    TEXT NOT NULL,
-      layers      TEXT NOT NULL DEFAULT '[]'
+      layers      TEXT NOT NULL DEFAULT '[]',
+      drafts      TEXT NOT NULL DEFAULT '[]'
     )`);
-    // Migration for rows created before layers existed; "duplicate column" is the steady state.
+    // Migration for rows created before layers/drafts existed; "duplicate column" is the steady state.
     try {
       this.db.exec("ALTER TABLE boards ADD COLUMN layers TEXT NOT NULL DEFAULT '[]'");
+    } catch {
+      /* column already exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE boards ADD COLUMN drafts TEXT NOT NULL DEFAULT '[]'");
     } catch {
       /* column already exists */
     }
@@ -100,6 +107,8 @@ export class Store {
       layers: (JSON.parse((row.layers as string | undefined) ?? "[]") as (Omit<Layer, "paths"> & { paths?: Layer["paths"] })[]).map(
         (l) => ({ paths: [], ...l }),
       ),
+      // Rows written before drafts existed have no drafts column.
+      drafts: JSON.parse((row.drafts as string | undefined) ?? "[]") as Draft[],
     };
   }
 
@@ -107,13 +116,14 @@ export class Store {
     id: string,
     name: string,
     now: number,
-    content?: { collections: Collections; viewport: Viewport; layers?: Layer[] },
+    content?: { collections: Collections; viewport: Viewport; layers?: Layer[]; drafts?: Draft[] },
   ): StoredBoard {
     const board: StoredBoard = {
       meta: { id, name, created_at: now, updated_at: now },
       collections: content?.collections ?? emptyCollections(),
       viewport: content?.viewport ?? DEFAULT_VIEWPORT,
       layers: content?.layers ?? [],
+      drafts: content?.drafts ?? [],
     };
     this.save(board, now);
     return board;
@@ -122,11 +132,11 @@ export class Store {
   save(board: StoredBoard, now: number): void {
     this.db
       .prepare(
-        `INSERT INTO boards (id, name, created_at, updated_at, graph, layout, ink, images, viewport, layers)
-         VALUES (@id, @name, @created_at, @updated_at, @graph, @layout, @ink, @images, @viewport, @layers)
+        `INSERT INTO boards (id, name, created_at, updated_at, graph, layout, ink, images, viewport, layers, drafts)
+         VALUES (@id, @name, @created_at, @updated_at, @graph, @layout, @ink, @images, @viewport, @layers, @drafts)
          ON CONFLICT(id) DO UPDATE SET
            name = @name, updated_at = @updated_at, graph = @graph, layout = @layout,
-           ink = @ink, images = @images, viewport = @viewport, layers = @layers`,
+           ink = @ink, images = @images, viewport = @viewport, layers = @layers, drafts = @drafts`,
       )
       .run({
         id: board.meta.id,
@@ -139,6 +149,7 @@ export class Store {
         images: JSON.stringify(board.collections.images),
         viewport: JSON.stringify(board.viewport),
         layers: JSON.stringify(board.layers),
+        drafts: JSON.stringify(board.drafts),
       });
   }
 

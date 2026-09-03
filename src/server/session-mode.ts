@@ -6,12 +6,13 @@ import { execFile } from "node:child_process";
 import type { Highlight } from "../shared/types.js";
 import { playableHops } from "../core/layers.js";
 import { findPath, openTrace } from "./layers.js";
+import { findDraft } from "./drafts.js";
 import type { BoardSession, SendResult, Sessions } from "./session.js";
 
 export const MODE_ON_INSTRUCTION =
-  "inkwire mode is on: deliver replies with session_send and end your turn only after it returns. Three pointers: highlight = point at a set, layer = keep a cut, path = explain an order.";
+  "inkwire mode is on: deliver replies with session_send and end your turn only after it returns. Four pointers: highlight = point at a set, layer = keep a cut, path = explain an order, draft = propose a change.";
 const STOP_REASON =
-  "inkwire mode is on: the human is in the inkwire panel, not the terminal. Deliver this reply with session_send(text, highlight?, path?) and end your turn only after it returns.";
+  "inkwire mode is on: the human is in the inkwire panel, not the terminal. Deliver this reply with session_send(text, highlight?, path?, draft?) and end your turn only after it returns.";
 const IDLE_NOTICE = "claude code timed out · say something in the terminal";
 const MODE_OFF_NOTE = "user returned to the terminal; reply in the PTY";
 /** Stop blocks in a row with no session_send between them before the server gives up. */
@@ -89,6 +90,7 @@ export interface SendArgs {
   text: string;
   highlight?: Highlight;
   path?: { layer_id: string; path_id: string; hop?: number };
+  draft?: string;
 }
 
 /** Append the agent's message, light the highlight, then block until the
@@ -133,10 +135,27 @@ export function sessionSend(
     }
   }
 
-  const msg = session.addThread({ type: "claude", text: args.text, ...(highlight ? { highlight } : {}), ...(path ? { path } : {}) });
+  // The draft exists, or it is dropped into warnings; the message lands without the chip either way.
+  let draft: string | undefined;
+  if (args.draft) {
+    try {
+      draft = findDraft(session, args.draft).id;
+    } catch {
+      warnings.push(`unknown draft dropped: ${args.draft}`);
+    }
+  }
+
+  const msg = session.addThread({
+    type: "claude",
+    text: args.text,
+    ...(highlight ? { highlight } : {}),
+    ...(path ? { path } : {}),
+    ...(draft ? { draft } : {}),
+  });
   if (highlight) session.setHighlight(msg.id);
   // Last, so the trace wins over the highlight: a trace is the stronger pointer.
   if (path) openTrace(session, path.path_id, { t: args.path!.hop, running: args.path!.hop === undefined });
+  if (draft) session.setActiveDraft(draft, "ai");
   sessions.blocks = 0;
 
   return new Promise<SendResult & { warnings?: string[] }>((resolve) => {
@@ -167,7 +186,13 @@ export function sessionSend(
 export function sessionReply(
   sessions: Sessions,
   session: BoardSession,
-  args: { text: string; focus: string | null; selection: string | null; trace?: { path: string; hop: number } | null },
+  args: {
+    text: string;
+    focus: string | null;
+    selection: string | null;
+    trace?: { path: string; hop: number } | null;
+    draft?: string | null;
+  },
 ): void {
   if (sessions.mode !== "inkwire") throw new Error("pty mode: replies go to the terminal");
   if (!sessions.pending) throw new Error("no session_send is pending; claude code is still working");
@@ -195,6 +220,14 @@ export function sessionReply(
       ctx.push({ label: `${trace.path} · hop ${trace.hop}/${n}`, title: "the scrubber's position — sent as { path, hop }, ids only" });
     }
   }
+  let draft: string | null = null;
+  if (args.draft) {
+    const d = session.drafts.find((x) => x.id === args.draft);
+    if (d) {
+      draft = d.id;
+      ctx.push({ label: `${d.id} · ${d.title}`, title: "the active draft — sent as an id, not its marks" });
+    }
+  }
   ctx.push({ label: `rev ${session.graphRevision}`, title: "graph.revision the message was written against" });
   session.addThread({ type: "you", text: args.text, ctx });
   sessions.resolvePending({
@@ -204,6 +237,7 @@ export function sessionReply(
       focus: layer ? layer.id : null,
       selection: selected,
       trace,
+      draft,
       revision: session.graphRevision,
     },
   });

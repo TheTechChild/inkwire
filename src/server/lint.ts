@@ -3,8 +3,9 @@
 // condition). Semantic auditing is the calling agent's job: get_state gives
 // it every claim already.
 import { pathsAffected } from "../core/layers.js";
+import { goneMarks } from "../core/drafts.js";
 import { validateRef } from "./bindcode.js";
-import type { EdgeEl, Layer, NodeEl } from "../shared/types.js";
+import type { Draft, EdgeEl, Layer, NodeEl } from "../shared/types.js";
 
 export interface LintFinding {
   target_id: string;
@@ -16,12 +17,19 @@ export interface LintFinding {
     | "condition_no_branch"
     | "path_broken"
     | "path_ref_missing"
-    | "path_symbol_missing";
+    | "path_symbol_missing"
+    | "draft_mark_gone";
   level: "error" | "warn";
   message: string;
 }
 
-export function lintBoard(projectRoot: string, nodes: NodeEl[], edges: EdgeEl[], layers: Layer[] = []): LintFinding[] {
+export function lintBoard(
+  projectRoot: string,
+  nodes: NodeEl[],
+  edges: EdgeEl[],
+  layers: Layer[] = [],
+  drafts: Draft[] = [],
+): LintFinding[] {
   const out: LintFinding[] = [];
   for (const n of nodes) {
     if (n.ref) {
@@ -69,6 +77,14 @@ export function lintBoard(projectRoot: string, nodes: NodeEl[], edges: EdgeEl[],
         }
       });
     }
+  }
+  for (const g of goneMarks(drafts, nodes.map((n) => n.id), edges.map((e) => e.id))) {
+    out.push({
+      target_id: g.id,
+      check: "draft_mark_gone",
+      level: "warn",
+      message: `draft ${g.draft_id} marks ${g.id}, which no longer exists`,
+    });
   }
   return out;
 }

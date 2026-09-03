@@ -8,6 +8,7 @@ import type { Viewport } from "../shared/types.js";
 import type { Sessions, BoardSession } from "./session.js";
 import * as mutations from "./mutations.js";
 import { createLayer, deleteLayer, openTrace, updateLayer } from "./layers.js";
+import { createDraft, deleteDraft, markElement, updateDraft } from "./drafts.js";
 import { sessionMode, sessionReply } from "./session-mode.js";
 import type { CaptureBroker } from "./screenshot.js";
 
@@ -158,6 +159,24 @@ export class PanelHub implements CaptureBroker {
         break;
       case "trace_run":
         session.updateTrace({ running: msg.running, loop: msg.loop, t: msg.t });
+        break;
+      case "drafts_activate":
+        session.setActiveDraft(msg.draft_id, author);
+        break;
+      case "drafts_mark":
+        markElement(session, author, msg);
+        break;
+      case "drafts_create": {
+        // The WS create auto-activates the new draft (README § 5 "new draft"); the MCP tool does not.
+        const created = createDraft(session, author, msg);
+        session.setActiveDraft(created.draft_id, author);
+        break;
+      }
+      case "drafts_update":
+        updateDraft(session, author, msg);
+        break;
+      case "drafts_delete":
+        deleteDraft(session, author, msg);
         break;
     }
   }
