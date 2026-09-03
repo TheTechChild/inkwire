@@ -928,16 +928,18 @@ function renderTrace(app: App): void {
       path.setAttribute("d", `M ${p1[0].toFixed(1)} ${p1[1].toFixed(1)} L ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`);
       path.setAttribute("fill", "none");
       path.setAttribute("stroke", "var(--color-signal)");
-      path.setAttribute("stroke-width", "3");
+      const z = quantizeZoom(app.view.zoom); // the CSS floors read the quantized --zoom; match it exactly
+      path.setAttribute("stroke-width", String(Math.max(3, 2.5 / z)));
       path.setAttribute("stroke-dasharray", `${(L * info.frac).toFixed(1)} ${(L + 20).toFixed(1)}`);
       const head = document.createElementNS(SVG_NS, "rect");
-      head.setAttribute("x", (p1[0] + (p2[0] - p1[0]) * info.frac - 4.5).toFixed(1));
-      head.setAttribute("y", (p1[1] + (p2[1] - p1[1]) * info.frac - 4.5).toFixed(1));
-      head.setAttribute("width", "9");
-      head.setAttribute("height", "9");
+      const hs = Math.max(9, 7.5 / z); // the head square keeps a screen floor too
+      head.setAttribute("x", (p1[0] + (p2[0] - p1[0]) * info.frac - hs / 2).toFixed(1));
+      head.setAttribute("y", (p1[1] + (p2[1] - p1[1]) * info.frac - hs / 2).toFixed(1));
+      head.setAttribute("width", String(hs));
+      head.setAttribute("height", String(hs));
       head.setAttribute("fill", "var(--color-signal)");
       head.setAttribute("stroke", "var(--color-bg)");
-      head.setAttribute("stroke-width", "1.5");
+      head.setAttribute("stroke-width", String(Math.max(1.5, 1.25 / z))); // the ring that separates head from dash
       group.append(path, head);
     }
   }
@@ -967,27 +969,31 @@ function renderTrace(app: App): void {
   const dense = track.clientWidth / info.n < 90;
   track.toggleAttribute("data-dense", dense);
   const widePct = Math.min(40, 400 / info.n);
-  const wide = `${widePct.toFixed(1)}%`;
   const near = widePct / 2 / slot + 2; // slots the centred current label reaches past its own, plus an end label's two
+  // A wide label centred near an end of the track pins to that end instead of overhanging it.
+  const pin = (el: HTMLElement, centrePct: number, widthPct: number) => {
+    const half = widthPct / 2;
+    const at = centrePct - half < 0 ? "start" : centrePct + half > 100 ? "end" : "mid";
+    el.style.left = at === "start" ? "0%" : at === "end" ? "100%" : `${centrePct.toFixed(2)}%`;
+    el.style.transform = `translateX(${at === "start" ? "0" : at === "end" ? "-100%" : "-50%"})`;
+  };
   for (const label of sc.querySelectorAll<HTMLElement>(".tick-label")) {
     const j = Number(label.dataset.j);
     const cur = j === curNode;
     const end = j === 0 || j === info.n;
     label.dataset.on = cur ? "cur" : j <= k ? "reached" : "";
     label.hidden = dense && !(cur || (j === 0 && curNode > near) || (j === last && last - curNode > near));
-    label.style.maxWidth = end
-      ? `${(slot * (dense ? 2 : 0.46)).toFixed(1)}%`
-      : cur
-        ? dense
-          ? wide
-          : `calc(${(slot * 0.92).toFixed(1)}% + 8px)` // its padding, so it clips no earlier than its neighbours
-        : `${(slot * 0.92).toFixed(1)}%`;
+    const w = end ? slot * (dense ? 2 : 0.46) : cur && dense ? widePct : slot * 0.92;
+    label.style.maxWidth = cur && !dense && !end ? `calc(${w.toFixed(1)}% + 8px)` : `${w.toFixed(1)}%`; // + its padding
+    pin(label, j * slot, w);
   }
   for (const hop of sc.querySelectorAll<HTMLElement>(".hop")) {
     const j = Number(hop.dataset.j);
     hop.classList.toggle("lit", !hop.classList.contains("broken") && (j < k || (j === info.i && info.frac >= 0.5)));
     hop.hidden = dense && j !== info.i;
-    hop.style.maxWidth = dense ? wide : `${(slot * 0.88).toFixed(1)}%`;
+    const w = dense ? widePct : slot * 0.88;
+    hop.style.maxWidth = `${w.toFixed(1)}%`;
+    pin(hop, (j + 0.5) * slot, w);
   }
   const st = info.path.steps[info.i]!;
   const edge = state.graph.edges.find((e) => e.id === st.edge);
@@ -1045,7 +1051,6 @@ function renderScrubber(app: App, bar: HTMLElement, info: TraceInfo): void {
     const hop = document.createElement("span");
     hop.className = "hop" + (info.broken && j === info.broken.hop - 1 ? " broken" : "");
     hop.dataset.j = String(j);
-    hop.style.left = `${(((j + 0.5) / info.n) * 100).toFixed(2)}%`;
     hop.textContent = edge?.label || st.edge;
     hop.title = `${st.edge} · ${edge?.label ?? ""}`;
     track.appendChild(hop);
@@ -1065,8 +1070,6 @@ function renderScrubber(app: App, bar: HTMLElement, info: TraceInfo): void {
     const label = document.createElement("span");
     label.className = "tick-label";
     label.dataset.j = String(j);
-    label.style.left = left;
-    label.style.transform = `translateX(${j === 0 ? "0" : j === info.n ? "-100%" : "-50%"})`; // widths: renderTrace
     label.textContent = node?.label ?? id;
     label.title = `${id} · ${node?.label ?? ""}`;
     track.append(tick, label);

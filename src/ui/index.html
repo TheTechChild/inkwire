@@ -58,8 +58,12 @@
             <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="var(--color-accent-700)" stroke-width="1.4"></path>
             </marker>
-            <marker id="arwgold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <!-- The gold head is sized in world px, not by the stroke: the done stroke widens at low zoom. -->
+            <marker id="arwgold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="21" markerHeight="21" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
               <path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="var(--color-signal)" stroke-width="1.4"></path>
+            </marker>
+            <marker id="arwahead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="18" markerHeight="18" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+              <path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="var(--color-accent-500)" stroke-width="1.4"></path>
             </marker>
             <marker id="arwai" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="var(--color-accent)" stroke-width="1.4"></path>
