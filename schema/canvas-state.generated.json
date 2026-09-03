@@ -717,6 +717,59 @@
         "paths"
       ],
       "additionalProperties": false
+    },
+    "drafts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 24
+          },
+          "note": {
+            "type": "string"
+          },
+          "marks": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "removed",
+                "changed",
+                "added"
+              ]
+            }
+          },
+          "author": {
+            "type": "string",
+            "enum": [
+              "human",
+              "ai"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "note",
+          "marks",
+          "author"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "active_draft": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [
@@ -728,7 +781,9 @@
     "history",
     "viewport",
     "layers",
-    "focus"
+    "focus",
+    "drafts",
+    "active_draft"
   ],
   "additionalProperties": false
 }

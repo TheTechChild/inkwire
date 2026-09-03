@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   authorSchema,
   boxSchema,
+  draftSchema,
   edgeSchema,
   imageSchema,
   layerSchema,
@@ -14,12 +15,12 @@ import {
 } from "./schemas.js";
 
 export const BOARD_FILE_FORMAT = "inkwire-board";
-export const BOARD_FILE_VERSION = 2;
+export const BOARD_FILE_VERSION = 3;
 
 export const boardFileSchema = z.object({
   format: z.literal(BOARD_FILE_FORMAT),
-  /** 1: before layers carried paths. layerSchema defaults paths to [], so v1 files import unchanged. */
-  version: z.literal([1, BOARD_FILE_VERSION]),
+  /** 1: before layers carried paths; 2: before drafts. Both default to [], so older files import unchanged. */
+  version: z.literal([1, 2, BOARD_FILE_VERSION]),
   name: z.string().min(1),
   exported_at: z.number().optional(),
   viewport: viewportSchema.optional(),
@@ -33,6 +34,7 @@ export const boardFileSchema = z.object({
   /** Bitmaps for images[].src, keyed by that src, as base64 data: URIs. */
   assets: z.record(z.string(), z.string()).optional(),
   layers: z.array(layerSchema).optional(),
+  drafts: z.array(draftSchema).optional(),
 });
 
 export type BoardFile = z.infer<typeof boardFileSchema>;

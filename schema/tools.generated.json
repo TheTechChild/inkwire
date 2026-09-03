@@ -747,6 +747,145 @@
       "path_id"
     ]
   },
+  "drafts.create": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "note": {
+        "type": "string"
+      },
+      "marks": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string",
+              "enum": [
+                "removed",
+                "changed",
+                "added"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "role"
+          ]
+        }
+      }
+    },
+    "required": [
+      "title"
+    ]
+  },
+  "drafts.update": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "draft_id": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "note": {
+        "type": "string"
+      },
+      "mark": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string",
+              "enum": [
+                "removed",
+                "changed",
+                "added"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "role"
+          ]
+        }
+      },
+      "unmark": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "draft_id"
+    ]
+  },
+  "drafts.delete": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "draft_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "draft_id"
+    ]
+  },
+  "drafts.get": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "draft_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "draft_id"
+    ]
+  },
+  "drafts.activate": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "draft_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "draft_id"
+    ]
+  },
   "session.mode": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -814,6 +953,9 @@
           "layer_id",
           "path_id"
         ]
+      },
+      "draft": {
+        "type": "string"
       }
     },
     "required": [

@@ -3,6 +3,7 @@
 import { z } from "zod";
 import {
   boxSchema,
+  draftRoleSchema,
   edgeKindSchema,
   nodeKindSchema,
   pointSchema,
@@ -91,6 +92,8 @@ export const clientIntentSchema = z.discriminatedUnion("type", [
     selection: z.string().nullable(),
     /** The scrubber's position, ids only. */
     trace: z.object({ path: z.string(), hop: z.int().min(1) }).nullable().default(null),
+    /** The active draft, unless the human dropped its chip. */
+    draft: z.string().nullable().default(null),
   }),
   z.object({ type: z.literal("session_mode_off") }),
   /** Toggle a message's highlight as the board's active one; null clears. */
@@ -112,6 +115,19 @@ export const clientIntentSchema = z.discriminatedUnion("type", [
     loop: z.boolean().optional(),
     t: z.number().min(0).optional(),
   }),
+
+  // Drafts. Author "human" over this transport; the server validates marks.
+  z.object({ type: z.literal("drafts_activate"), draft_id: z.string().nullable() }),
+  /** Mark an element on a draft (null draft_id creates one first); null role unmarks. */
+  z.object({
+    type: z.literal("drafts_mark"),
+    draft_id: z.string().nullable(),
+    id: z.string(),
+    role: draftRoleSchema.nullable(),
+  }),
+  z.object({ type: z.literal("drafts_create"), title: z.string().optional(), note: z.string().optional() }),
+  z.object({ type: z.literal("drafts_update"), draft_id: z.string(), title: z.string().optional(), note: z.string().optional() }),
+  z.object({ type: z.literal("drafts_delete"), draft_id: z.string() }),
 ]);
 
 export type ClientIntent = z.infer<typeof clientIntentSchema>;

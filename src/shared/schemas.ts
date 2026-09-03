@@ -1,7 +1,7 @@
 // zod schemas — the contract. JSON Schema is generated from these
 // (src/scripts/gen-schemas.ts) and the MCP tools register them directly.
 import { z } from "zod";
-import { EDGE_KINDS, NODE_KINDS } from "./types.js";
+import { DRAFT_ROLES, EDGE_KINDS, NODE_KINDS } from "./types.js";
 
 export const authorSchema = z.enum(["human", "ai"]);
 export const nodeKindSchema = z.enum(NODE_KINDS);
@@ -89,6 +89,16 @@ export const layerSchema = z.strictObject({
   paths: z.array(pathSchema).default([]),
 });
 
+export const draftRoleSchema = z.enum(DRAFT_ROLES);
+
+export const draftSchema = z.strictObject({
+  id: z.string(),
+  title: z.string().max(24),
+  note: z.string(),
+  marks: z.record(z.string(), draftRoleSchema),
+  author: authorSchema,
+});
+
 export const boundaryEdgeSchema = z.strictObject({
   id: z.string(),
   from: z.string(),
@@ -137,6 +147,8 @@ export const canvasStateSchema = z.strictObject({
   layers: z.array(layerSchema),
   focus: z.string().nullable(),
   scope: scopeSchema.optional(),
+  drafts: z.array(draftSchema),
+  active_draft: z.string().nullable(),
 });
 
 // ---------------------------------------------------------------------------
@@ -144,6 +156,7 @@ export const canvasStateSchema = z.strictObject({
 // the session-scoped current board applies when omitted.
 
 const boardScoped = { board_id: z.string().optional() };
+const markArg = z.object({ id: z.string(), role: draftRoleSchema });
 const pathStepArg = z.object({
   edge: z.string(),
   caption: z.string().max(160).optional(),
@@ -271,6 +284,23 @@ export const toolArgs = {
   "paths.delete": z.object({ ...boardScoped, path_id: z.string() }),
   "paths.get": z.object({ ...boardScoped, path_id: z.string() }),
   "paths.play": z.object({ ...boardScoped, path_id: z.string(), hop: z.int().min(1).optional() }),
+  "drafts.create": z.object({
+    ...boardScoped,
+    title: z.string(),
+    note: z.string().optional(),
+    marks: z.array(markArg).optional(),
+  }),
+  "drafts.update": z.object({
+    ...boardScoped,
+    draft_id: z.string(),
+    title: z.string().optional(),
+    note: z.string().optional(),
+    mark: z.array(markArg).optional(),
+    unmark: z.array(z.string()).optional(),
+  }),
+  "drafts.delete": z.object({ ...boardScoped, draft_id: z.string() }),
+  "drafts.get": z.object({ ...boardScoped, draft_id: z.string() }),
+  "drafts.activate": z.object({ ...boardScoped, draft_id: z.string().nullable() }),
   "session.mode": z.object({ on: z.boolean() }),
   "session.send": z.object({
     ...boardScoped,
@@ -285,6 +315,7 @@ export const toolArgs = {
     path: z
       .object({ layer_id: z.string(), path_id: z.string(), hop: z.int().min(1).optional() })
       .optional(),
+    draft: z.string().optional(),
   }),
 } as const;
 
