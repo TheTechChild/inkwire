@@ -15,7 +15,8 @@ import {
 import type { Author, Layer, Path, PathStep } from "../shared/types.js";
 import type { BoardSession } from "./session.js";
 
-const clampTitle = (title: string | undefined): string => (title ?? "").slice(0, 24) || "untitled";
+/** Shared with drafts.ts — one 24-char title clamp for every board-view title. */
+export const clampTitle = (title: string | undefined): string => (title ?? "").slice(0, 24) || "untitled";
 
 function assertNodes(session: BoardSession, ids: string[]): void {
   const have = new Set(session.collections().nodes.map((n) => n.id));

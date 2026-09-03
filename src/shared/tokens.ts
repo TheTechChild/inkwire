@@ -12,6 +12,12 @@ export interface ThemeTokens {
   divider: string;
   grid: string;
   signal: string; // the traversal gold: the moving front of a path and what it has reached. Nothing else.
+  error: string; // "goes away / breaks": error edges, the error toast. draftRemoved aliases it.
+  // Draft roles (handoff "Drafts"). Mirrored from styles.css; nothing in the
+  // SVG renderer reads them yet — it ignores drafts like focus and the trace.
+  draftRemoved: string;
+  draftChanged: string;
+  draftAdded: string;
 }
 
 export const LIGHT: ThemeTokens = {
@@ -23,6 +29,10 @@ export const LIGHT: ThemeTokens = {
   divider: "rgba(29,31,32,0.16)",
   grid: "rgba(29,31,32,0.13)",
   signal: "#b8862a",
+  error: "#c96a5a",
+  draftRemoved: "#c96a5a",
+  draftChanged: "#7d6aa3",
+  draftAdded: "#4f8f7a",
 };
 
 export const DARK: ThemeTokens = {
@@ -34,6 +44,10 @@ export const DARK: ThemeTokens = {
   divider: "rgba(232,235,238,0.16)",
   grid: "rgba(232,235,238,0.10)",
   signal: "#e8bd5e",
+  error: "#e08a7a",
+  draftRemoved: "#e08a7a",
+  draftChanged: "#a897cf",
+  draftAdded: "#7fbfa6",
 };
 
 export const RENDER = {

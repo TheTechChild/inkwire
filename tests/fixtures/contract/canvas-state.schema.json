@@ -4,7 +4,7 @@
   "title": "Inkwire CanvasState",
   "description": "Return shape of canvas.get_state. Meaning (graph) and placement (layout) are separate fields with independent revision counters.",
   "type": "object",
-  "required": ["board", "graph", "layout", "ink", "images", "history", "viewport", "layers", "focus"],
+  "required": ["board", "graph", "layout", "ink", "images", "history", "viewport", "layers", "focus", "drafts", "active_draft"],
   "additionalProperties": false,
   "properties": {
     "board": {
@@ -86,6 +86,15 @@
     "focus": {
       "type": ["string", "null"],
       "description": "Layer id the human is looking at, shared by every panel on the board. Null when released."
+    },
+    "drafts": {
+      "type": "array",
+      "description": "Every draft on the board, whole even on a scoped read — a draft is an overlay, not a cut.",
+      "items": { "$ref": "#/$defs/draft" }
+    },
+    "active_draft": {
+      "type": ["string", "null"],
+      "description": "Draft id the human is looking at, shared by every panel on the board. Null when none is active."
     },
     "scope": {
       "type": "object",
@@ -253,6 +262,23 @@
         "edge": { "type": "string", "description": "Edge id, internal to the layer." },
         "caption": { "type": "string", "maxLength": 160, "description": "\"\" when absent." },
         "ref": { "type": ["string", "null"], "description": "path/to/file.ts:symbol, validated like bind_code." }
+      }
+    },
+    "draft": {
+      "type": "object",
+      "description": "A proposed change and what it touches. A view like a layer — nothing on the board changes when a draft is created, marked or activated.",
+      "required": ["id", "title", "note", "marks", "author"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "description": "D1, D2… first unused across the board." },
+        "title": { "type": "string", "maxLength": 24 },
+        "note": { "type": "string", "description": "What the change is and why. \"\" when absent." },
+        "marks": {
+          "type": "object",
+          "description": "Element id (node or edge) → role. Explicit: marking a node marks none of its edges.",
+          "additionalProperties": { "type": "string", "enum": ["removed", "changed", "added"] }
+        },
+        "author": { "$ref": "#/$defs/author" }
       }
     },
     "boundaryEdge": {

@@ -103,6 +103,24 @@ export interface Path {
   author: Author;
 }
 
+// ---------------------------------------------------------------------------
+// Drafts (handoff "Drafts"): a proposed change and what it touches. The
+// fourth pointer: highlight = point at a set, layer = keep a cut, path =
+// explain an order, draft = propose a change. A view like a layer — nothing
+// on the board changes when a draft is created, marked or activated.
+
+export const DRAFT_ROLES = ["removed", "changed", "added"] as const;
+export type DraftRole = (typeof DRAFT_ROLES)[number];
+
+export interface Draft {
+  id: string; // "D1", "D2"… first unused across the board
+  title: string; // cap 24, "untitled" when empty
+  note: string; // "" when absent; what the change is and why
+  /** element id (node or edge) → role. Explicit: marking a node marks none of its edges. */
+  marks: Record<string, DraftRole>;
+  author: Author;
+}
+
 export interface BoardMeta {
   id: string;
   name: string;
@@ -231,6 +249,10 @@ export interface CanvasState {
   focus: string | null;
   /** Present only when the read is scoped to a focused layer. */
   scope?: ScopeInfo;
+  /** Every draft, whole even on a scoped read: a draft is an overlay, not a cut. */
+  drafts: Draft[];
+  /** Active draft id, shared by every panel on the board like focus. */
+  active_draft: string | null;
 }
 
 export interface MutationResult {
@@ -278,7 +300,7 @@ export interface Trace {
 
 export type ThreadEntry =
   | { id: string; at: number; type: "you"; text: string; ctx: CtxChip[] }
-  | { id: string; at: number; type: "claude"; text: string; highlight?: Highlight; path?: { layer_id: string; path_id: string } }
+  | { id: string; at: number; type: "claude"; text: string; highlight?: Highlight; path?: { layer_id: string; path_id: string }; draft?: string }
   | { id: string; at: number; type: "call"; name: string; text: string; json?: string };
 
 /** A ThreadEntry before the server stamps id and time (Omit distributed over the union). */

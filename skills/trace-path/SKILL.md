@@ -1,15 +1,16 @@
 ---
 name: trace-path
 description: Explain an order of execution on the inkwire board — "walk me through", "what happens when", "how does X reach Y", "show me the code path". Traces the code, writes the walk as a path on a layer, and plays it in the panel with a caption per hop.
-allowed-tools: mcp__plugin_inkwire_inkwire__layers_list mcp__plugin_inkwire_inkwire__layers_create mcp__plugin_inkwire_inkwire__layers_update mcp__plugin_inkwire_inkwire__canvas_get_board mcp__plugin_inkwire_inkwire__canvas_get_state mcp__plugin_inkwire_inkwire__paths_create mcp__plugin_inkwire_inkwire__paths_update mcp__plugin_inkwire_inkwire__paths_get mcp__plugin_inkwire_inkwire__paths_play mcp__plugin_inkwire_inkwire__session_send mcp__plugin_inkwire_inkwire__canvas_bind_code Read Grep Glob
+allowed-tools: mcp__plugin_inkwire_inkwire__layers_list mcp__plugin_inkwire_inkwire__layers_create mcp__plugin_inkwire_inkwire__layers_update mcp__plugin_inkwire_inkwire__canvas_get_board mcp__plugin_inkwire_inkwire__canvas_get_state mcp__plugin_inkwire_inkwire__paths_create mcp__plugin_inkwire_inkwire__paths_update mcp__plugin_inkwire_inkwire__paths_get mcp__plugin_inkwire_inkwire__paths_play mcp__plugin_inkwire_inkwire__session_send mcp__plugin_inkwire_inkwire__canvas_bind_code mcp__plugin_inkwire_inkwire__drafts_create mcp__plugin_inkwire_inkwire__drafts_update mcp__plugin_inkwire_inkwire__drafts_delete mcp__plugin_inkwire_inkwire__drafts_get mcp__plugin_inkwire_inkwire__drafts_activate Read Grep Glob
 ---
 
 The human asked about an order: what runs first, what calls what, where a request goes. Answer with a **path**, not a paragraph.
 
-Three pointers, three jobs. Do not mix them up:
+Four pointers, four jobs. Do not mix them up:
 - **highlight** — point at a set of elements. `session_send(highlight)`.
 - **layer** — keep a cut of the board. `layers_create`.
 - **path** — explain an order. `paths_create`, then `session_send(path)`.
+- **draft** — propose a change. `drafts_create`, then `session_send(draft)`.
 
 ## Steps
 

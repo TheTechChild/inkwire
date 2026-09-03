@@ -3,13 +3,21 @@
 // are pointer-events: none. Gestures commit ONE intent, on release.
 import { edgeEndpoints, resizeBox } from "../core/geometry.js";
 import type { Corner } from "../core/geometry.js";
+import { markCounts, nextDraftId } from "../core/drafts.js";
 import { liveMembers, pathsAffected, tiers, traceT } from "../core/layers.js";
 import type { PathBreak } from "../core/layers.js";
 import { edgeLabel, labelPx, lodFor, monoPx, quantizeZoom, wrapText } from "../core/lod.js";
 import type { App, Drag, Tool } from "./app.js";
 import { KIND_META, clampZoom, el, focusLayer, focusedLayer } from "./app.js";
-import type { Box, EdgeEl, Layer, Path, PathStep, Point, Trace } from "../shared/types.js";
+import { DRAFT_ROLES } from "../shared/types.js";
+import type { Box, Draft, DraftRole, EdgeEl, Layer, Path, PathStep, Point, Trace } from "../shared/types.js";
 import { toast } from "./panel.js";
+
+/** Role → its hue token (handoff "Drafts" § "Design tokens"), for the JS-computed
+ * colors that CSS attribute selectors can't reach (a chip count or legend item that
+ * drops to neutral-500 at zero — see markCounts). Derived, not a fourth copy of the
+ * map — the CSS custom properties (styles.css) are the only source. */
+const roleHue = (role: DraftRole): string => `var(--color-draft-${role})`;
 
 const HINTS: Record<Tool, string> = {
   select: "drag a node to move · drag a corner to resize · drag empty space or middle-drag to pan",
@@ -102,9 +110,11 @@ export function setupCanvas(app: App): void {
     if (e.key === "Escape") {
       app.sel = null;
       app.pendingFrom = null;
+      app.menu = null;
       if (app.push?.state.focus) focusLayer(app, null);
       if (app.push?.session.highlight) app.send({ type: "highlight_set", msg_id: null });
       if (app.push?.session.trace) app.send({ type: "trace_set", path_id: null });
+      if (app.push?.state.active_draft) app.send({ type: "drafts_activate", draft_id: null });
       endPeek(app);
       app.render();
     }
@@ -148,8 +158,30 @@ export function setupCanvas(app: App): void {
   window.addEventListener("pointerup", release);
   window.addEventListener("pointercancel", release);
   // Gotcha 1: the canvas captures the pointer on pointerdown, which would
-  // retarget the gesture away from any button inside it. Stop it at the bar.
-  el("layerbar").addEventListener("pointerdown", (e) => e.stopPropagation());
+  // retarget the gesture away from any button inside it. Stop it at the bar —
+  // but a stopped pointerdown never reaches the window listener below, so
+  // close the menu here too, and a stopped contextmenu never reaches the
+  // host's either, so a right-click on a chip must not hit-test the world.
+  el("layerbar").addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    if (app.menu) {
+      app.menu = null;
+      app.render();
+    }
+  });
+  el("layerbar").addEventListener("contextmenu", (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+  });
+  // The right-click menu (handoff "Drafts" § 4) closes on any pointerdown that
+  // isn't on it — the menu's own pointerdown handler (renderMenu) stops
+  // propagation, so this only ever sees the "elsewhere" case.
+  window.addEventListener("pointerdown", () => {
+    if (app.menu) {
+      app.menu = null;
+      app.render();
+    }
+  });
   window.addEventListener("keyup", (e) => {
     if (e.key === " ") {
       app.space = false;
@@ -158,6 +190,7 @@ export function setupCanvas(app: App): void {
   });
 
   host.addEventListener("pointerdown", (e) => {
+    if (e.button === 2) return; // right-click opens the mark menu (contextmenu) — never the active tool
     host.focus();
     host.setPointerCapture(e.pointerId);
     const p = toWorld(e);
@@ -291,6 +324,103 @@ export function setupCanvas(app: App): void {
     app.drag = null;
     app.render();
   });
+
+  // Right-click menu (handoff "Drafts" § 4): hit node then edge, same zones as
+  // select (rim/out tiers are inert already, via hitNode/hitEdge's tiersOf).
+  // An image hit shadows whatever's under it, same as a normal select click —
+  // images cannot be marked, so that reads as nothing hit.
+  host.addEventListener("contextmenu", (e) => {
+    const state = app.push?.state;
+    if (!state) return;
+    const p = toWorld(e);
+    const hit = hitNode(app, p);
+    const isNode = hit !== null && state.graph.nodes.some((n) => n.id === hit);
+    const edge = hit === null ? hitEdge(app, p) : null;
+    const id = isNode ? hit : edge;
+    if (!id) return;
+    e.preventDefault();
+    app.menu = { x: e.clientX, y: e.clientY, type: isNode ? "node" : "edge", id };
+    app.render();
+  });
+}
+
+/** Mark or unmark one element via the right-click menu (a null active draft
+ * creates one first — the server handles that; toast only guesses its id). */
+function markVia(app: App, id: string, role: DraftRole | null): void {
+  const state = app.push!.state;
+  if (state.active_draft === null) toast(`drafts_create · ${nextDraftId(state.drafts)} · mark it, then name it in DRAFTS`);
+  app.send({ type: "drafts_mark", draft_id: state.active_draft, id, role });
+  app.menu = null;
+  app.render();
+}
+
+/** Key for what the menu currently shows — same trick as lastScrubberPath: rebuild
+ * the DOM only when this changes, so a press that straddles a server push doesn't
+ * lose its click or replay the pulsein animation. */
+let lastMenuKey = "";
+
+/** The right-click menu: header, three role rows (✓ on the current mark), an
+ * optional clear-mark row, and a footer naming where the mark will land. */
+function renderMenu(app: App): void {
+  const m = app.menu;
+  const state = app.push?.state;
+  if (!m || !state) {
+    document.querySelector(".ctx-menu")?.remove();
+    lastMenuKey = "";
+    return;
+  }
+  const activeDraft: Draft | null = state.drafts.find((d) => d.id === state.active_draft) ?? null;
+  const current = activeDraft?.marks[m.id] ?? "";
+  const key = `${m.x}|${m.y}|${m.type}|${m.id}|${activeDraft?.id ?? ""}|${activeDraft?.title ?? ""}|${current}`;
+  if (key === lastMenuKey) return;
+  lastMenuKey = key;
+  document.querySelector(".ctx-menu")?.remove();
+  const host = el("canvas");
+  const r = host.getBoundingClientRect();
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu";
+  menu.style.left = `${m.x - r.left}px`;
+  menu.style.top = `${m.y - r.top}px`;
+  // Same trick as the layer bar (Gotcha 1): keep this pointerdown off the canvas.
+  menu.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+  const label =
+    m.type === "node"
+      ? (state.graph.nodes.find((n) => n.id === m.id)?.label ?? m.id)
+      : (state.graph.edges.find((e) => e.id === m.id)?.label ?? m.id);
+  const header = document.createElement("div");
+  header.className = "header";
+  header.innerHTML = `<span class="kind"></span><span class="label"></span>`;
+  (header.children[0] as HTMLElement).textContent = `${m.type.toUpperCase()} · ${m.id}`;
+  (header.children[1] as HTMLElement).textContent = label;
+  menu.appendChild(header);
+
+  for (const role of DRAFT_ROLES) {
+    const row = document.createElement("div");
+    row.className = "role-row";
+    row.dataset.role = role;
+    row.innerHTML = `<i class="line-sample" data-draft="${role}"></i><span class="name"></span><span class="check"></span>`;
+    (row.children[1] as HTMLElement).textContent = role;
+    (row.children[2] as HTMLElement).textContent = current === role ? "✓" : "";
+    row.addEventListener("click", () => markVia(app, m.id, role));
+    menu.appendChild(row);
+  }
+  if (current) {
+    const clear = document.createElement("div");
+    clear.className = "clear-row";
+    clear.textContent = "clear mark";
+    clear.addEventListener("click", () => markVia(app, m.id, null));
+    menu.appendChild(clear);
+  }
+
+  const footer = document.createElement("div");
+  footer.className = "footer";
+  footer.textContent = activeDraft
+    ? `marks land on ${activeDraft.id} · ${activeDraft.title}`
+    : `no active draft — marking creates ${nextDraftId(state.drafts)}`;
+  menu.appendChild(footer);
+
+  host.appendChild(menu);
 }
 
 /** Layer tiers for hit-testing and render alike: blurred (rim/out) elements are inert. */
@@ -405,6 +535,7 @@ export function deleteSelection(app: App): void {
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 export function renderWorld(app: App): void {
+  renderMenu(app); // always: rebuilds when open, clears the stale DOM node otherwise
   const state = app.push?.state;
   const world = el("world");
   const grid = el("grid");
@@ -451,6 +582,10 @@ export function renderWorld(app: App): void {
   const hlEdges = new Set(hl?.edges ?? []);
   world.dataset.hl = hl ? (app.dim ? "dim" : "on") : "";
   const hlOf = (member: boolean) => (hl ? (member ? "in" : "out") : "");
+  // Drafts (handoff "Drafts" § "Stacking"): a view, like a highlight — and,
+  // like a highlight, it reads as empty while a trace plays.
+  const activeDraft = info ? null : (state.drafts.find((d) => d.id === state.active_draft) ?? null);
+  const marks: Record<string, DraftRole> = activeDraft?.marks ?? {};
 
   // Ink (server strokes + the in-flight pen gesture).
   const strokes: [string, Point[]][] = state.ink.map((s) => [s.id, s.geometry ?? []]);
@@ -484,16 +619,39 @@ export function renderWorld(app: App): void {
     g.dataset.tier = tier;
     const lit = hlEdges.has(e.id);
     g.dataset.hl = hlOf(lit);
+    // A role beats the error kind (handoff "Drafts" § "Roles"): mark it even on
+    // an error edge, so the CSS role rules draw it and its label shows.
+    const role = marks[e.id] as DraftRole | undefined;
+    if (role) g.dataset.draft = role;
     const path = document.createElementNS(SVG_NS, "path");
     path.setAttribute("d", `M ${p1[0].toFixed(1)} ${p1[1].toFixed(1)} L ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`);
     path.setAttribute("fill", "none");
-    path.setAttribute("stroke", lit ? "var(--color-accent-600)" : ai ? "var(--color-accent)" : selected ? "var(--color-text)" : "var(--color-accent-700)");
+    path.setAttribute(
+      "stroke",
+      // A lit (highlighted) edge beats the error kind's own color too.
+      lit
+        ? "var(--color-accent-600)"
+        : e.kind === "error"
+          ? "var(--color-error)"
+          : ai
+            ? "var(--color-accent)"
+            : selected
+              ? "var(--color-text)"
+              : "var(--color-accent-700)",
+    );
     path.setAttribute("stroke-width", lit ? "2.6" : selected ? "2" : "1.3");
-    if (ai || e.kind === "async") path.setAttribute("stroke-dasharray", "6 4");
-    path.setAttribute("marker-end", ai ? "url(#arwai)" : "url(#arw)");
+    if (e.kind === "error") path.setAttribute("stroke-dasharray", "2 3");
+    else if (ai || e.kind === "async") path.setAttribute("stroke-dasharray", "6 4");
+    path.setAttribute("marker-end", e.kind === "error" ? "url(#arwerror)" : ai ? "url(#arwai)" : "url(#arw)");
     g.appendChild(path);
 
-    const labelText = info ? (info.pathEdges.has(e.id) ? edgeLabel(e, selected) : "") : tier === "in" || lit ? edgeLabel(e, selected) : "";
+    const labelText = info
+      ? info.pathEdges.has(e.id)
+        ? edgeLabel(e, selected)
+        : ""
+      : tier === "in" || lit || role
+        ? edgeLabel(e, selected)
+        : "";
     if (labelText) {
       const text = document.createElementNS(SVG_NS, "text");
       text.setAttribute("x", String(mid[0]));
@@ -569,19 +727,27 @@ export function renderWorld(app: App): void {
 
     const lit = hlNodes.has(n.id);
     const walk = info?.onPath.has(n.id) ?? false;
+    const role = marks[n.id] as DraftRole | undefined;
     const div = document.createElement("div");
     div.className = "node-box blueprint";
     div.dataset.id = n.id;
     div.dataset.kind = n.kind;
     div.dataset.tier = t.node(n.id);
     div.dataset.hl = hlOf(lit);
-    // Walk nodes leave border and shadow to CSS: inline would beat [data-trace].
+    if (role) div.dataset.draft = role;
+    // Walk and marked nodes leave border to CSS: inline would beat [data-trace]
+    // / [data-draft] (trace > draft > highlight > selected > ai > default). A
+    // selected marked node keeps the role border and still gets shadow-md below —
+    // a pending (arrow-tool endpoint) marked node keeps its role border the same
+    // way, and gets the same shadow-md as its pending cue.
     Object.assign(div.style, {
       left: `${box[0]}px`,
       top: `${box[1]}px`,
       width: `${box[2]}px`,
       height: `${box[3]}px`,
       border: walk && !selected && !pending
+        ? ""
+        : role
         ? ""
         : lit
         ? "2px solid var(--color-accent-600)"
@@ -590,11 +756,11 @@ export function renderWorld(app: App): void {
           : ai
             ? "1.5px dashed var(--color-accent-500)"
             : "1px solid var(--color-divider)",
-      boxShadow: walk && !selected
+      boxShadow: walk && !selected && !pending
         ? ""
         : lit
           ? "0 0 0 4px color-mix(in srgb, var(--color-accent) 28%, transparent), var(--shadow-md)"
-          : selected
+          : selected || pending
             ? "var(--shadow-md)"
             : "none",
     });
@@ -606,9 +772,12 @@ export function renderWorld(app: App): void {
     const kicker = document.createElement("div");
     kicker.className = "node-kicker";
     kicker.style.color = meta.color;
-    kicker.innerHTML = `<span></span><span></span>`;
+    // Third span: the marked role, "· removed" etc — colored by [data-draft] on
+    // the node-box (styles.css), same span-hiding rule at compact/dot LOD as "· claude".
+    kicker.innerHTML = `<span></span><span></span><span></span>`;
     (kicker.children[0] as HTMLElement).textContent = meta.label;
     (kicker.children[1] as HTMLElement).textContent = ai ? "· claude" : "";
+    (kicker.children[2] as HTMLElement).textContent = role ? `· ${role}` : "";
     const label = document.createElement("div");
     label.className = "node-label";
     label.textContent = n.kind === "note" ? wrapNote(n.label, box, qz) : n.label;
@@ -643,9 +812,14 @@ function renderLayerBar(app: App): void {
   const state = app.push?.state;
   if (!state) return;
   if (state.layers.length > 0) renderLayerChips(app, bar);
+  if (state.drafts.length > 0) renderDraftChips(app, bar);
   const info = traceInfo(app);
   if (info) renderScrubber(app, bar, info);
   else lastScrubberPath = "";
+  // The strip is suppressed with the marks themselves while a trace plays
+  // (handoff "Drafts" § "Stacking") — mutually exclusive with the scrubber above.
+  const activeDraft = !info ? (state.drafts.find((d) => d.id === state.active_draft) ?? null) : null;
+  if (activeDraft) renderDraftStrip(app, bar, activeDraft);
   const focused = focusedLayer(app);
   if (focused) {
     const strip = document.createElement("div");
@@ -733,6 +907,62 @@ function renderLayerChips(app: App, bar: HTMLElement): void {
     row.appendChild(release);
   }
   bar.appendChild(row);
+}
+
+/** The DRAFTS chip row (handoff "Drafts" § 1): one chip per draft, counts via markCounts (never a local reimplementation). */
+function renderDraftChips(app: App, bar: HTMLElement): void {
+  const state = app.push!.state;
+  const row = document.createElement("div");
+  row.className = "draft-chips";
+  const lead = document.createElement("span");
+  lead.className = "lead";
+  lead.textContent = "DRAFTS";
+  row.appendChild(lead);
+  for (const d of state.drafts) {
+    const counts = markCounts(d, state.graph.nodes, state.graph.edges);
+    const chip = document.createElement("button");
+    chip.className = "draft-chip" + (d.id === state.active_draft ? " on" : "");
+    chip.title = d.note + "\n\nclick = activate · right-click an element to mark it";
+    chip.innerHTML = `<span class="id"></span><span class="title"></span><span class="counts"><span class="cnt"></span><span class="cnt"></span><span class="cnt"></span></span>`;
+    (chip.querySelector(".id") as HTMLElement).textContent = d.id;
+    (chip.querySelector(".title") as HTMLElement).textContent = d.title;
+    const cnts = chip.querySelectorAll<HTMLElement>(".cnt");
+    DRAFT_ROLES.forEach((role, i) => {
+      const n = counts[role];
+      cnts[i]!.textContent = String(n);
+      cnts[i]!.style.color = n === 0 ? "var(--color-neutral-500)" : roleHue(role);
+    });
+    chip.addEventListener("click", () => app.send({ type: "drafts_activate", draft_id: d.id === state.active_draft ? null : d.id }));
+    row.appendChild(chip);
+  }
+  bar.appendChild(row);
+}
+
+/** The draft strip (handoff "Drafts" § 2): shown while `draft` is active and no trace plays. */
+function renderDraftStrip(app: App, bar: HTMLElement, draft: Draft): void {
+  const state = app.push!.state;
+  const counts = markCounts(draft, state.graph.nodes, state.graph.edges);
+  const strip = document.createElement("div");
+  strip.className = "draft-strip";
+  strip.innerHTML = `<span class="kicker">▣ DRAFT</span><span class="id"></span><span class="title"></span><span class="legend"></span>`;
+  (strip.children[1] as HTMLElement).textContent = draft.id;
+  (strip.children[2] as HTMLElement).textContent = draft.title;
+  const legend = strip.children[3] as HTMLElement;
+  for (const role of DRAFT_ROLES) {
+    const n = counts[role];
+    const item = document.createElement("span");
+    item.className = "legend-item";
+    item.style.color = n === 0 ? "var(--color-neutral-500)" : roleHue(role);
+    item.innerHTML = `<i class="line-sample" data-draft="${role}"></i><span></span>`;
+    (item.children[1] as HTMLElement).textContent = `${role} ${n}`;
+    legend.appendChild(item);
+  }
+  const clear = document.createElement("button");
+  clear.textContent = "clear · esc";
+  clear.title = "clear the active draft — esc";
+  clear.addEventListener("click", () => app.send({ type: "drafts_activate", draft_id: null }));
+  strip.appendChild(clear);
+  bar.appendChild(strip);
 }
 
 // ---------------------------------------------------------------------------

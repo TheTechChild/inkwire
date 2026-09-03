@@ -9,6 +9,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildMcpServer } from "../../src/server/mcp.js";
+import { markElement } from "../../src/server/drafts.js";
+import * as mutations from "../../src/server/mutations.js";
 import { Screenshots } from "../../src/server/screenshot.js";
 import { Sessions } from "../../src/server/session.js";
 import { Store } from "../../src/server/store.js";
@@ -554,5 +556,138 @@ describe("paths", () => {
     await call("layers_delete", { layer_id: layerId });
     expect(session().trace).toBeNull();
     expect((await call("layers_list")).json().layers).toEqual([]);
+  });
+});
+
+describe("drafts", () => {
+  let a: string;
+  let b: string;
+  let c: string;
+  let ab: string;
+  let bc: string;
+  let imgId: string;
+
+  beforeAll(async () => {
+    a = (await call("canvas_add_node", { label: "da", kind: "entry", at: [0, 0] })).json().ids[0];
+    b = (await call("canvas_add_node", { label: "db", kind: "service", at: [300, 0] })).json().ids[0];
+    c = (await call("canvas_add_node", { label: "dc", kind: "store", at: [600, 0] })).json().ids[0];
+    ab = (await call("canvas_add_edge", { from: a, to: b, label: "call" })).json().ids[0];
+    bc = (await call("canvas_add_edge", { from: b, to: c })).json().ids[0];
+    imgId = mutations.addImage(sessions.open(boardId), "human", {
+      src: "/images/x.png",
+      natural: [10, 10],
+      at: [0, 0],
+      size: [10, 10],
+    }).ids[0]!;
+  });
+
+  it("create marks elements, assigns D1, and touches neither history nor revisions", async () => {
+    const s0 = await getState();
+    const out = (await call("drafts_create", {
+      title: "x".repeat(30),
+      note: "why",
+      marks: [{ id: a, role: "removed" }, { id: ab, role: "changed" }],
+    })).json();
+    expect(out).toEqual({ draft_id: "D1", marks: { [a]: "removed", [ab]: "changed" } });
+    const s1 = await getState();
+    expect(s1.graph.revision).toBe(s0.graph.revision);
+    expect(s1.layout.revision).toBe(s0.layout.revision);
+    expect(s1.history.steps).toBe(s0.history.steps);
+    expect(s1.drafts).toEqual([
+      { id: "D1", title: "x".repeat(24), note: "why", marks: { [a]: "removed", [ab]: "changed" }, author: "ai" },
+    ]);
+    expect(s1.active_draft).toBeNull();
+  });
+
+  it("a bad id fails naming it; an image id fails too, and creates nothing", async () => {
+    const bad = await call("drafts_create", { title: "t", marks: [{ id: "n_ghost", role: "added" }] });
+    expect(bad.res.isError).toBe(true);
+    expect(bad.text).toContain("not a node or edge: n_ghost");
+    const img = await call("drafts_create", { title: "t", marks: [{ id: imgId, role: "added" }] });
+    expect(img.res.isError).toBe(true);
+    expect(img.text).toContain(`not a node or edge: ${imgId}`);
+    expect((await getState()).drafts).toHaveLength(1);
+  });
+
+  it("update retitles, rewrites the note, marks/unmarks; marking again replaces the role", async () => {
+    const out = (await call("drafts_update", {
+      draft_id: "D1",
+      title: "renamed",
+      note: "why now",
+      mark: [{ id: b, role: "added" }, { id: a, role: "changed" }],
+      unmark: [ab],
+    })).json();
+    expect(out).toEqual({ draft_id: "D1", marks: { [a]: "changed", [b]: "added" } });
+    const badMark = await call("drafts_update", { draft_id: "D1", mark: [{ id: imgId, role: "added" }] });
+    expect(badMark.res.isError).toBe(true);
+    expect(badMark.text).toContain(`not a node or edge: ${imgId}`);
+    const badDraft = await call("drafts_update", { draft_id: "D9", title: "x" });
+    expect(badDraft.text).toContain("draft not found: D9");
+  });
+
+  it("get resolves node and edge marks to labels", async () => {
+    await call("drafts_update", { draft_id: "D1", mark: [{ id: bc, role: "removed" }] });
+    const got = (await call("drafts_get", { draft_id: "D1" })).json();
+    expect(got.title).toBe("renamed");
+    expect(got.note).toBe("why now");
+    expect(got.marks).toEqual(expect.arrayContaining([
+      { id: a, role: "changed", label: "da", kind: "entry" },
+      { id: b, role: "added", label: "db", kind: "service" },
+      { id: bc, role: "removed", label: null, edge: { from: b, to: c } },
+    ]));
+    expect((await call("drafts_get", { draft_id: "D9" })).text).toContain("draft not found: D9");
+  });
+
+  it("activate sets active_draft, shared by every read; unknown id fails; null releases", async () => {
+    expect((await call("drafts_activate", { draft_id: "D1" })).json()).toEqual({ ok: true });
+    expect((await getState()).active_draft).toBe("D1");
+    const bad = await call("drafts_activate", { draft_id: "D9" });
+    expect(bad.res.isError).toBe(true);
+    expect(bad.text).toContain("draft not found: D9");
+    expect((await call("drafts_activate", { draft_id: null })).json()).toEqual({ ok: true });
+    expect((await getState()).active_draft).toBeNull();
+  });
+
+  it("markElement (drafts_mark, WS-only) validates before creating: a bad id with no active draft creates and activates nothing", async () => {
+    const session = sessions.open(boardId);
+    const before = session.drafts.length;
+    expect(() => markElement(session, "human", { draft_id: null, id: "n_ghost", role: "added" })).toThrow(
+      "not a node or edge: n_ghost",
+    );
+    expect(session.drafts.length).toBe(before);
+    expect(session.activeDraft).toBeNull();
+  });
+
+  it("deleting a marked element leaves the mark; canvas_delete reports drafts_affected; canvas_lint warns", async () => {
+    const del = (await call("canvas_delete", { id: c })).json(); // prunes bc too
+    expect(del.ids).toEqual(expect.arrayContaining([c, bc]));
+    expect(del.drafts_affected).toEqual(expect.arrayContaining([{ draft_id: "D1", id: bc }]));
+    const got = (await call("drafts_get", { draft_id: "D1" })).json();
+    expect(got.marks).toContainEqual({ id: bc, role: "removed", gone: true });
+    const { findings } = (await call("canvas_lint")).json();
+    expect(findings).toContainEqual({
+      target_id: bc,
+      check: "draft_mark_gone",
+      level: "warn",
+      message: `draft D1 marks ${bc}, which no longer exists`,
+    });
+  });
+
+  it("scoped get_state carries drafts whole and validates against the fixture", async () => {
+    const layerId = (await call("layers_create", { node_ids: [a, b], title: "scope" })).json().layer_id;
+    await call("layers_focus", { layer_id: layerId });
+    const scoped = await getState(); // validates against the handoff schema
+    expect(scoped.drafts).toHaveLength(1);
+    expect(scoped.drafts[0].id).toBe("D1");
+    await call("layers_focus", { layer_id: null });
+    await call("layers_delete", { layer_id: layerId });
+  });
+
+  it("delete removes the draft and deactivates it when it was active", async () => {
+    await call("drafts_activate", { draft_id: "D1" });
+    expect((await call("drafts_delete", { draft_id: "D1" })).json()).toEqual({ ok: true });
+    expect((await getState()).active_draft).toBeNull();
+    expect((await getState()).drafts).toEqual([]);
+    expect((await call("drafts_delete", { draft_id: "D1" })).text).toContain("draft not found: D1");
   });
 });

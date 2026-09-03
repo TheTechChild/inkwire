@@ -22,6 +22,7 @@ import type {
   BoardMeta,
   CanvasState,
   Collections,
+  Draft,
   FoldResult,
   Highlight,
   History,
@@ -72,6 +73,9 @@ export class BoardSession {
   layers: Layer[];
   /** Focused layer id, one per board, shared by every panel like the viewport. Not persisted. */
   focus: string | null = null;
+  drafts: Draft[];
+  /** Active draft id, one per board, shared by every panel like focus. Not persisted. */
+  activeDraft: string | null = null;
   history: History;
   private foldCache: FoldResult;
   graphRevision = 0;
@@ -99,6 +103,7 @@ export class BoardSession {
     this.meta = board.meta;
     this.viewport = board.viewport;
     this.layers = board.layers;
+    this.drafts = board.drafts;
     this.history = { base: board.collections, steps: [], head: 0 };
     this.foldCache = fold(this.history);
     this.graphFingerprint = this.fingerprintGraph();
@@ -244,6 +249,23 @@ export class BoardSession {
     return this.layers.find((l) => l.id === this.focus) ?? null;
   }
 
+  /** Drafts are a view, not history: no step, no revision bump. Persist and notify only. */
+  updateDrafts(author: Author, label: string, fn: (drafts: Draft[]) => Draft[]): void {
+    this.drafts = fn(this.drafts);
+    if (this.activeDraft && !this.drafts.some((d) => d.id === this.activeDraft)) this.activeDraft = null;
+    this.addLog(author, label);
+    this.schedulePersist();
+    this.notify();
+  }
+
+  setActiveDraft(draftId: string | null, author: Author): void {
+    const draft = draftId === null ? null : this.drafts.find((d) => d.id === draftId);
+    if (draft === undefined) throw new Error(`draft not found: ${draftId}`);
+    this.activeDraft = draftId;
+    this.addLog(author, draft ? `activate draft ${draft.id} · ${draft.title}` : "release draft");
+    this.notify();
+  }
+
   /** Stop persisting and tell listeners; the hub closes the board's sockets. */
   close(): void {
     this.closed = true;
@@ -312,6 +334,8 @@ export class BoardSession {
       viewport: this.viewport,
       layers: this.layers,
       focus: this.focus,
+      drafts: this.drafts,
+      activeDraft: this.activeDraft,
       ...opts,
     });
   }
@@ -359,6 +383,7 @@ export class BoardSession {
         collections: this.foldCache.collections,
         viewport: this.viewport,
         layers: this.layers,
+        drafts: this.drafts,
       },
       now,
     );
@@ -369,7 +394,13 @@ export type SendResult =
   | {
       status: "reply";
       reply: string;
-      ctx: { focus: string | null; selection: string | null; trace: { path: string; hop: number } | null; revision: number };
+      ctx: {
+        focus: string | null;
+        selection: string | null;
+        trace: { path: string; hop: number } | null;
+        draft: string | null;
+        revision: number;
+      };
     }
   | { status: "mode_off"; note: string }
   | { status: "idle" };
@@ -444,7 +475,7 @@ export class Sessions {
   /** New board; with `content`, it starts with that content as step 0 (import). */
   create(
     name: string,
-    content?: { collections: Collections; viewport: Viewport; layers?: Layer[] },
+    content?: { collections: Collections; viewport: Viewport; layers?: Layer[]; drafts?: Draft[] },
   ): BoardSession {
     const now = this.deps.now?.() ?? Date.now();
     const id = `b_${randomBytes(3).toString("hex")}`;

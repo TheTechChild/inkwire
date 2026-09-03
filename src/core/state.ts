@@ -4,6 +4,7 @@ import { bbox } from "./geometry.js";
 import type {
   CanvasState,
   Collections,
+  Draft,
   FoldResult,
   History,
   HistorySummary,
@@ -21,6 +22,9 @@ export interface StateInput {
   viewport: Viewport;
   layers: Layer[];
   focus: string | null;
+  /** A draft is a view, like a layer — optional here so pre-drafts callers (tests) need no edits. */
+  drafts?: Draft[];
+  activeDraft?: string | null;
   includeInkGeometry?: boolean;
   includeLayout?: boolean;
 }
@@ -85,5 +89,7 @@ export function buildCanvasState(input: StateInput): CanvasState {
     viewport: input.viewport,
     layers: input.layers,
     focus: input.focus,
+    drafts: input.drafts ?? [],
+    active_draft: input.activeDraft ?? null,
   };
 }
