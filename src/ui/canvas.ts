@@ -108,6 +108,11 @@ export function setupCanvas(app: App): void {
       if (layer) focusLayer(app, layer.id);
     }
     if (e.key === "Escape") {
+      if (app.pathMenu) {
+        app.pathMenu = false;
+        app.render();
+        return;
+      }
       app.sel = null;
       app.pendingFrom = null;
       app.menu = null;
@@ -182,6 +187,20 @@ export function setupCanvas(app: App): void {
       app.render();
     }
   });
+  // The path picker closes on any pointerdown outside it — capture phase,
+  // because the scrubber stops pointerdown at bubble (below), so a bubble
+  // listener here would never see a click inside the scrubber but outside
+  // the menu (e.g. the track, or dismissing by clicking the title again).
+  window.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (app.pathMenu && !(e.target as HTMLElement).closest(".path-menu, .row1 .pick")) {
+        app.pathMenu = false;
+        app.render();
+      }
+    },
+    true,
+  );
   window.addEventListener("keyup", (e) => {
     if (e.key === " ") {
       app.space = false;
@@ -815,7 +834,10 @@ function renderLayerBar(app: App): void {
   if (state.drafts.length > 0) renderDraftChips(app, bar);
   const info = traceInfo(app);
   if (info) renderScrubber(app, bar, info);
-  else lastScrubberPath = "";
+  else {
+    lastScrubberPath = "";
+    app.pathMenu = false;
+  }
   // The strip is suppressed with the marks themselves while a trace plays
   // (handoff "Drafts" § "Stacking") — mutually exclusive with the scrubber above.
   const activeDraft = !info ? (state.drafts.find((d) => d.id === state.active_draft) ?? null) : null;
@@ -1193,13 +1215,10 @@ function renderTrace(app: App): void {
     tick.classList.toggle("cur", j === curNode);
   }
   // Label widths follow the live track width (the aside can resize it without a rebuild).
-  // Below ~90px a slot cannot carry a label: only the current hop, and the first, last and current nodes.
+  // At ≥120px a hop (track-wrap scrolls sideways instead of squeezing) every label fits, so
+  // there is no dense fallback any more — just the wide-label-near-an-end pin below.
   const track = q(".track");
   const slot = 100 / info.n;
-  const dense = track.clientWidth / info.n < 90;
-  track.toggleAttribute("data-dense", dense);
-  const widePct = Math.min(40, 400 / info.n);
-  const near = widePct / 2 / slot + 2; // slots the centred current label reaches past its own, plus an end label's two
   // A wide label centred near an end of the track pins to that end instead of overhanging it.
   const pin = (el: HTMLElement, centrePct: number, widthPct: number) => {
     const half = widthPct / 2;
@@ -1212,18 +1231,24 @@ function renderTrace(app: App): void {
     const cur = j === curNode;
     const end = j === 0 || j === info.n;
     label.dataset.on = cur ? "cur" : j <= k ? "reached" : "";
-    label.hidden = dense && !(cur || (j === 0 && curNode > near) || (j === last && last - curNode > near));
-    const w = end ? slot * (dense ? 2 : 0.46) : cur && dense ? widePct : slot * 0.92;
-    label.style.maxWidth = cur && !dense && !end ? `calc(${w.toFixed(1)}% + 8px)` : `${w.toFixed(1)}%`; // + its padding
+    const w = end ? slot * 0.46 : slot * 0.92;
+    label.style.maxWidth = cur && !end ? `calc(${w.toFixed(1)}% + 8px)` : `${w.toFixed(1)}%`; // + its padding
     pin(label, j * slot, w);
   }
   for (const hop of sc.querySelectorAll<HTMLElement>(".hop")) {
     const j = Number(hop.dataset.j);
     hop.classList.toggle("lit", !hop.classList.contains("broken") && (j < k || (j === info.i && info.frac >= 0.5)));
-    hop.hidden = dense && j !== info.i;
-    const w = dense ? widePct : slot * 0.88;
+    const w = slot * 0.88;
     hop.style.maxWidth = `${w.toFixed(1)}%`;
     pin(hop, (j + 0.5) * slot, w);
+  }
+  // Keep the head in view: the wrap is rebuilt on every render, so its scrollLeft resets to
+  // 0 and a paused scrub would snap back to hop 0 on the next push. Never during a drag —
+  // that would fight the pointer.
+  if (!scrub) {
+    const x = (info.t / info.n) * track.clientWidth;
+    const w = track.parentElement!;
+    if (x < w.scrollLeft + 60 || x > w.scrollLeft + w.clientWidth - 60) w.scrollLeft = x - w.clientWidth / 2;
   }
   const st = info.path.steps[info.i]!;
   const edge = state.graph.edges.find((e) => e.id === st.edge);
@@ -1239,6 +1264,35 @@ function renderTrace(app: App): void {
   if (chip && !info.peek) chip.textContent = `${info.path.id} · hop ${Math.max(1, Math.ceil(info.t))}/${info.n}`;
 }
 
+/** The scrubber header's path picker (only `paths[0]` was reachable from the canvas
+ * before this): reuses the right-click menu's box/hover CSS, one row per path in
+ * the same layer, picking one starts it at 0 running — same as every other play
+ * affordance (▸ N chip segment, chip-hold peek). */
+function pathMenu(app: App, info: TraceInfo): HTMLElement {
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu path-menu";
+  const header = document.createElement("div");
+  header.className = "header";
+  header.innerHTML = `<span class="kind"></span><span class="label"></span>`;
+  (header.children[0] as HTMLElement).textContent = `PATHS · LAYER ${info.layer.letter}`;
+  (header.children[1] as HTMLElement).textContent = info.layer.title;
+  menu.appendChild(header);
+  for (const p of info.layer.paths) {
+    const row = document.createElement("div");
+    row.className = "role-row";
+    row.innerHTML = `<span class="name"></span><span class="hops"></span><span class="check"></span>`;
+    (row.children[0] as HTMLElement).textContent = `${p.id} · ${p.title}`;
+    (row.children[1] as HTMLElement).textContent = `${p.steps.length} hops`;
+    (row.children[2] as HTMLElement).textContent = p.id === info.path.id ? "✓" : "";
+    row.addEventListener("click", () => {
+      app.pathMenu = false;
+      app.send({ type: "trace_set", path_id: p.id });
+    });
+    menu.appendChild(row);
+  }
+  return menu;
+}
+
 /** The timeline across the top of the canvas: three rows, built once per render and patched by renderTrace. */
 function renderScrubber(app: App, bar: HTMLElement, info: TraceInfo): void {
   const state = app.push!.state;
@@ -1248,6 +1302,9 @@ function renderScrubber(app: App, bar: HTMLElement, info: TraceInfo): void {
   sc.className = "scrubber" + (info.path.id !== lastScrubberPath ? " mount" : "") + (pinned ? " pinned" : "");
   lastScrubberPath = info.path.id;
   sc.addEventListener("pointerdown", (e) => e.stopPropagation());
+  // #canvas turns wheel into zoom (setupCanvas, above) and preventDefault()s it, which would
+  // eat the scroll of anything scrollable in here — the track and the path picker both.
+  sc.addEventListener("wheel", (e) => e.stopPropagation());
 
   const row = document.createElement("div");
   row.className = "row1";
@@ -1272,6 +1329,21 @@ function renderScrubber(app: App, bar: HTMLElement, info: TraceInfo): void {
     close.title = "close the scrubber — esc";
     close.addEventListener("click", () => app.send({ type: "trace_set", path_id: null }));
     row.append(loop, close);
+
+    // The header's own children are read by index above (row.children[2..5]),
+    // so this only marks two of them clickable and appends — never inserts.
+    const ref = row.children[2] as HTMLElement;
+    const title = row.children[3] as HTMLElement;
+    ref.classList.add("pick");
+    title.classList.add("pick");
+    const openPicker = () => {
+      app.pathMenu = !app.pathMenu;
+      app.render();
+    };
+    ref.addEventListener("click", openPicker);
+    title.addEventListener("click", openPicker);
+
+    if (app.pathMenu) row.appendChild(pathMenu(app, info));
   }
 
   const track = document.createElement("div");
@@ -1315,11 +1387,19 @@ function renderScrubber(app: App, bar: HTMLElement, info: TraceInfo): void {
     });
   }
 
+  // Wrapped so the track scrolls sideways at ~120px a hop instead of squeezing into the box.
+  const wrap = document.createElement("div");
+  wrap.className = "track-wrap";
+  // 6px shy of the wrap: the end tick (11px when current) and the head both centre on
+  // 100%, and their halves would otherwise overflow into a phantom scrollbar on a short path.
+  track.style.width = `max(calc(100% - 6px), ${info.n * 120}px)`; // ≥120px a hop: every label fits
+  wrap.appendChild(track);
+
   const cap = document.createElement("div");
   cap.className = "cap";
   cap.innerHTML = `<span class="kicker"></span><span class="text"></span>`;
 
-  sc.append(row, track, cap);
+  sc.append(row, wrap, cap);
   bar.appendChild(sc);
 }
 

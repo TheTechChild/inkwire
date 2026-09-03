@@ -55,6 +55,8 @@ export interface App {
   /** The right-click menu (handoff "Drafts" § 4): panel-local, canvas-only. Optional
    * so main.ts (outside this package) need not seed it — canvas.ts treats absent the same as null. */
   menu?: { x: number; y: number; type: "node" | "edge"; id: string } | null;
+  /** The scrubber's path picker: panel-local, open only while the scrubber is pinned. */
+  pathMenu?: boolean;
   connected: boolean;
   send: (intent: ClientIntent) => void;
   render: () => void;
