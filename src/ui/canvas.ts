@@ -928,17 +928,18 @@ function renderTrace(app: App): void {
       path.setAttribute("d", `M ${p1[0].toFixed(1)} ${p1[1].toFixed(1)} L ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`);
       path.setAttribute("fill", "none");
       path.setAttribute("stroke", "var(--color-signal)");
-      path.setAttribute("stroke-width", String(Math.max(3, 2.5 / app.view.zoom))); // same floor as the CSS done stroke
+      const z = quantizeZoom(app.view.zoom); // the CSS floors read the quantized --zoom; match it exactly
+      path.setAttribute("stroke-width", String(Math.max(3, 2.5 / z)));
       path.setAttribute("stroke-dasharray", `${(L * info.frac).toFixed(1)} ${(L + 20).toFixed(1)}`);
       const head = document.createElementNS(SVG_NS, "rect");
-      const hs = Math.max(9, 7.5 / app.view.zoom); // the head square keeps a screen floor too
+      const hs = Math.max(9, 7.5 / z); // the head square keeps a screen floor too
       head.setAttribute("x", (p1[0] + (p2[0] - p1[0]) * info.frac - hs / 2).toFixed(1));
       head.setAttribute("y", (p1[1] + (p2[1] - p1[1]) * info.frac - hs / 2).toFixed(1));
       head.setAttribute("width", String(hs));
       head.setAttribute("height", String(hs));
       head.setAttribute("fill", "var(--color-signal)");
       head.setAttribute("stroke", "var(--color-bg)");
-      head.setAttribute("stroke-width", "1.5");
+      head.setAttribute("stroke-width", String(Math.max(1.5, 1.25 / z))); // the ring that separates head from dash
       group.append(path, head);
     }
   }
@@ -968,7 +969,6 @@ function renderTrace(app: App): void {
   const dense = track.clientWidth / info.n < 90;
   track.toggleAttribute("data-dense", dense);
   const widePct = Math.min(40, 400 / info.n);
-  const wide = `${widePct.toFixed(1)}%`;
   const near = widePct / 2 / slot + 2; // slots the centred current label reaches past its own, plus an end label's two
   // A wide label centred near an end of the track pins to that end instead of overhanging it.
   const pin = (el: HTMLElement, centrePct: number, widthPct: number) => {
@@ -985,7 +985,7 @@ function renderTrace(app: App): void {
     label.hidden = dense && !(cur || (j === 0 && curNode > near) || (j === last && last - curNode > near));
     const w = end ? slot * (dense ? 2 : 0.46) : cur && dense ? widePct : slot * 0.92;
     label.style.maxWidth = cur && !dense && !end ? `calc(${w.toFixed(1)}% + 8px)` : `${w.toFixed(1)}%`; // + its padding
-    if (!end) pin(label, j * slot, w);
+    pin(label, j * slot, w);
   }
   for (const hop of sc.querySelectorAll<HTMLElement>(".hop")) {
     const j = Number(hop.dataset.j);
@@ -1070,8 +1070,6 @@ function renderScrubber(app: App, bar: HTMLElement, info: TraceInfo): void {
     const label = document.createElement("span");
     label.className = "tick-label";
     label.dataset.j = String(j);
-    label.style.left = left; // the ends stay edge-aligned; renderTrace positions and sizes the rest
-    label.style.transform = `translateX(${j === 0 ? "0" : j === info.n ? "-100%" : "-50%"})`;
     label.textContent = node?.label ?? id;
     label.title = `${id} · ${node?.label ?? ""}`;
     track.append(tick, label);
