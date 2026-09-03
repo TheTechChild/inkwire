@@ -5,7 +5,7 @@ import type { Corner } from "../core/geometry.js";
 import type { Box, CanvasState, Layer, NodeKind, Point } from "../shared/types.js";
 
 export type Tool = "select" | "pen" | "box" | "arrow" | "text" | "erase";
-export type Tab = "layers" | "session" | "history" | "state" | "tools";
+export type Tab = "layers" | "drafts" | "session" | "history" | "state" | "tools";
 export type Scope = "all" | "human" | "ai";
 
 export interface Selection {
@@ -46,12 +46,15 @@ export interface App {
   dim: boolean;
   /** Session tab, panel-local: the composer draft, chips dropped for this draft, open call rows. */
   draft: string;
-  dropped: { focus?: true; sel?: true; trace?: true };
+  dropped: { focus?: true; sel?: true; trace?: true; draft?: true };
   open: Record<string, boolean>;
   /** Which payload the STATE tab shows while a layer is focused. */
   stateView: "scoped" | "board";
   /** This panel's unacknowledged seek/pause over the server trace; dropped when the push echoes it. */
   traceOverride: { t: number; running: boolean } | null;
+  /** The right-click menu (handoff "Drafts" § 4): panel-local, canvas-only. Optional
+   * so main.ts (outside this package) need not seed it — canvas.ts treats absent the same as null. */
+  menu?: { x: number; y: number; type: "node" | "edge"; id: string } | null;
   connected: boolean;
   send: (intent: ClientIntent) => void;
   render: () => void;

@@ -2,6 +2,7 @@
 // rows, and the composer. Mode, pending, thread and highlight come from the
 // server push; only the draft, dropped chips and open rows live here.
 import { nextLetter } from "../core/layers.js";
+import { markCounts } from "../core/drafts.js";
 import type { ThreadEntry } from "../shared/types.js";
 import type { App } from "./app.js";
 import { el, focusedLayer } from "./app.js";
@@ -46,6 +47,7 @@ function send(app: App): void {
     focus: chips.find((c) => c.key === "focus")?.id ?? null,
     selection: chips.find((c) => c.key === "sel")?.id ?? null,
     trace: ((c) => (c?.id ? { path: c.id, hop: c.hop! } : null))(chips.find((c) => c.key === "trace")),
+    draft: chips.find((c) => c.key === "draft")?.id ?? null,
   });
   app.draft = "";
   app.dropped = {};
@@ -54,7 +56,7 @@ function send(app: App): void {
 }
 
 interface Chip {
-  key: "focus" | "sel" | "trace" | "rev";
+  key: "focus" | "sel" | "trace" | "draft" | "rev";
   id: string | null;
   label: string;
   title: string;
@@ -82,6 +84,13 @@ function ctxChips(app: App): Chip[] {
   if (tr && !tr.peek && !app.dropped.trace) {
     const hop = Math.max(1, Math.ceil(tr.t));
     out.push({ key: "trace", id: tr.path.id, hop, label: `${tr.path.id} · hop ${hop}/${tr.n}`, title: "the scrubber's position — sent as { path, hop }, ids only" });
+  }
+  // The active draft rides along as an id, like focus — never its marks.
+  const activeDraft = state.active_draft ? state.drafts.find((d) => d.id === state.active_draft) : undefined;
+  if (activeDraft && !app.dropped.draft) {
+    const counts = markCounts(activeDraft, state.graph.nodes, state.graph.edges);
+    const total = counts.removed + counts.changed + counts.added;
+    out.push({ key: "draft", id: activeDraft.id, label: `${activeDraft.id} · ${total} marks`, title: "the active draft — sent as an id" });
   }
   out.push({ key: "rev", id: null, label: `rev ${state.graph.revision}`, title: "graph.revision the message is written against" });
   return out;
@@ -130,7 +139,10 @@ export function renderSession(app: App): void {
   // Thread: rebuild only when something in it changed, then scroll to the end.
   const thread = el("thread");
   const entries = s?.thread ?? [];
-  const key = `${entries.length}:${entries.at(-1)?.id ?? ""}:${s?.highlight?.msg_id ?? ""}:${s?.trace?.path_id ?? ""}:${app.push?.state.layers.flatMap((l) => l.paths.map((p) => p.id)).join(",") ?? ""}:${agent}:${JSON.stringify(app.open)}`;
+  // Cheap fingerprint of every draft's id/title/marks — a title edit or a new
+  // mark must invalidate the key too, not just a draft appearing/disappearing.
+  const draftsFingerprint = app.push?.state.drafts.map((d) => JSON.stringify({ id: d.id, title: d.title, marks: d.marks })).join(",") ?? "";
+  const key = `${entries.length}:${entries.at(-1)?.id ?? ""}:${s?.highlight?.msg_id ?? ""}:${s?.trace?.path_id ?? ""}:${app.push?.state.layers.flatMap((l) => l.paths.map((p) => p.id)).join(",") ?? ""}:${app.push?.state.active_draft ?? ""}:${draftsFingerprint}:${agent}:${JSON.stringify(app.open)}`;
   if (key !== threadKey) {
     threadKey = key;
     thread.replaceChildren();
@@ -173,7 +185,7 @@ export function renderSession(app: App): void {
       x.textContent = "✕";
       x.title = "don't send this";
       x.addEventListener("click", () => {
-        app.dropped[c.key as "focus" | "sel" | "trace"] = true;
+        app.dropped[c.key as "focus" | "sel" | "trace" | "draft"] = true;
         app.render();
       });
       chip.appendChild(x);
@@ -288,6 +300,28 @@ function messageCard(app: App, m: ThreadEntry): HTMLElement {
     (chip.children[2] as HTMLElement).textContent = path?.title ?? "deleted";
     (chip.children[3] as HTMLElement).textContent = path ? `${path.steps.length} hops` : "";
     chip.addEventListener("click", () => app.send({ type: "trace_set", path_id: active ? null : path_id }));
+    div.appendChild(chip);
+  }
+
+  if (m.type === "claude" && m.draft) {
+    const draftId = m.draft;
+    const draft = app.push?.state.drafts.find((d) => d.id === draftId);
+    const active = app.push?.state.active_draft === draftId;
+    const chip = document.createElement("button");
+    chip.className = active ? "draft-msg-chip on" : "draft-msg-chip";
+    chip.title = draft ? "show this draft on the canvas — esc clears" : "this draft no longer exists";
+    chip.disabled = !draft;
+    chip.innerHTML = `<span class="glyph">▣</span><span class="ref"></span><span class="title"></span><span class="counts"><span class="removed"></span><span class="changed"></span><span class="added"></span></span>`;
+    (chip.children[1] as HTMLElement).textContent = draftId;
+    (chip.children[2] as HTMLElement).textContent = draft?.title ?? "deleted";
+    const counts = chip.children[3]!;
+    if (draft) {
+      const c = markCounts(draft, app.push!.state.graph.nodes, app.push!.state.graph.edges);
+      (counts.children[0] as HTMLElement).textContent = String(c.removed);
+      (counts.children[1] as HTMLElement).textContent = String(c.changed);
+      (counts.children[2] as HTMLElement).textContent = String(c.added);
+    }
+    chip.addEventListener("click", () => app.send({ type: "drafts_activate", draft_id: active ? null : draftId }));
     div.appendChild(chip);
   }
   return div;

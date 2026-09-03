@@ -4,7 +4,9 @@ import { deleteSelection, togglePlay, traceInfo } from "./canvas.js";
 import type { App, Scope, Tab, Tool } from "./app.js";
 import { KIND_META, el, focusLayer, focusedLayer } from "./app.js";
 import { liveMembers, scopeState } from "../core/layers.js";
-import { NODE_KINDS, EDGE_KINDS } from "../shared/types.js";
+import { markCounts } from "../core/drafts.js";
+import { NODE_KINDS, EDGE_KINDS, DRAFT_ROLES } from "../shared/types.js";
+import type { DraftRole } from "../shared/types.js";
 import { renderSession } from "./session.js";
 
 const TOOLS: [Tool, string, string][] = [
@@ -18,6 +20,7 @@ const TOOLS: [Tool, string, string][] = [
 
 const TABS: [Tab, string][] = [
   ["layers", "LAYERS"],
+  ["drafts", "DRAFTS"],
   ["session", "SESSION"],
   ["history", "HISTORY"],
   ["state", "STATE"],
@@ -40,7 +43,7 @@ const SCOPE_NOTES: Record<Scope, string> = {
 // the panel can genuinely act; the rest belong to Claude over MCP.
 const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
   ["session.mode", "Flip the mode flag the server holds. On: fails unless permission mode is auto; arms the Stop hook that redirects replies into session_send. Off: releases any pending session_send with mode_off.", "(on: boolean) → { mode, hook }", (app) => switchTab(app, "session")],
-  ["session.send", "Deliver a reply to the Session tab, optionally pointing at elements or at a path (or a hop on it). Blocks until the human replies (20 min timeout) and returns their message with focus, selection, scrubber position and revision as ids.", "(text, highlight?: { nodes, edges, label }, path?: { layer_id, path_id, hop? }) → { reply, ctx } | { status: mode_off | idle }", (app) => switchTab(app, "session")],
+  ["session.send", "Deliver a reply to the Session tab, optionally pointing at elements, at a path (or a hop on it), or at a draft. Blocks until the human replies (20 min timeout) and returns their message with focus, selection, scrubber position, active draft and revision as ids.", "(text, highlight?: { nodes, edges, label }, path?: { layer_id, path_id, hop? }, draft?: string) → { reply, ctx } | { status: mode_off | idle }", (app) => switchTab(app, "session")],
   ["boards.list", "Board ids, names, element counts, last touched.", "() → { boards }", null as never],
   ["boards.open", "Make a board current and return its state.", "(board_id) → CanvasState", null as never],
   ["boards.create", "New empty board.", "(name) → { board_id }", null as never],
@@ -76,6 +79,11 @@ const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
     if (first) app.send({ type: "trace_set", path_id: first.id });
     else toast("no path on this board — ask claude for paths_create");
   }],
+  ["drafts.create", "Propose a change: a title, a note saying what and why, and marks — element ids with one of removed, changed, added. A draft changes nothing on the board; it says what would. Marks are explicit: mark the edges you mean, the server infers none.", "(title?, note?, marks?: [{ id, role }]) → { draft_id, marks }", (app) => app.send({ type: "drafts_create" })],
+  ["drafts.update", "Retitle, rewrite the note, mark or unmark elements. Marking again replaces the role.", "(draft_id, title?, note?, mark?: [{ id, role }], unmark?: string[]) → { draft_id, marks }", null as never],
+  ["drafts.delete", "Remove a draft. The board is untouched.", "(draft_id) → { ok }", null as never],
+  ["drafts.get", "One draft with its marks resolved to labels. Small — use it to answer about a mark instead of reading the board.", "(draft_id) → { draft_id, title, note, marks: [{ id, role, label, kind | edge: { from, to } }] }", null as never],
+  ["drafts.activate", "Show a draft on the human's canvas, or pass null to clear. Shared by every panel; it changes what someone else is looking at.", "(draft_id | null) → { ok }", (app) => app.send({ type: "drafts_activate", draft_id: app.push?.state.active_draft ? null : (app.push?.state.drafts[0]?.id ?? null) })],
 ];
 
 const PANEL_KEY = "inkwire.panel";
@@ -295,6 +303,7 @@ export function renderPanel(app: App): void {
     el(`pane-${id}`).hidden = app.tab !== id;
   }
   if (app.tab === "layers") renderLayers(app);
+  if (app.tab === "drafts") renderDrafts(app);
   if (app.tab === "session") renderSession(app);
   if (app.tab === "history") renderHistory(app);
   if (app.tab === "state") renderState(app);
@@ -615,6 +624,102 @@ function renderLayers(app: App): void {
     actions.append(focus, del);
 
     card.append(meta, title, body, paths, actions);
+    pane.appendChild(card);
+  }
+}
+
+function renderDrafts(app: App): void {
+  const pane = el("pane-drafts");
+  const state = app.push?.state;
+  // Never rebuild under the user's caret (the title input or the note textarea) —
+  // unless its card's draft is already gone, in which case it's wired to a dead
+  // id and must be rebuilt anyway.
+  const focused = document.activeElement;
+  if ((focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement) && pane.contains(focused)) {
+    const cardId = focused.closest<HTMLElement>(".draft-card")?.dataset.id;
+    if (cardId !== undefined && state?.drafts.some((d) => d.id === cardId)) return;
+  }
+  pane.replaceChildren();
+  if (!state) return;
+
+  const note = document.createElement("div");
+  note.className = "pane-note";
+  note.innerHTML = "DRAFTS · a proposed change and what it touches<br>marks are explicit — a draft changes nothing on the board";
+  pane.appendChild(note);
+
+  const newDraft = document.createElement("button");
+  newDraft.className = "btn btn-secondary";
+  newDraft.style.width = "100%";
+  newDraft.textContent = "new draft";
+  newDraft.addEventListener("click", () => app.send({ type: "drafts_create" }));
+  pane.appendChild(newDraft);
+
+  for (const draft of state.drafts) {
+    const on = draft.id === state.active_draft;
+    const counts = markCounts(draft, state.graph.nodes, state.graph.edges);
+    const total = counts.removed + counts.changed + counts.added;
+    const card = document.createElement("div");
+    card.className = on ? "card draft-card on" : "card draft-card";
+    card.dataset.id = draft.id;
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.innerHTML = `<span class="id"></span><span></span><span class="by"></span>`;
+    (meta.children[0] as HTMLElement).textContent = draft.id;
+    (meta.children[1] as HTMLElement).textContent = `${total} mark${total === 1 ? "" : "s"}`;
+    (meta.children[2] as HTMLElement).textContent = draft.author;
+
+    const title = document.createElement("input");
+    title.className = "input";
+    title.maxLength = 24;
+    title.value = draft.title;
+    title.addEventListener("change", () => app.send({ type: "drafts_update", draft_id: draft.id, title: title.value }));
+
+    const noteField = document.createElement("textarea");
+    noteField.className = "input";
+    noteField.rows = 3;
+    noteField.placeholder = "what the change is and why";
+    noteField.value = draft.note;
+    noteField.addEventListener("change", () => app.send({ type: "drafts_update", draft_id: draft.id, note: noteField.value }));
+
+    const marks = document.createElement("div");
+    marks.className = "marks";
+    for (const role of DRAFT_ROLES) {
+      const entries = (Object.entries(draft.marks) as [string, DraftRole][]).filter(([, r]) => r === role);
+      if (entries.length === 0) continue;
+      const kicker = document.createElement("span");
+      kicker.className = "kicker";
+      kicker.dataset.role = role;
+      kicker.textContent = `${role.toUpperCase()} · ${counts[role]}`;
+      marks.appendChild(kicker);
+      for (const [id] of entries) {
+        const node = state.graph.nodes.find((n) => n.id === id);
+        const edge = node ? undefined : state.graph.edges.find((e) => e.id === id);
+        const gone = !node && !edge;
+        const row = document.createElement("div");
+        row.className = "mark-row";
+        if (gone) row.style.opacity = "0.5";
+        row.innerHTML = `<span class="id"></span><span class="label"></span><button class="unmark" title="clear mark">✕</button>`;
+        (row.children[0] as HTMLElement).textContent = id;
+        (row.children[1] as HTMLElement).textContent = gone ? "gone" : (node?.label ?? edge?.label ?? "edge");
+        row.children[2]!.addEventListener("click", () => app.send({ type: "drafts_mark", draft_id: draft.id, id, role: null }));
+        marks.appendChild(row);
+      }
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const activate = document.createElement("button");
+    activate.className = "btn btn-secondary";
+    activate.textContent = on ? "deactivate" : "activate";
+    activate.addEventListener("click", () => app.send({ type: "drafts_activate", draft_id: on ? null : draft.id }));
+    const del = document.createElement("button");
+    del.className = "btn btn-ghost";
+    del.textContent = "delete";
+    del.addEventListener("click", () => app.send({ type: "drafts_delete", draft_id: draft.id }));
+    actions.append(activate, del);
+
+    card.append(meta, title, noteField, marks, actions);
     pane.appendChild(card);
   }
 }

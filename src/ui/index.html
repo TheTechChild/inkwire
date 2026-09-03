@@ -68,6 +68,19 @@
             <marker id="arwai" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="var(--color-accent)" stroke-width="1.4"></path>
             </marker>
+            <!-- Drafts (handoff "Drafts" § "Roles"): error-kind edges and the three mark roles, 7x7 like #arw. -->
+            <marker id="arwerror" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="var(--color-error)" stroke-width="1.4"></path>
+            </marker>
+            <marker id="arwdraft-removed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="var(--color-draft-removed)" stroke-width="1.4"></path>
+            </marker>
+            <marker id="arwdraft-changed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="var(--color-draft-changed)" stroke-width="1.4"></path>
+            </marker>
+            <marker id="arwdraft-added" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="var(--color-draft-added)" stroke-width="1.4"></path>
+            </marker>
           </defs>
           <g id="inkgroup"></g>
           <g id="edgegroup"></g>
@@ -91,6 +104,7 @@
       <div class="seg" id="tabs"></div>
       <div id="panelbody">
         <div class="tabpane" id="pane-layers"></div>
+        <div class="tabpane" id="pane-drafts" hidden></div>
         <div class="tabpane session-pane" id="pane-session" hidden>
           <div class="mode-strip" id="modestrip"></div>
           <div class="thread" id="thread"></div>

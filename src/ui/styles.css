@@ -41,6 +41,14 @@
      shared/tokens.ts. A chrome colour: borders, strokes, glyphs, 10–12px kickers. */
   --color-signal: #b8862a;
   --color-signal-soft: color-mix(in srgb, var(--color-signal) 30%, transparent);
+
+  /* Drafts (handoff "Drafts" § "Design tokens"): chrome only — borders, strokes,
+     glyphs, 10-12px kickers, never body copy or a fill. Mirrors shared/tokens.ts;
+     nothing in the SVG fallback renderer reads them yet. */
+  --color-error: #c96a5a;
+  --color-draft-removed: var(--color-error);
+  --color-draft-changed: #7d6aa3;
+  --color-draft-added: #4f8f7a;
 }
 
 [data-theme="dark"] {
@@ -61,6 +69,11 @@
   --cv-grid: color-mix(in srgb, #e8ebee 20%, transparent);
   --color-signal: #e8bd5e;
   --color-signal-soft: color-mix(in srgb, var(--color-signal) 32%, transparent);
+
+  --color-error: #e08a7a;
+  --color-draft-removed: var(--color-error);
+  --color-draft-changed: #a897cf;
+  --color-draft-added: #7fbfa6;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -232,6 +245,10 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
 #world[data-hl="dim"] [data-hl="out"][data-tier="out"] { opacity: 0.28; }
 #world .edge[data-hl="in"] .edge-label, #world .edge[data-hl="in"] .edge-label-bg { display: initial; }
 #world .edge[data-hl="out"] .edge-label, #world .edge[data-hl="out"] .edge-label-bg { display: none; }
+/* Marked edges show their label whatever the tier (handoff "Drafts" § "Roles") —
+   equal specificity, later in source, so this beats both the tier rule above
+   and the highlight-out rule just above. */
+#world .edge[data-draft] .edge-label, #world .edge[data-draft] .edge-label-bg { display: initial; }
 /* trace (handoff "Paths" § 3): the walk is "in", its layer the rim, the rest
    blurs harder than focus. Walk states ride on data-trace; canvas.ts leaves
    walk nodes' inline border/shadow empty so these rules win. Gold is for the
@@ -246,6 +263,29 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
 }
 #world .edge[data-trace="done"] path { stroke: var(--color-signal); stroke-width: max(3px, calc(2.5px / var(--zoom))); stroke-dasharray: none; marker-end: url(#arwgold); }
 #world .edge[data-trace="done"] .edge-label, #world .edge[data-trace="active-lit"] .edge-label { fill: var(--color-signal); }
+/* draft marks (handoff "Drafts" § "Roles" / "Stacking"): a view over the board,
+   suppressed while a trace plays (canvas.ts computes marks as {} then, so no
+   [data-draft] is ever set at the same time as [data-trace]). CSS carries the
+   whole treatment — canvas.ts leaves marked nodes' inline border empty so these
+   rules win, same trick as the walk states above. Draft beats highlight: these
+   selectors match the SVG presentation attributes canvas.ts sets for lit/ai/
+   selected regardless of source order. A selected marked node keeps the role
+   border (left blank inline) and gains var(--shadow-md) from its own selected
+   rule below. A role beats the error kind: a marked error edge draws in its
+   role's stroke here, not --color-error. */
+#world .node-box[data-draft="removed"] { border: 1.5px solid var(--color-draft-removed); }
+#world .node-box[data-draft="changed"] { border: 1.5px dashed var(--color-draft-changed); }
+#world .node-box[data-draft="added"] { border: 3px double var(--color-draft-added); }
+#world .node-box[data-draft="removed"] .node-label { text-decoration: line-through; }
+#world .node-box[data-draft="removed"] .node-kicker span:last-child { color: var(--color-draft-removed); }
+#world .node-box[data-draft="changed"] .node-kicker span:last-child { color: var(--color-draft-changed); }
+#world .node-box[data-draft="added"] .node-kicker span:last-child { color: var(--color-draft-added); }
+#world .edge[data-draft="removed"] path { stroke: var(--color-draft-removed); stroke-width: 1.8px; stroke-dasharray: 3 3; marker-end: url(#arwdraft-removed); }
+#world .edge[data-draft="changed"] path { stroke: var(--color-draft-changed); stroke-width: 1.8px; stroke-dasharray: 6 4; marker-end: url(#arwdraft-changed); }
+#world .edge[data-draft="added"] path { stroke: var(--color-draft-added); stroke-width: 1.8px; stroke-dasharray: none; marker-end: url(#arwdraft-added); }
+#world .edge[data-draft="removed"] .edge-label { fill: var(--color-draft-removed); text-decoration: line-through; }
+#world .edge[data-draft="changed"] .edge-label { fill: var(--color-draft-changed); }
+#world .edge[data-draft="added"] .edge-label { fill: var(--color-draft-added); }
 .resize-handle {
   position: absolute; width: 9px; height: 9px;
   background: var(--color-accent); border: 1px solid var(--color-bg);
@@ -271,7 +311,7 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
   padding: 8px 14px; background: var(--color-surface); border: 1px solid var(--color-accent);
   font-family: var(--font-mono); font-size: 11.5px; z-index: 3; animation: pulsein 220ms ease-out;
 }
-#toast.error { border-color: #c96a5a; }
+#toast.error { border-color: var(--color-error); }
 #toast[hidden] { display: none; }
 
 /* — layers: chip bar + focus strip, an overlay across the top of #canvas — */
@@ -279,8 +319,9 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
   position: absolute; left: 0; right: 0; top: 12px; z-index: 2; pointer-events: none;
   display: flex; flex-direction: column; align-items: center; gap: 8px;
 }
-.layer-chips { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px; max-width: 92%; pointer-events: auto; }
-.layer-chips .lead { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em; color: var(--color-neutral-600); padding-right: 8px; }
+/* shared with .draft-chips below (handoff "Drafts" § 1): the same row layout for both chip rows */
+.layer-chips, .draft-chips { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px; max-width: 92%; pointer-events: auto; }
+.layer-chips .lead, .draft-chips .lead { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em; color: var(--color-neutral-600); padding-right: 8px; }
 .layer-chip {
   display: inline-flex; align-items: center; gap: 8px; padding: 5px 11px; cursor: pointer;
   border: 1px solid var(--color-divider); border-radius: 0; background: var(--color-bg); color: var(--color-text);
@@ -302,6 +343,17 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
   padding: 5px 11px; cursor: pointer; border: 1px solid var(--color-divider); border-radius: 0; background: transparent;
   font-family: var(--font-mono); font-size: 10.5px; color: var(--color-neutral-700);
 }
+/* drafts: a second chip row beside the layer one (handoff "Drafts" § 1) */
+.draft-chip {
+  display: inline-flex; align-items: center; gap: 8px; padding: 5px 11px; cursor: pointer;
+  border: 1px solid var(--color-divider); border-radius: 0; background: var(--color-bg); color: var(--color-text);
+  user-select: none;
+}
+.draft-chip .id { font-family: var(--font-mono); font-weight: 500; font-size: 11.5px; letter-spacing: 0.06em; }
+.draft-chip .title { font-family: var(--font-heading); font-weight: 600; font-size: 12.5px; letter-spacing: 0.01em; }
+.draft-chip .counts { display: inline-flex; gap: 6px; font-family: var(--font-mono); font-size: 10px; }
+/* Active: inverted text/bg, not the accent fill — that reads as focus. */
+.draft-chip.on { background: var(--color-text); color: var(--color-bg); border-color: var(--color-text); }
 .focus-strip {
   max-width: 620px; padding: 8px 12px; background: var(--color-bg); border: 1px solid var(--color-accent-300);
   display: flex; gap: 10px; align-items: flex-start;
@@ -316,9 +368,49 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
 .hl-strip .kicker { font-family: var(--font-mono); font-weight: 500; font-size: 10px; letter-spacing: 0.1em; }
 .hl-strip .label { font-family: var(--font-heading); font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hl-strip .count { font-family: var(--font-mono); font-size: 10px; opacity: 0.85; white-space: nowrap; }
-.hl-strip button {
+/* shared with .draft-strip button below: same "clear · esc" button style for both strips */
+.hl-strip button, .draft-strip button {
   cursor: pointer; border-radius: 0; padding: 3px 8px; margin-left: 4px; background: transparent; color: inherit;
   border: 1px solid color-mix(in srgb, currentColor 45%, transparent); font-family: var(--font-mono); font-size: 10px;
+}
+/* An 18px line sample in a role's node-border style (handoff "Drafts" §§ 2, 4):
+   the sample's own color drives the border via currentColor, so one style.color
+   (or, in the menu, one attribute-selector rule) colors both the line and its label. */
+.line-sample { display: inline-block; width: 18px; height: 0; border-top-width: 1.5px; border-top-color: currentColor; vertical-align: middle; }
+.line-sample[data-draft="removed"] { border-top-style: solid; }
+.line-sample[data-draft="changed"] { border-top-style: dashed; }
+.line-sample[data-draft="added"] { border-top-style: double; border-top-width: 3px; }
+/* draft strip (handoff "Drafts" § 2): shown below the chip row while a draft is
+   active and no trace plays — mutually exclusive with the scrubber below, since
+   traceInfo() is what gates both. */
+.draft-strip {
+  display: flex; align-items: center; gap: 12px; max-width: 720px; padding: 6px 6px 6px 12px;
+  background: var(--color-bg); border: 1px solid var(--color-neutral-700); pointer-events: auto;
+}
+.draft-strip .kicker { font-family: var(--font-mono); font-weight: 500; font-size: 10px; letter-spacing: 0.1em; color: var(--color-neutral-700); flex-shrink: 0; }
+.draft-strip .id { font-family: var(--font-mono); font-size: 10.5px; color: var(--color-neutral-600); flex-shrink: 0; }
+.draft-strip .title { flex: 1; min-width: 0; font-family: var(--font-heading); font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.draft-strip .legend { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.draft-strip .legend-item { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 10px; }
+/* right-click menu (handoff "Drafts" § 4): opens at the pointer, over #canvas */
+.ctx-menu {
+  position: absolute; min-width: 220px; background: var(--color-bg); border: 1px solid var(--color-divider);
+  box-shadow: var(--shadow-md); z-index: 4; padding: 4px 0; animation: pulsein 120ms ease-out;
+}
+.ctx-menu .header { display: flex; flex-direction: column; gap: 2px; padding: 6px 10px 4px; }
+.ctx-menu .header .kind { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em; color: var(--color-neutral-600); }
+.ctx-menu .header .label { font-family: var(--font-heading); font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ctx-menu .role-row, .ctx-menu .clear-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; cursor: pointer; }
+.ctx-menu .role-row:hover, .ctx-menu .clear-row:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+.ctx-menu .role-row .name { font-family: var(--font-mono); font-size: 11px; }
+.ctx-menu .role-row .check { margin-left: auto; font-family: var(--font-mono); font-size: 11px; }
+.ctx-menu .role-row[data-role="removed"] .name, .ctx-menu .role-row[data-role="removed"] .line-sample { color: var(--color-draft-removed); }
+.ctx-menu .role-row[data-role="changed"] .name, .ctx-menu .role-row[data-role="changed"] .line-sample { color: var(--color-draft-changed); }
+.ctx-menu .role-row[data-role="added"] .name, .ctx-menu .role-row[data-role="added"] .line-sample { color: var(--color-draft-added); }
+.ctx-menu .clear-row { font-family: var(--font-mono); font-size: 11px; color: var(--color-neutral-700); }
+.ctx-menu .footer {
+  padding: 5px 10px 6px; border-top: 1px dashed var(--color-divider);
+  font-family: var(--font-mono); font-size: 9.5px; color: var(--color-neutral-500);
 }
 /* — scrubber (handoff "Paths" § 2): three rows below the chip row — */
 .scrubber {
@@ -449,6 +541,21 @@ aside { position: relative; border-left: 1px solid var(--color-divider); display
 .path-chip.on { background: var(--color-signal); color: var(--color-bg); }
 .path-chip.on .glyph, .path-chip.on .ref { color: var(--color-bg); }
 .path-chip:disabled { cursor: default; opacity: 0.5; }
+/* draft chip (handoff "Drafts" § 6): the message that carried a draft; inverted
+   text/bg while it is the active draft — never the gold fill .path-chip uses. */
+.draft-msg-chip {
+  display: flex; align-items: center; gap: 8px; width: 100%; cursor: pointer; text-align: left; margin-top: 4px;
+  padding: 5px 9px; border-radius: 0; background: transparent; border: 1px solid var(--color-neutral-700); color: var(--color-text);
+}
+.draft-msg-chip .glyph, .draft-msg-chip .ref { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; color: var(--color-neutral-700); }
+.draft-msg-chip .title { font-family: var(--font-heading); font-weight: 600; font-size: 12px; letter-spacing: 0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.draft-msg-chip .counts { margin-left: auto; display: inline-flex; gap: 6px; font-family: var(--font-mono); font-size: 10px; white-space: nowrap; }
+.draft-msg-chip .counts .removed { color: var(--color-draft-removed); }
+.draft-msg-chip .counts .changed { color: var(--color-draft-changed); }
+.draft-msg-chip .counts .added { color: var(--color-draft-added); }
+.draft-msg-chip.on { background: var(--color-text); color: var(--color-bg); }
+.draft-msg-chip.on .glyph, .draft-msg-chip.on .ref, .draft-msg-chip.on .counts .removed, .draft-msg-chip.on .counts .changed, .draft-msg-chip.on .counts .added { color: var(--color-bg); }
+.draft-msg-chip:disabled { cursor: default; opacity: 0.5; }
 
 .call-group { display: flex; flex-direction: column; gap: 8px; }
 .call-row {
@@ -520,6 +627,30 @@ aside { position: relative; border-left: 1px solid var(--color-divider); display
 .layer-card .actions { display: flex; gap: 8px; align-items: center; }
 .layer-card .actions .btn-secondary { flex: 1; font-size: 12px; }
 .layer-card .actions .btn-ghost { font-family: var(--font-mono); font-size: 10.5px; }
+
+/* DRAFTS tab (handoff "Drafts" § 5): mirrors .layer-card's shape — meta row,
+   editable title/note, one section per role, activate/deactivate + delete. */
+.draft-card { padding: 10px 11px; gap: 7px; }
+.draft-card.on { border-color: var(--color-text); }
+.draft-card .meta { display: flex; align-items: baseline; gap: 8px; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.09em; color: var(--color-neutral-600); }
+.draft-card .meta .id { font-size: 12px; color: var(--color-text); }
+.draft-card .meta .by { margin-left: auto; }
+.draft-card .input { font-family: var(--font-heading); font-weight: 600; font-size: 14px; }
+.draft-card textarea.input { font-family: var(--font-body); font-weight: 400; font-size: 12px; color: var(--color-neutral-700); resize: none; }
+.draft-card .marks { display: flex; flex-direction: column; gap: 4px; }
+.draft-card .marks:empty { display: none; }
+.draft-card .marks .kicker { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em; }
+.draft-card .marks .kicker[data-role="removed"] { color: var(--color-draft-removed); }
+.draft-card .marks .kicker[data-role="changed"] { color: var(--color-draft-changed); }
+.draft-card .marks .kicker[data-role="added"] { color: var(--color-draft-added); }
+.mark-row { display: flex; align-items: center; gap: 8px; padding: 3px 6px; border: 1px solid var(--color-divider); }
+.mark-row .id { font-family: var(--font-mono); font-size: 10px; color: var(--color-neutral-600); }
+.mark-row .label { flex: 1; min-width: 0; font-family: var(--font-heading); font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mark-row .unmark { flex-shrink: 0; cursor: pointer; border: 0; background: transparent; color: var(--color-neutral-500); font-family: inherit; font-size: 11px; padding: 0 2px; line-height: 1; }
+.mark-row .unmark:hover { color: var(--color-text); }
+.draft-card .actions { display: flex; gap: 8px; align-items: center; }
+.draft-card .actions .btn-secondary { flex: 1; font-size: 12px; }
+.draft-card .actions .btn-ghost { font-family: var(--font-mono); font-size: 10.5px; }
 
 .pane-note { font-family: var(--font-mono); font-size: 10px; line-height: 1.6; letter-spacing: 0.09em; color: var(--color-neutral-600); }
 #statejson {
