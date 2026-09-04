@@ -284,59 +284,6 @@ export function addImage(
   });
 }
 
-export function annotate(
-  s: BoardSession,
-  author: Author,
-  args: { target_id: string; text: string },
-): MutationResult {
-  const c = s.collections();
-  const targetBox =
-    c.layout[args.target_id] ??
-    (c.edges.some((e) => e.id === args.target_id) ? edgeBox(c, args.target_id) : undefined);
-  if (
-    !c.nodes.some((n) => n.id === args.target_id) &&
-    !c.edges.some((e) => e.id === args.target_id) &&
-    !c.images.some((i) => i.id === args.target_id)
-  ) {
-    throw new Error(`element not found: ${args.target_id}`);
-  }
-  const id = s.newId("n");
-  const at: Point = targetBox ? [targetBox[0] + targetBox[2] + 24, targetBox[1]] : [80, 80];
-  return s.mutate({
-    label: `annotate · ${args.target_id}`,
-    author,
-    key: null,
-    ids: [id],
-    apply: (cur) => ({
-      ...cur,
-      nodes: [
-        ...cur.nodes,
-        {
-          id,
-          label: args.text,
-          kind: "note",
-          ref: null,
-          endpoint: `re: ${args.target_id}`,
-          from_ink: null,
-          author,
-        } satisfies NodeEl,
-      ],
-      layout: { ...cur.layout, [id]: [at[0], at[1], 200, 90] },
-    }),
-  });
-}
-
-function edgeBox(c: Collections, edgeId: string): Box | undefined {
-  const e = c.edges.find((e) => e.id === edgeId);
-  if (!e) return undefined;
-  const a = c.layout[e.from];
-  const b = c.layout[e.to];
-  if (!a || !b) return undefined;
-  const mx = (a[0] + a[2] / 2 + b[0] + b[2] / 2) / 2;
-  const my = (a[1] + a[3] / 2 + b[1] + b[3] / 2) / 2;
-  return [mx, my, 0, 0];
-}
-
 export interface InferResult extends MutationResult {
   nodes_added: number;
   edges_added: number;

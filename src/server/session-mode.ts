@@ -7,12 +7,16 @@ import type { Highlight } from "../shared/types.js";
 import { playableHops } from "../core/layers.js";
 import { findPath, openTrace } from "./layers.js";
 import { findDraft } from "./drafts.js";
+import { findNotebook } from "./notebooks.js";
 import type { BoardSession, SendResult, Sessions } from "./session.js";
 
+const NOTEBOOK_LINE =
+  "Four pointers say where to look. A notebook is where you write about them: markdown on the board, with `[[id]]` refs that resolve live. Never put prose on the canvas — there is no note kind.";
+
 export const MODE_ON_INSTRUCTION =
-  "inkwire mode is on: deliver replies with session_send and end your turn only after it returns. Four pointers: highlight = point at a set, layer = keep a cut, path = explain an order, draft = propose a change.";
+  `inkwire mode is on: deliver replies with session_send and end your turn only after it returns. Four pointers: highlight = point at a set, layer = keep a cut, path = explain an order, draft = propose a change. ${NOTEBOOK_LINE}`;
 const STOP_REASON =
-  "inkwire mode is on: the human is in the inkwire panel, not the terminal. Deliver this reply with session_send(text, highlight?, path?, draft?) and end your turn only after it returns.";
+  `inkwire mode is on: the human is in the inkwire panel, not the terminal. Deliver this reply with session_send(text, highlight?, path?, draft?, notebook?) and end your turn only after it returns. ${NOTEBOOK_LINE}`;
 const IDLE_NOTICE = "claude code timed out · say something in the terminal";
 const MODE_OFF_NOTE = "user returned to the terminal; reply in the PTY";
 /** Stop blocks in a row with no session_send between them before the server gives up. */
@@ -91,6 +95,7 @@ export interface SendArgs {
   highlight?: Highlight;
   path?: { layer_id: string; path_id: string; hop?: number };
   draft?: string;
+  notebook?: string;
 }
 
 /** Append the agent's message, light the highlight, then block until the
@@ -145,17 +150,29 @@ export function sessionSend(
     }
   }
 
+  // Same shape as draft: unknown id drops into warnings, the message lands without the chip.
+  let notebook: string | undefined;
+  if (args.notebook) {
+    try {
+      notebook = findNotebook(session, args.notebook).id;
+    } catch {
+      warnings.push(`unknown notebook dropped: ${args.notebook}`);
+    }
+  }
+
   const msg = session.addThread({
     type: "claude",
     text: args.text,
     ...(highlight ? { highlight } : {}),
     ...(path ? { path } : {}),
     ...(draft ? { draft } : {}),
+    ...(notebook ? { notebook } : {}),
   });
   if (highlight) session.setHighlight(msg.id);
   // Last, so the trace wins over the highlight: a trace is the stronger pointer.
   if (path) openTrace(session, path.path_id, { t: args.path!.hop, running: args.path!.hop === undefined });
   if (draft) session.setActiveDraft(draft, "ai");
+  if (notebook) session.setActiveNotebook(notebook, "ai");
   sessions.blocks = 0;
 
   return new Promise<SendResult & { warnings?: string[] }>((resolve) => {
@@ -192,6 +209,7 @@ export function sessionReply(
     selection: string | null;
     trace?: { path: string; hop: number } | null;
     draft?: string | null;
+    notebook?: string | null;
   },
 ): void {
   if (sessions.mode !== "inkwire") throw new Error("pty mode: replies go to the terminal");
@@ -228,6 +246,14 @@ export function sessionReply(
       ctx.push({ label: `${d.id} · ${d.title}`, title: "the active draft — sent as an id, not its marks" });
     }
   }
+  let notebook: string | null = null;
+  if (args.notebook) {
+    const n = session.notebooks.find((x) => x.id === args.notebook);
+    if (n) {
+      notebook = n.id;
+      ctx.push({ label: `${n.id} · ${n.title}`, title: "the open notebook — sent as an id, not its body" });
+    }
+  }
   ctx.push({ label: `rev ${session.graphRevision}`, title: "graph.revision the message was written against" });
   session.addThread({ type: "you", text: args.text, ctx });
   sessions.resolvePending({
@@ -238,6 +264,7 @@ export function sessionReply(
       selection: selected,
       trace,
       draft,
+      notebook,
       revision: session.graphRevision,
     },
   });

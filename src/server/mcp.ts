@@ -7,6 +7,7 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { pathsAffected, scopeState } from "../core/layers.js";
 import { draftsAffectedBy } from "../core/drafts.js";
+import { notebooksAffectedBy, resolveNotebookRefs } from "../core/notebooks.js";
 import { exportMermaid } from "../core/mermaid.js";
 import { toolArgs } from "../shared/schemas.js";
 import { importBoard } from "./board-file.js";
@@ -17,6 +18,7 @@ import { validateRef } from "./bindcode.js";
 import { lintBoard } from "./lint.js";
 import { createLayer, createPath, deleteLayer, deletePath, getPath, memberCount, openTrace, updateLayer, updatePath } from "./layers.js";
 import { createDraft, deleteDraft, getDraft, updateDraft } from "./drafts.js";
+import { appendToNotebook, createNotebook, deleteNotebook, findNotebook, findOrCreateNotesNotebook, updateNotebook } from "./notebooks.js";
 import { sessionMode, sessionSend } from "./session-mode.js";
 import type { Store } from "./store.js";
 
@@ -45,7 +47,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
   // Caption: the mutation labels the call produced, else its arguments.
   // session_send writes its own message and session_mode its own row.
   const SELF_RECORDING = new Set<string>(["session.send", "session.mode"]);
-  const BIG_RESULTS = new Set<string>(["canvas.get_state", "canvas.get_board", "canvas.screenshot", "boards.open"]);
+  const BIG_RESULTS = new Set<string>(["canvas.get_state", "canvas.get_board", "canvas.screenshot", "boards.open", "notebooks.get"]);
   const current = () => (sessions.currentBoardId ? sessions.open(sessions.currentBoardId) : null);
   const recordCall = (name: string, args: Record<string, unknown>, s0: ReturnType<typeof current>, seq0: number, result: any) => {
     const s1 = current();
@@ -105,7 +107,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "session.send",
-    "Deliver a reply to the Session tab, optionally pointing at elements, at a path (or a hop on it), or at a draft. Blocks until the human replies (20 min timeout) and returns their message with focus, selection, scrubber position, active draft and revision as ids.",
+    "Deliver a reply to the Session tab, optionally pointing at elements, at a path (or a hop on it), at a draft, or at a notebook. Blocks until the human replies (20 min timeout) and returns their message with focus, selection, scrubber position, active draft and revision as ids.",
     async (
       args: {
         board_id?: string;
@@ -113,6 +115,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
         highlight?: { nodes: string[]; edges: string[]; label: string };
         path?: { layer_id: string; path_id: string; hop?: number };
         draft?: string;
+        notebook?: string;
       },
       extra: any,
     ) => {
@@ -284,7 +287,8 @@ export function buildMcpServer(deps: McpDeps): McpServer {
       const result = mutations.deleteElement(session, AUTHOR, args.id);
       const paths_affected = pathsAffected(session.layers, session.collections().edges).filter((b) => !before.has(`${b.path_id}:${b.hop}`));
       const drafts_affected = draftsAffectedBy(session.drafts, result.ids);
-      return text({ ...result, paths_affected, drafts_affected });
+      const notebooks_affected = notebooksAffectedBy(session.notebooks, result.ids);
+      return text({ ...result, paths_affected, drafts_affected, notebooks_affected });
     },
   );
 
@@ -318,10 +322,24 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "canvas.annotate",
-    "Pin a comment to an element. For observations that belong on the board rather than in the transcript — a missing case, an unhandled error path.",
+    "Write a comment about a node or edge — a missing case, an unhandled error path. It lands in the board's notes notebook as a paragraph refbacked to the element, not on the canvas.",
     (args: { board_id?: string; target_id: string; text: string }) => {
       const session = sessions.resolve(args.board_id);
-      return text(mutations.annotate(session, AUTHOR, args));
+      const c = session.collections();
+      const exists = c.nodes.some((n) => n.id === args.target_id) || c.edges.some((e) => e.id === args.target_id);
+      if (!exists) {
+        // ponytail: images are deliberately rejected, not annotated — goneRefs
+        // and resolveRef (core/notebooks.ts, notebook.ts) only track nodes,
+        // edges, layers, paths and drafts, so an [[img_x]] ref would dangle
+        // the instant it was written. Smaller honest diff than teaching both
+        // resolvers a fifth ref kind for a target that isn't linkable elsewhere.
+        const isImage = c.images.some((i) => i.id === args.target_id);
+        throw new Error(isImage ? `images can't be annotated: ${args.target_id}` : `element not found: ${args.target_id}`);
+      }
+      const notebook = findOrCreateNotesNotebook(session, AUTHOR);
+      appendToNotebook(session, AUTHOR, notebook.id, `[[${args.target_id}]] ${args.text}`);
+      session.setActiveNotebook(notebook.id, AUTHOR);
+      return text({ notebook_id: notebook.id, target_id: args.target_id });
     },
   );
 
@@ -348,11 +366,11 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "canvas.lint",
-    `Static checks against the project root (${deps.projectRoot}), no model: refs to missing files (error), refs whose symbol is gone (warn), nodes with neither ref nor endpoint (warn), error edges with no condition (warn), conditions on a node with a single outgoing edge (warn), paths with a broken hop or a hop ref that no longer resolves, drafts marking an element that no longer exists (warn). Run after a refactor to find board rot. For a semantic audit — does the edge really call what it says — read get_state and check the code yourself.`,
+    `Static checks against the project root (${deps.projectRoot}), no model: refs to missing files (error), refs whose symbol is gone (warn), nodes with neither ref nor endpoint (warn), error edges with no condition (warn), conditions on a node with a single outgoing edge (warn), paths with a broken hop or a hop ref that no longer resolves, drafts marking an element that no longer exists (warn), a surviving note node (error — run the notes migration), a notebook ref that no longer resolves (warn). Run after a refactor to find board rot. For a semantic audit — does the edge really call what it says — read get_state and check the code yourself.`,
     (args: { board_id?: string }) => {
       const session = sessions.resolve(args.board_id);
       const c = session.collections();
-      const findings = lintBoard(deps.projectRoot, c.nodes, c.edges, session.layers, session.drafts);
+      const findings = lintBoard(deps.projectRoot, c.nodes, c.edges, session.layers, session.drafts, session.notebooks);
       return text({
         project_root: deps.projectRoot,
         errors: findings.filter((f) => f.level === "error").length,
@@ -523,6 +541,58 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     (args: { board_id?: string; draft_id: string | null }) => {
       const session = sessions.resolve(args.board_id);
       session.setActiveDraft(args.draft_id, AUTHOR);
+      return text({ ok: true });
+    },
+  );
+
+  register(
+    "notebooks.create",
+    "Write a notebook on this board: markdown, with `[[id]]` refs to nodes, edges, layers, paths and drafts. Refs resolve when the human reads it — write the id, not the label.",
+    (args: Parameters<typeof createNotebook>[2] & { board_id?: string }) => {
+      const session = sessions.resolve(args.board_id);
+      return text(createNotebook(session, AUTHOR, args));
+    },
+  );
+
+  register(
+    "notebooks.update",
+    "Retitle, replace the body, or append to it. Append is last write wins; a human mid-edit is warned, not blocked.",
+    (args: Parameters<typeof updateNotebook>[2] & { board_id?: string }) => {
+      const session = sessions.resolve(args.board_id);
+      return text(updateNotebook(session, AUTHOR, args));
+    },
+  );
+
+  register(
+    "notebooks.delete",
+    "Remove a notebook. The board is untouched.",
+    (args: { board_id?: string; notebook_id: string }) => {
+      const session = sessions.resolve(args.board_id);
+      return text(deleteNotebook(session, AUTHOR, args));
+    },
+  );
+
+  register(
+    "notebooks.get",
+    "One notebook with every `[[id]]` ref resolved to its label — and named as gone when the element no longer exists.",
+    (args: { board_id?: string; notebook_id: string }) => {
+      const session = sessions.resolve(args.board_id);
+      const notebook = findNotebook(session, args.notebook_id);
+      const c = session.collections();
+      return text({
+        notebook_id: notebook.id,
+        title: notebook.title,
+        body: resolveNotebookRefs(notebook.body, c.nodes, c.edges, session.layers, session.drafts),
+      });
+    },
+  );
+
+  register(
+    "notebooks.open",
+    "Show a notebook in the human's pane, or pass null to close it. Shared by every panel; it changes what someone else is reading.",
+    (args: { board_id?: string; notebook_id: string | null }) => {
+      const session = sessions.resolve(args.board_id);
+      session.setActiveNotebook(args.notebook_id, AUTHOR);
       return text({ ok: true });
     },
   );
