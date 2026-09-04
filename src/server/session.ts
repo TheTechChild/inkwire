@@ -28,6 +28,7 @@ import type {
   History,
   Layer,
   MutationResult,
+  Notebook,
   SessionMode,
   ThreadEntry,
   ThreadInput,
@@ -76,6 +77,9 @@ export class BoardSession {
   drafts: Draft[];
   /** Active draft id, one per board, shared by every panel like focus. Not persisted. */
   activeDraft: string | null = null;
+  notebooks: Notebook[];
+  /** Notebook open in the pane, one per board, shared by every panel like focus. Not persisted. */
+  activeNotebook: string | null = null;
   history: History;
   private foldCache: FoldResult;
   graphRevision = 0;
@@ -104,6 +108,7 @@ export class BoardSession {
     this.viewport = board.viewport;
     this.layers = board.layers;
     this.drafts = board.drafts;
+    this.notebooks = board.notebooks;
     this.history = { base: board.collections, steps: [], head: 0 };
     this.foldCache = fold(this.history);
     this.graphFingerprint = this.fingerprintGraph();
@@ -266,6 +271,23 @@ export class BoardSession {
     this.notify();
   }
 
+  /** Notebooks are a view, not history: no step, no revision bump. Persist and notify only. */
+  updateNotebooks(author: Author, label: string, fn: (notebooks: Notebook[]) => Notebook[]): void {
+    this.notebooks = fn(this.notebooks);
+    if (this.activeNotebook && !this.notebooks.some((n) => n.id === this.activeNotebook)) this.activeNotebook = null;
+    this.addLog(author, label);
+    this.schedulePersist();
+    this.notify();
+  }
+
+  setActiveNotebook(notebookId: string | null, author: Author): void {
+    const notebook = notebookId === null ? null : this.notebooks.find((n) => n.id === notebookId);
+    if (notebook === undefined) throw new Error(`notebook not found: ${notebookId}`);
+    this.activeNotebook = notebookId;
+    this.addLog(author, notebook ? `open notebook ${notebook.id} · ${notebook.title}` : "close notebook");
+    this.notify();
+  }
+
   /** Stop persisting and tell listeners; the hub closes the board's sockets. */
   close(): void {
     this.closed = true;
@@ -336,6 +358,8 @@ export class BoardSession {
       focus: this.focus,
       drafts: this.drafts,
       activeDraft: this.activeDraft,
+      notebooks: this.notebooks,
+      activeNotebook: this.activeNotebook,
       ...opts,
     });
   }
@@ -384,6 +408,7 @@ export class BoardSession {
         viewport: this.viewport,
         layers: this.layers,
         drafts: this.drafts,
+        notebooks: this.notebooks,
       },
       now,
     );
@@ -399,6 +424,7 @@ export type SendResult =
         selection: string | null;
         trace: { path: string; hop: number } | null;
         draft: string | null;
+        notebook: string | null;
         revision: number;
       };
     }
@@ -475,7 +501,7 @@ export class Sessions {
   /** New board; with `content`, it starts with that content as step 0 (import). */
   create(
     name: string,
-    content?: { collections: Collections; viewport: Viewport; layers?: Layer[]; drafts?: Draft[] },
+    content?: { collections: Collections; viewport: Viewport; layers?: Layer[]; drafts?: Draft[]; notebooks?: Notebook[] },
   ): BoardSession {
     const now = this.deps.now?.() ?? Date.now();
     const id = `b_${randomBytes(3).toString("hex")}`;
