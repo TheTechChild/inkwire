@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { BoardMeta, Collections, Draft, Layer, Viewport } from "../shared/types.js";
+import type { BoardMeta, Collections, Draft, Layer, Notebook, Viewport } from "../shared/types.js";
 import { emptyCollections } from "../shared/types.js";
 
 export interface StoredBoard {
@@ -14,6 +14,7 @@ export interface StoredBoard {
   viewport: Viewport;
   layers: Layer[];
   drafts: Draft[];
+  notebooks: Notebook[];
 }
 
 export interface BoardListing {
@@ -48,9 +49,10 @@ export class Store {
       images      TEXT NOT NULL,
       viewport    TEXT NOT NULL,
       layers      TEXT NOT NULL DEFAULT '[]',
-      drafts      TEXT NOT NULL DEFAULT '[]'
+      drafts      TEXT NOT NULL DEFAULT '[]',
+      notebooks   TEXT NOT NULL DEFAULT '[]'
     )`);
-    // Migration for rows created before layers/drafts existed; "duplicate column" is the steady state.
+    // Migration for rows created before layers/drafts/notebooks existed; "duplicate column" is the steady state.
     try {
       this.db.exec("ALTER TABLE boards ADD COLUMN layers TEXT NOT NULL DEFAULT '[]'");
     } catch {
@@ -58,6 +60,11 @@ export class Store {
     }
     try {
       this.db.exec("ALTER TABLE boards ADD COLUMN drafts TEXT NOT NULL DEFAULT '[]'");
+    } catch {
+      /* column already exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE boards ADD COLUMN notebooks TEXT NOT NULL DEFAULT '[]'");
     } catch {
       /* column already exists */
     }
@@ -109,6 +116,8 @@ export class Store {
       ),
       // Rows written before drafts existed have no drafts column.
       drafts: JSON.parse((row.drafts as string | undefined) ?? "[]") as Draft[],
+      // Rows written before notebooks existed have no notebooks column.
+      notebooks: JSON.parse((row.notebooks as string | undefined) ?? "[]") as Notebook[],
     };
   }
 
@@ -116,7 +125,7 @@ export class Store {
     id: string,
     name: string,
     now: number,
-    content?: { collections: Collections; viewport: Viewport; layers?: Layer[]; drafts?: Draft[] },
+    content?: { collections: Collections; viewport: Viewport; layers?: Layer[]; drafts?: Draft[]; notebooks?: Notebook[] },
   ): StoredBoard {
     const board: StoredBoard = {
       meta: { id, name, created_at: now, updated_at: now },
@@ -124,6 +133,7 @@ export class Store {
       viewport: content?.viewport ?? DEFAULT_VIEWPORT,
       layers: content?.layers ?? [],
       drafts: content?.drafts ?? [],
+      notebooks: content?.notebooks ?? [],
     };
     this.save(board, now);
     return board;
@@ -132,11 +142,11 @@ export class Store {
   save(board: StoredBoard, now: number): void {
     this.db
       .prepare(
-        `INSERT INTO boards (id, name, created_at, updated_at, graph, layout, ink, images, viewport, layers, drafts)
-         VALUES (@id, @name, @created_at, @updated_at, @graph, @layout, @ink, @images, @viewport, @layers, @drafts)
+        `INSERT INTO boards (id, name, created_at, updated_at, graph, layout, ink, images, viewport, layers, drafts, notebooks)
+         VALUES (@id, @name, @created_at, @updated_at, @graph, @layout, @ink, @images, @viewport, @layers, @drafts, @notebooks)
          ON CONFLICT(id) DO UPDATE SET
            name = @name, updated_at = @updated_at, graph = @graph, layout = @layout,
-           ink = @ink, images = @images, viewport = @viewport, layers = @layers, drafts = @drafts`,
+           ink = @ink, images = @images, viewport = @viewport, layers = @layers, drafts = @drafts, notebooks = @notebooks`,
       )
       .run({
         id: board.meta.id,
@@ -150,6 +160,7 @@ export class Store {
         viewport: JSON.stringify(board.viewport),
         layers: JSON.stringify(board.layers),
         drafts: JSON.stringify(board.drafts),
+        notebooks: JSON.stringify(board.notebooks),
       });
   }
 

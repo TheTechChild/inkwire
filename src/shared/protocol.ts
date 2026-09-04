@@ -5,7 +5,7 @@ import {
   boxSchema,
   draftRoleSchema,
   edgeKindSchema,
-  nodeKindSchema,
+  offeredNodeKindSchema,
   pointSchema,
   viewportSchema,
 } from "./schemas.js";
@@ -20,7 +20,7 @@ export const clientIntentSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("add_node"),
     label: z.string(),
-    kind: nodeKindSchema,
+    kind: offeredNodeKindSchema,
     at: pointSchema,
     size: pointSchema.optional(),
   }),
@@ -41,7 +41,7 @@ export const clientIntentSchema = z.discriminatedUnion("type", [
     type: z.literal("update_node"),
     node_id: z.string(),
     label: z.string().optional(),
-    kind: nodeKindSchema.optional(),
+    kind: offeredNodeKindSchema.optional(),
     ref: z.string().nullable().optional(),
     endpoint: z.string().nullable().optional(),
     /** Field name for the coalescing key, e.g. "label". */
@@ -94,6 +94,8 @@ export const clientIntentSchema = z.discriminatedUnion("type", [
     trace: z.object({ path: z.string(), hop: z.int().min(1) }).nullable().default(null),
     /** The active draft, unless the human dropped its chip. */
     draft: z.string().nullable().default(null),
+    /** The open notebook, unless the human dropped its chip. */
+    notebook: z.string().nullable().default(null),
   }),
   z.object({ type: z.literal("session_mode_off") }),
   /** Toggle a message's highlight as the board's active one; null clears. */
@@ -128,6 +130,16 @@ export const clientIntentSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("drafts_create"), title: z.string().optional(), note: z.string().optional() }),
   z.object({ type: z.literal("drafts_update"), draft_id: z.string(), title: z.string().optional(), note: z.string().optional() }),
   z.object({ type: z.literal("drafts_delete"), draft_id: z.string() }),
+
+  // Notebooks. Author "human" over this transport; a notebook mutation writes
+  // no history step and bumps no revision — a notebook is not the board.
+  z.object({ type: z.literal("notebooks_open"), notebook_id: z.string().nullable() }),
+  z.object({ type: z.literal("notebooks_create"), title: z.string().optional(), body: z.string().optional() }),
+  z.object({ type: z.literal("notebooks_update"), notebook_id: z.string(), title: z.string().optional(), body: z.string().optional() }),
+  z.object({ type: z.literal("notebooks_delete"), notebook_id: z.string() }),
+  /** Empty-space context menu's "import notes to notebook" — the one exception:
+   * it deletes note nodes, so it goes through session.mutate() as one step. */
+  z.object({ type: z.literal("notes_migrate") }),
 ]);
 
 export type ClientIntent = z.infer<typeof clientIntentSchema>;

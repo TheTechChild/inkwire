@@ -41,6 +41,7 @@ export function exportBoard(session: BoardSession, store: Store, now: number): B
     assets,
     layers: session.layers,
     drafts: session.drafts,
+    notebooks: session.notebooks,
   };
 }
 
@@ -119,11 +120,20 @@ export function importBoard(sessions: Sessions, store: Store, raw: unknown): Boa
     draftIds.add(d.id);
   }
 
+  // Notebooks are looked up by id alone, like drafts; refs are not validated —
+  // a notebook may reference an element that already went, and canvas.lint reports it.
+  const notebookIds = new Set<string>();
+  for (const n of file.notebooks ?? []) {
+    if (notebookIds.has(n.id)) throw new ImportError(`duplicate notebook id: ${n.id}`);
+    notebookIds.add(n.id);
+  }
+
   const collections: Collections = { nodes, edges, strokes: file.strokes, images, layout };
   return sessions.create(file.name, {
     collections,
     viewport: file.viewport ?? { x: 0, y: 0, zoom: 1 },
     layers: file.layers ?? [],
     drafts: file.drafts ?? [],
+    notebooks: file.notebooks ?? [],
   });
 }

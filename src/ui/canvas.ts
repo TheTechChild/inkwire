@@ -4,27 +4,47 @@
 import { edgeEndpoints, resizeBox } from "../core/geometry.js";
 import type { Corner } from "../core/geometry.js";
 import { markCounts, nextDraftId } from "../core/drafts.js";
+import { nearestNodeWithin, nextNotebookId } from "../core/notebooks.js";
+import { noteOwnSend } from "./notebook.js";
 import { liveMembers, pathsAffected, tiers, traceT } from "../core/layers.js";
 import type { PathBreak } from "../core/layers.js";
-import { edgeLabel, labelPx, lodFor, monoPx, quantizeZoom, wrapText } from "../core/lod.js";
+import { edgeLabel, lodFor, monoPx, quantizeZoom } from "../core/lod.js";
 import type { App, Drag, Tool } from "./app.js";
 import { KIND_META, clampZoom, el, focusLayer, focusedLayer } from "./app.js";
 import { DRAFT_ROLES } from "../shared/types.js";
-import type { Box, Draft, DraftRole, EdgeEl, Layer, Path, PathStep, Point, Trace } from "../shared/types.js";
-import { toast } from "./panel.js";
+import type { Box, CanvasState, Draft, DraftRole, EdgeEl, Layer, LayoutMap, Path, PathStep, Point, Trace } from "../shared/types.js";
+import { savePanelPrefs, toast } from "./panel.js";
 
 /** Role → its hue token (handoff "Drafts" § "Design tokens"), for the JS-computed
  * colors that CSS attribute selectors can't reach (a chip count or legend item that
  * drops to neutral-500 at zero — see markCounts). Derived, not a fourth copy of the
  * map — the CSS custom properties (styles.css) are the only source. */
-const roleHue = (role: DraftRole): string => `var(--color-draft-${role})`;
+export const roleHue = (role: DraftRole): string => `var(--color-draft-${role})`;
+
+/** The notebook pane's chip hover (handoff "Notebooks" § 2): a local pointer,
+ * like a held trace peek — never touches the server. `ref` guards the clear:
+ * a fast pointer swap between chips must not clobber a newer hover. */
+let nbHover: { ref: string; label: string; nodes: string[]; edges: string[] } | null = null;
+export function setNbHover(ref: string, hl: { label: string; nodes: string[]; edges: string[] }): void {
+  nbHover = { ref, ...hl };
+}
+export function clearNbHover(ref: string): void {
+  if (nbHover?.ref === ref) nbHover = null;
+}
+/** The ref currently hovered, if any — notebook.ts can't rely on the chip's
+ * own mouseleave to clear this (see setupNotebook's window pointermove: a
+ * render rebuilds the chip out from under mouseenter/mouseleave, same
+ * constraint as the hold below). */
+export function nbHoverRef(): string | null {
+  return nbHover?.ref ?? null;
+}
 
 const HINTS: Record<Tool, string> = {
   select: "drag a node to move · drag a corner to resize · drag empty space or middle-drag to pan",
   pen: "draw freely — structure comes later",
   box: "drag to place a node",
   arrow: "click the source node",
-  text: "click to drop a note",
+  text: "text = write in the notebook · [[ref]] to point at an element",
   erase: "click ink, a node, or an edge to remove it",
 };
 
@@ -88,6 +108,16 @@ export function setupCanvas(app: App): void {
       app.send({ type: "history", action: "redo", scope: app.scope });
       return;
     }
+    // ⌘E flips the notebook between read and edit — handled above the input guard
+    // below so it fires even while the caret is inside the notebook's own textarea.
+    if (meta && k === "e") {
+      e.preventDefault();
+      app.notebook.edit = !app.notebook.edit;
+      app.notebook.open = true;
+      savePanelPrefs(app);
+      app.render();
+      return;
+    }
     if (e.target instanceof HTMLElement && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
     const map: Record<string, Tool> = { v: "select", p: "pen", b: "box", a: "arrow", t: "text", e: "erase" };
     const tool = map[k];
@@ -106,6 +136,12 @@ export function setupCanvas(app: App): void {
     if (!meta && /^[1-9]$/.test(e.key)) {
       const layer = app.push?.state.layers[Number(e.key) - 1];
       if (layer) focusLayer(app, layer.id);
+    }
+    // n is free — not in the tool map above.
+    if (!meta && k === "n") {
+      app.notebook.open = !app.notebook.open;
+      savePanelPrefs(app);
+      app.render();
     }
     if (e.key === "Escape") {
       if (app.pathMenu) {
@@ -226,10 +262,41 @@ export function setupCanvas(app: App): void {
       case "box":
         app.drag = { type: "box", start: p, cur: p };
         break;
-      case "text":
-        app.send({ type: "add_node", label: "note", kind: "note", at: p, size: [190, 56] });
+      case "text": {
+        // Prose no longer lives on the canvas: a click appends an empty paragraph
+        // to the open notebook, prefixed [[nX]] within 80px of a node, and opens
+        // the pane in edit mode with the caret there (nbCaretToEnd, applied once
+        // renderNotebook finds a live textarea for it — the server may not have
+        // echoed a fresh notebooks_create back yet).
+        const state = app.push?.state;
+        if (state) {
+          const nodeLayout: LayoutMap = {};
+          for (const n of state.graph.nodes) {
+            const box = state.layout.boxes[n.id];
+            if (box) nodeLayout[n.id] = box;
+          }
+          const near = nearestNodeWithin(nodeLayout, p, 80);
+          const prefix = near ? `[[${near}]] ` : "";
+          const active = state.notebooks.find((nb) => nb.id === state.active_notebook);
+          if (active) {
+            const body = active.body && !active.body.endsWith("\n") ? `${active.body}\n${prefix}` : active.body + prefix;
+            // Tell notebook.ts what we just sent (noteOwnSend) before the render
+            // below: without it, that render's caret guard would park the caret
+            // in a textarea still showing the stale (pre-append) body, and the
+            // real echo would then never be allowed to land — the ref is lost.
+            noteOwnSend(active.id, body);
+            app.send({ type: "notebooks_update", notebook_id: active.id, body });
+          } else {
+            app.send({ type: "notebooks_create", body: prefix });
+          }
+          app.notebook.open = true;
+          app.notebook.edit = true;
+          app.nbCaretToEnd = true;
+          savePanelPrefs(app);
+        }
         app.tool = "select";
         break;
+      }
       case "arrow": {
         const n = hitNode(app, p);
         if (!n) return;
@@ -356,9 +423,9 @@ export function setupCanvas(app: App): void {
     const isNode = hit !== null && state.graph.nodes.some((n) => n.id === hit);
     const edge = hit === null ? hitEdge(app, p) : null;
     const id = isNode ? hit : edge;
-    if (!id) return;
     e.preventDefault();
-    app.menu = { x: e.clientX, y: e.clientY, type: isNode ? "node" : "edge", id };
+    // Empty space (handoff "Notebooks" § Migration): "import notes to notebook".
+    app.menu = id ? { x: e.clientX, y: e.clientY, type: isNode ? "node" : "edge", id } : { x: e.clientX, y: e.clientY, type: "empty" };
     app.render();
   });
 }
@@ -386,6 +453,10 @@ function renderMenu(app: App): void {
   if (!m || !state) {
     document.querySelector(".ctx-menu")?.remove();
     lastMenuKey = "";
+    return;
+  }
+  if (m.type === "empty") {
+    renderEmptyMenu(app, m, state);
     return;
   }
   const activeDraft: Draft | null = state.drafts.find((d) => d.id === state.active_draft) ?? null;
@@ -439,6 +510,42 @@ function renderMenu(app: App): void {
     : `no active draft — marking creates ${nextDraftId(state.drafts)}`;
   menu.appendChild(footer);
 
+  host.appendChild(menu);
+}
+
+/** The empty-space menu (handoff "Notebooks" § Migration): one row, "import
+ * notes to notebook" — disabled when the board has no note nodes. */
+function renderEmptyMenu(app: App, m: { x: number; y: number; type: "empty" }, state: CanvasState): void {
+  const notes = state.graph.nodes.filter((n) => n.kind === "note").length;
+  const key = `empty|${m.x}|${m.y}|${notes}`;
+  if (key === lastMenuKey) return;
+  lastMenuKey = key;
+  document.querySelector(".ctx-menu")?.remove();
+  const host = el("canvas");
+  const r = host.getBoundingClientRect();
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu";
+  menu.style.left = `${m.x - r.left}px`;
+  menu.style.top = `${m.y - r.top}px`;
+  menu.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+  const row = document.createElement("div");
+  row.className = notes > 0 ? "clear-row" : "clear-row disabled";
+  row.textContent = "import notes to notebook";
+  row.title =
+    notes > 0
+      ? "notes_migrate — one history step; ⌘Z brings the notes back, but not the notebook text"
+      : "no note nodes on this board";
+  if (notes > 0) {
+    row.addEventListener("click", () => {
+      const target = state.notebooks.find((nb) => nb.title === "notes")?.id ?? nextNotebookId(state.notebooks);
+      app.send({ type: "notes_migrate" });
+      toast(`${notes} notes → ${target} notes · ⌘Z brings the notes back, not the notebook text`);
+      app.menu = null;
+      app.render();
+    });
+  }
+  menu.appendChild(row);
   host.appendChild(menu);
 }
 
@@ -596,7 +703,7 @@ export function renderWorld(app: App): void {
   // Highlight: the agent's pointer. Members lift to full strength whatever
   // their tier; everything else dims (never blurs) when the dim pref is on.
   // A trace is the stronger pointer: the highlight reads as null while one plays.
-  const hl = info ? null : (app.push?.session.highlight ?? null);
+  const hl = info ? null : (nbHover ?? app.push?.session.highlight ?? null);
   const hlNodes = new Set(hl?.nodes ?? []);
   const hlEdges = new Set(hl?.edges ?? []);
   world.dataset.hl = hl ? (app.dim ? "dim" : "on") : "";
@@ -799,7 +906,7 @@ export function renderWorld(app: App): void {
     (kicker.children[2] as HTMLElement).textContent = role ? `· ${role}` : "";
     const label = document.createElement("div");
     label.className = "node-label";
-    label.textContent = n.kind === "note" ? wrapNote(n.label, box, qz) : n.label;
+    label.textContent = n.label;
     const ref = document.createElement("div");
     ref.className = "node-ref";
     ref.textContent = n.endpoint || n.ref || "unbound";
@@ -809,19 +916,6 @@ export function renderWorld(app: App): void {
   }
   renderTrace(app);
   ensureLoop(app);
-}
-
-/**
- * Gotcha 2: -webkit-line-clamp never engages in this engine, so note labels
- * wrap and clamp in JS (core/lod.ts wrapText) — 3 lines at compact, 1 at dot,
- * as many as the box holds at full. The label is white-space: pre-line.
- */
-function wrapNote(label: string, box: Box, qz: number): string {
-  const px = labelPx(qz);
-  const lod = lodFor(qz);
-  // ponytail: 0.55em glyph estimate and 1.1 line-height mirror styles.css; measure if fonts change.
-  const maxLines = lod === "compact" ? 3 : lod === "dot" ? 1 : Math.max(1, Math.floor((box[3] - 16) / (px * 1.1)));
-  return wrapText(label, Math.floor((box[2] - 22) / (px * 0.55)), maxLines).join("\n");
 }
 
 /** Chip bar + focus strip + highlight strip over the canvas. All three live on the server. */
@@ -1075,10 +1169,41 @@ export function traceInfo(app: App): TraceInfo | null {
   };
 }
 
-function endPeek(app: App): void {
+export function endPeek(app: App): void {
   if (!peek) return;
   peek = null;
   app.render();
+}
+
+/** Start a held peek from outside the layer chip bar — the notebook pane's
+ * path chip (handoff "Notebooks" § 2: hold to peek, click to play). */
+export function startPeek(app: App, layerId: string, pathId: string): void {
+  peek = { layer_id: layerId, path_id: pathId, at: Date.now() };
+  app.render();
+}
+
+/** Begin a 230ms hold-to-fire gesture, same shape the layer chip bar uses
+ * (`hold`, above). Release always happens on the window pointerup/
+ * pointercancel registered once in setupCanvas — never on the chip's own
+ * listeners, since firing typically re-renders and rebuilds the chip that
+ * started the hold (this file's own note on the window listener below).
+ * Shared with notebook.ts's path chip so it gets the same guarantee. */
+export function beginHold(onFire: () => void): void {
+  if (hold) window.clearTimeout(hold.timer);
+  const h = { timer: 0, fired: false };
+  h.timer = window.setTimeout(() => {
+    h.fired = true;
+    onFire();
+  }, 230);
+  hold = h;
+}
+
+/** True while a beginHold gesture has fired but its window release hasn't
+ * cleared `hold` yet — the same tick a synchronous click after pointerup
+ * still sees it in (see the window release's own comment), so a chip's
+ * click listener can skip acting on a hold that already did. */
+export function holdFired(): boolean {
+  return hold?.fired ?? false;
 }
 
 /** Play / pause the pinned trace from its live position; at the end, play again from 0. */

@@ -4,8 +4,9 @@
 // it every claim already.
 import { pathsAffected } from "../core/layers.js";
 import { goneMarks } from "../core/drafts.js";
+import { goneRefs } from "../core/notebooks.js";
 import { validateRef } from "./bindcode.js";
-import type { Draft, EdgeEl, Layer, NodeEl } from "../shared/types.js";
+import type { Draft, EdgeEl, Layer, NodeEl, Notebook } from "../shared/types.js";
 
 export interface LintFinding {
   target_id: string;
@@ -18,7 +19,9 @@ export interface LintFinding {
     | "path_broken"
     | "path_ref_missing"
     | "path_symbol_missing"
-    | "draft_mark_gone";
+    | "draft_mark_gone"
+    | "notebook_ref_gone"
+    | "note_node";
   level: "error" | "warn";
   message: string;
 }
@@ -29,9 +32,18 @@ export function lintBoard(
   edges: EdgeEl[],
   layers: Layer[] = [],
   drafts: Draft[] = [],
+  notebooks: Notebook[] = [],
 ): LintFinding[] {
   const out: LintFinding[] = [];
   for (const n of nodes) {
+    if (n.kind === "note") {
+      out.push({
+        target_id: n.id,
+        check: "note_node",
+        level: "error",
+        message: `${n.id} is a note node — notes are not board elements; run the notes migration`,
+      });
+    }
     if (n.ref) {
       try {
         const r = validateRef(projectRoot, n.ref);
@@ -84,6 +96,14 @@ export function lintBoard(
       check: "draft_mark_gone",
       level: "warn",
       message: `draft ${g.draft_id} marks ${g.id}, which no longer exists`,
+    });
+  }
+  for (const g of goneRefs(notebooks, nodes.map((n) => n.id), edges.map((e) => e.id), layers, drafts)) {
+    out.push({
+      target_id: g.id,
+      check: "notebook_ref_gone",
+      level: "warn",
+      message: `notebook ${g.notebook_id} references ${g.id}, which no longer exists`,
     });
   }
   return out;

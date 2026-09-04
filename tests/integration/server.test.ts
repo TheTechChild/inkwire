@@ -183,6 +183,9 @@ describe("integration", () => {
     const session = sessions.open(boardId);
     const nodesBefore = session.collections().nodes.length;
     mutations.addNode(session, "human", { label: "persisted", kind: "service", at: [50, 500] });
+    session.updateNotebooks("human", "notebook N1", () => [
+      { id: "N1", title: "notes", body: "persisted note", author: "human", updated: session.now() },
+    ]);
     await new Promise((r) => setTimeout(r, 150)); // > debounceMs
 
     const store2 = new Store(dataDir);
@@ -190,6 +193,7 @@ describe("integration", () => {
     const reopened = sessions2.open(boardId);
     expect(reopened.collections().nodes).toHaveLength(nodesBefore + 1);
     expect(reopened.collections().nodes.map((n) => n.label)).toContain("persisted");
+    expect(reopened.notebooks).toEqual(session.notebooks);
     expect(reopened.history.steps).toHaveLength(0);
     expect(reopened.history.head).toBe(0);
     expect(reopened.state().history.steps).toBe(0);
@@ -219,16 +223,20 @@ describe("integration", () => {
     src.updateDrafts("ai", "draft D1", () => [
       { id: "D1", title: "swap the token flow", note: "why", marks: { [b]: "changed", [e]: "added" }, author: "ai" },
     ]);
+    src.updateNotebooks("ai", "notebook N1", () => [
+      { id: "N1", title: "notes", body: `[[${b}]] verifies the token`, author: "ai", updated: 1 },
+    ]);
 
     const exp = await fetch(`http://127.0.0.1:${port}/api/boards/${src.boardId}/export`);
     expect(exp.status).toBe(200);
     expect(exp.headers.get("content-disposition")).toBe('attachment; filename="export-me.inkwire.json"');
     const file = await exp.json();
     expect(file.format).toBe("inkwire-board");
-    expect(file.version).toBe(3);
+    expect(file.version).toBe(4);
     expect(file.nodes).toHaveLength(2);
     expect(file.layers[0].paths).toHaveLength(1);
     expect(file.drafts).toEqual(src.drafts);
+    expect(file.notebooks).toEqual(src.notebooks);
     expect(file.assets[imgSrc]).toBe(`data:image/png;base64,${png.toString("base64")}`);
 
     const imp = await fetch(`http://127.0.0.1:${port}/api/boards/import`, {
@@ -246,6 +254,7 @@ describe("integration", () => {
     expect(dst.viewport).toEqual(src.viewport);
     expect(dst.layers).toEqual(src.layers);
     expect(dst.drafts).toEqual(src.drafts);
+    expect(dst.notebooks).toEqual(src.notebooks);
     expect(dst.history.steps).toHaveLength(0);
     // Persisted: a cold load from the store sees the same content.
     expect(store.load(created.board_id)!.collections).toEqual(src.collections());
@@ -288,6 +297,24 @@ describe("integration", () => {
     });
     expect(dupDraft.status).toBe(400);
     expect((await dupDraft.json()).error).toContain("duplicate draft id: D1");
+
+    // A version 3 file predates notebooks: it imports with notebooks: [].
+    const v3 = await fetch(`http://127.0.0.1:${port}/api/boards/import`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...file, version: 3, notebooks: undefined }),
+    });
+    expect(v3.status).toBe(200);
+    expect(sessions.open((await v3.json()).board_id).notebooks).toEqual([]);
+
+    // A duplicated notebook id is refused, like drafts and paths.
+    const dupNotebook = await fetch(`http://127.0.0.1:${port}/api/boards/import`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...file, notebooks: [...file.notebooks, file.notebooks[0]] }),
+    });
+    expect(dupNotebook.status).toBe(400);
+    expect((await dupNotebook.json()).error).toContain("duplicate notebook id: N1");
 
     // A path that does not chain, or a duplicated path id, is refused: lookups trust both.
     const walk = file.layers[0].paths[0];
@@ -376,12 +403,14 @@ describe("integration", () => {
     expect(svg.includes("· claude")).toBe(lod === "full");
     // Every label >= 12 screen px, every mono string >= 10 screen px.
     for (const m of svg.matchAll(/font-size="([\d.]+)"/g)) expect(Number(m[1]) * zoom).toBeGreaterThanOrEqual(10 - 1e-9);
-    // Note bodies wrap into tspans (full: unclamped, compact: 3 lines, dot: 1 line).
+    // Node labels wrap into tspans at compact/dot like any other kind (Notebooks
+    // Phase 4: the note-specific "always wrap, taller box" behaviour is gone —
+    // a surviving legacy note node draws with the same plain box as any other
+    // kind, so full LOD shows its label on one unwrapped line).
     const noteLines = svg.match(/<tspan[^>]*>zq[^<]*<\/tspan>/g) ?? [];
     expect(noteLines.length).toBeGreaterThanOrEqual(1);
     if (lod === "compact") expect(noteLines.length).toBeLessThanOrEqual(3);
-    if (lod === "dot") expect(noteLines.length).toBe(1);
-    if (lod === "full") expect(noteLines.length).toBeGreaterThan(3);
+    if (lod === "dot" || lod === "full") expect(noteLines.length).toBe(1);
   });
 });
 

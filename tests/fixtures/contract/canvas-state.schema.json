@@ -4,7 +4,7 @@
   "title": "Inkwire CanvasState",
   "description": "Return shape of canvas.get_state. Meaning (graph) and placement (layout) are separate fields with independent revision counters.",
   "type": "object",
-  "required": ["board", "graph", "layout", "ink", "images", "history", "viewport", "layers", "focus", "drafts", "active_draft"],
+  "required": ["board", "graph", "layout", "ink", "images", "history", "viewport", "layers", "focus", "drafts", "active_draft", "notebooks", "active_notebook"],
   "additionalProperties": false,
   "properties": {
     "board": {
@@ -95,6 +95,15 @@
     "active_draft": {
       "type": ["string", "null"],
       "description": "Draft id the human is looking at, shared by every panel on the board. Null when none is active."
+    },
+    "notebooks": {
+      "type": "array",
+      "description": "Every notebook on the board, whole even on a scoped read.",
+      "items": { "$ref": "#/$defs/notebook" }
+    },
+    "active_notebook": {
+      "type": ["string", "null"],
+      "description": "Notebook open in the pane, shared by every panel on the board like focus. Never persisted."
     },
     "scope": {
       "type": "object",
@@ -279,6 +288,19 @@
           "additionalProperties": { "type": "string", "enum": ["removed", "changed", "added"] }
         },
         "author": { "$ref": "#/$defs/author" }
+      }
+    },
+    "notebook": {
+      "type": "object",
+      "description": "Markdown stored with the board. [[id]] refs are resolved at render, never stored.",
+      "required": ["id", "title", "body", "author", "updated"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "description": "N1, N2… first unused across the board." },
+        "title": { "type": "string", "maxLength": 40 },
+        "body": { "type": "string" },
+        "author": { "$ref": "#/$defs/author" },
+        "updated": { "type": "number" }
       }
     },
     "boundaryEdge": {

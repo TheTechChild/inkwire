@@ -106,7 +106,7 @@ export async function captureBoard(
     ctx.font = `${RENDER.fontHeadingWeight} ${labelSize}px "${RENDER.fontHeading}", sans-serif`;
     const cols = (w - 20) / (labelSize * 0.55);
     const maxLines = n.kind === "note" ? { full: Infinity, compact: 3, dot: 1 }[lod] : lod === "full" ? Infinity : 1;
-    const lines = n.kind === "note" || lod !== "full" ? wrapText(n.label, cols, maxLines) : [n.label];
+    const lines = lod !== "full" ? wrapText(n.label, cols, maxLines) : [n.label];
     lines.forEach((line, i) => ctx.fillText(line, x + 10, y + 40 + i * labelSize * 1.1));
     const refLine = n.ref ?? n.endpoint;
     if (refLine && lod === "full") {

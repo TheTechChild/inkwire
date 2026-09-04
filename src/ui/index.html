@@ -40,6 +40,7 @@
       <button class="btn btn-secondary" id="btn-export" title="download this board as a file" style="font-size: 13px; white-space: nowrap">export</button>
       <button class="btn btn-secondary" id="btn-import" title="load a board file as a new board" style="font-size: 13px; white-space: nowrap">import</button>
       <input type="file" id="import-file" accept=".json,application/json" hidden>
+      <button class="btn btn-secondary" id="btn-notebook" title="toggle the notebook — N" style="font-size: 13px; white-space: nowrap">▤ notebook</button>
       <button class="btn btn-secondary" id="btn-screenshot" style="font-size: 13px; white-space: nowrap">canvas.screenshot</button>
       <button class="btn btn-primary blueprint" id="btn-infer" style="font-size: 13px; white-space: nowrap">
         <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
@@ -91,11 +92,41 @@
       </div>
       <div id="hints">
         <span id="hint"></span>
-        <span>scroll = zoom · space-drag = pan · del = delete · ⌘Z / ⇧⌘Z = undo, redo</span>
+        <span>scroll = zoom · space-drag = pan · del = delete · ⌘Z / ⇧⌘Z = undo, redo · n = notebook</span>
       </div>
       <div id="flash"></div>
       <div id="toast" hidden></div>
       <div id="layerbar"></div>
+    </div>
+
+    <div id="notebook">
+      <div id="nb-resizer" title="drag to resize the notebook"></div>
+      <div id="nb-pane" hidden>
+        <div id="nb-tabs">
+          <div id="nb-tablist"></div>
+          <button id="btn-nb-new" title="notebooks_create — a new notebook on this board">+</button>
+        </div>
+        <div id="nb-head">
+          <div id="nb-head-row">
+            <span class="kicker">NOTEBOOK</span>
+            <span class="id" id="nb-id"></span>
+            <span class="by" id="nb-by"></span>
+          </div>
+          <input class="input" id="nb-title" maxlength="40" placeholder="untitled" title="max 40 characters">
+        </div>
+        <div id="nb-body">
+          <div id="nb-empty" class="pane-note" hidden>no notebook yet — click + to start one</div>
+          <div id="nb-read"></div>
+          <textarea id="nb-textarea" class="input" spellcheck="false" hidden></textarea>
+        </div>
+        <div id="nb-foot">
+          <span id="nb-footnote"></span>
+          <button class="btn btn-ghost" id="btn-nb-edit" title="⌘E"></button>
+        </div>
+      </div>
+      <button id="nb-rail" title="open the notebook — N">
+        <span id="nb-rail-title">notebook</span>
+      </button>
     </div>
 
     <aside>

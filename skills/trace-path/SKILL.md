@@ -11,6 +11,7 @@ Four pointers, four jobs. Do not mix them up:
 - **layer** — keep a cut of the board. `layers_create`.
 - **path** — explain an order. `paths_create`, then `session_send(path)`.
 - **draft** — propose a change. `drafts_create`, then `session_send(draft)`.
+- **notebook** — write the finding down. `notebooks_create`, then `session_send(notebook)`.
 
 ## Steps
 

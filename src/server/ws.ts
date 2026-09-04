@@ -9,6 +9,7 @@ import type { Sessions, BoardSession } from "./session.js";
 import * as mutations from "./mutations.js";
 import { createLayer, deleteLayer, openTrace, updateLayer } from "./layers.js";
 import { createDraft, deleteDraft, markElement, updateDraft } from "./drafts.js";
+import { createNotebook, deleteNotebook, migrateNotes, updateNotebook } from "./notebooks.js";
 import { sessionMode, sessionReply } from "./session-mode.js";
 import type { CaptureBroker } from "./screenshot.js";
 
@@ -177,6 +178,24 @@ export class PanelHub implements CaptureBroker {
         break;
       case "drafts_delete":
         deleteDraft(session, author, msg);
+        break;
+      case "notebooks_open":
+        session.setActiveNotebook(msg.notebook_id, author);
+        break;
+      case "notebooks_create": {
+        // The WS create opens the new notebook, the way drafts_create auto-activates.
+        const created = createNotebook(session, author, msg);
+        session.setActiveNotebook(created.notebook_id, author);
+        break;
+      }
+      case "notebooks_update":
+        updateNotebook(session, author, msg);
+        break;
+      case "notebooks_delete":
+        deleteNotebook(session, author, msg);
+        break;
+      case "notes_migrate":
+        migrateNotes(session, author);
         break;
     }
   }

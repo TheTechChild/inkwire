@@ -60,9 +60,9 @@ afterAll(async () => {
 });
 
 describe("session_mode", () => {
-  it("lists 38 tools with the two session tools registered", async () => {
+  it("lists 43 tools with the two session tools registered", async () => {
     const names = (await client.listTools()).tools.map((t) => t.name);
-    expect(names).toHaveLength(38);
+    expect(names).toHaveLength(43);
     expect(names).toContain("session_mode");
     expect(names).toContain("session_send");
   });
@@ -165,7 +165,7 @@ describe("session_send", () => {
 
     sessionReply(sessions, session, { text: "What is this hop?", focus: null, selection: null, trace: { path: "P1", hop: 2 } });
     const r = (await pending).json();
-    expect(r.ctx).toEqual({ focus: null, selection: null, trace: { path: "P1", hop: 2 }, draft: null, revision: session.graphRevision });
+    expect(r.ctx).toEqual({ focus: null, selection: null, trace: { path: "P1", hop: 2 }, draft: null, notebook: null, revision: session.graphRevision });
     expect(r.warnings).toBeUndefined();
     const you = session.thread.at(-1)!;
     expect(you.type === "you" && you.ctx.map((x) => x.label)).toEqual(["P1 · hop 2/3", `rev ${session.graphRevision}`]);
@@ -214,6 +214,32 @@ describe("session_send", () => {
     const r2 = (await pending2).json();
     expect(r2.warnings).toEqual(["unknown draft dropped: D9"]);
     expect(r2.ctx.draft).toBeNull();
+  });
+
+  it("a notebook opens on send and shows a thread chip; unknown notebook is dropped into warnings; a reply's notebook comes back as ctx.notebook", async () => {
+    const session = sessions.open(boardId);
+    const notebookId = (await call("notebooks_create", { title: "n" })).json().notebook_id;
+
+    const pending = call("session_send", { text: "About this element.", notebook: notebookId });
+    await new Promise((r) => setTimeout(r, 10));
+    const msg = session.thread.at(-1)!;
+    expect(msg).toMatchObject({ type: "claude", text: "About this element.", notebook: notebookId });
+    expect(session.activeNotebook).toBe(notebookId);
+
+    sessionReply(sessions, session, { text: "ok", focus: null, selection: null, notebook: notebookId });
+    const r = (await pending).json();
+    expect(r.ctx.notebook).toBe(notebookId);
+    const you = session.thread.at(-1)!;
+    expect(you.type === "you" && you.ctx.map((x) => x.label)).toContain(`${notebookId} · n`);
+
+    const pending2 = call("session_send", { text: "Hmm.", notebook: "N9" });
+    await new Promise((r) => setTimeout(r, 10));
+    const dropped = session.thread.at(-1)!;
+    expect(dropped.type === "claude" && dropped.notebook).toBeUndefined();
+    sessionReply(sessions, session, { text: "ok", focus: null, selection: null });
+    const r2 = (await pending2).json();
+    expect(r2.warnings).toEqual(["unknown notebook dropped: N9"]);
+    expect(r2.ctx.notebook).toBeNull();
   });
 
   it("a reply with nothing pending is rejected", () => {
@@ -331,7 +357,7 @@ describe("review fixes", () => {
     expect(row.type === "call" && row.text).toMatch(/^update_node/);
     // Rewind, then edit: the discarded-steps note is a server row in the thread.
     session.historyOp("rewind", 0, "all");
-    await call("canvas_add_node", { label: "late", kind: "note" });
+    await call("canvas_add_node", { label: "late", kind: "service" });
     expect(session.thread.some((m) => m.type === "call" && m.name === "server" && /discarded/.test(m.text))).toBe(true);
   });
 });

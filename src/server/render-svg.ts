@@ -105,7 +105,7 @@ export function renderBoardSvg(opts: RenderOptions): string {
     // ponytail: 0.55em average glyph width stands in for text measurement.
     const cols = (w - 20) / (labelSize * 0.55);
     const maxLines = n.kind === "note" ? { full: Infinity, compact: 3, dot: 1 }[lod] : lod === "full" ? Infinity : 1;
-    const lines = n.kind === "note" || lod !== "full" ? wrapText(n.label, cols, maxLines) : [n.label];
+    const lines = lod !== "full" ? wrapText(n.label, cols, maxLines) : [n.label];
     const tspans = lines
       .map((line, i) => `<tspan x="${x + 10}" dy="${i === 0 ? 0 : labelSize * 1.1}">${esc(line)}</tspan>`)
       .join("");

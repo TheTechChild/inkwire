@@ -10,6 +10,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildMcpServer } from "../../src/server/mcp.js";
 import { markElement } from "../../src/server/drafts.js";
+import { migrateNotes } from "../../src/server/notebooks.js";
 import * as mutations from "../../src/server/mutations.js";
 import { Screenshots } from "../../src/server/screenshot.js";
 import { Sessions } from "../../src/server/session.js";
@@ -99,6 +100,16 @@ describe("tool contracts", () => {
     const state = await getState();
     expect(state.graph.nodes.map((n: { label: string }) => n.label)).toContain("api gateway");
     expect(state.graph.nodes[0].author).toBe("ai");
+  });
+
+  it("add_node and update_node reject kind: note, pointing at notebooks instead", async () => {
+    const add = await call("canvas_add_node", { label: "x", kind: "note" });
+    expect(add.res.isError).toBe(true);
+    expect(add.text).toContain("note is not a node kind — write it in a notebook (notebooks_create) and ref the node as [[n11]]");
+    const n = (await call("canvas_add_node", { label: "y", kind: "service" })).json().ids[0];
+    const upd = await call("canvas_update_node", { node_id: n, kind: "note" });
+    expect(upd.res.isError).toBe(true);
+    expect(upd.text).toContain("note is not a node kind");
   });
 
   it("add_edge with a nonexistent endpoint fails and mutates nothing", async () => {
@@ -214,13 +225,36 @@ describe("tool contracts", () => {
     expect(json().mermaid).toContain("flowchart TD");
   });
 
-  it("annotate pins a note node near the target", async () => {
+  it("annotate writes a paragraph into the notes notebook, opens it, and creates no node", async () => {
     const n = (await call("canvas_add_node", { label: "queue", kind: "store" })).json().ids[0];
+    const before = await getState();
     const ann = (await call("canvas_annotate", { target_id: n, text: "missing retry path" })).json();
+    expect(ann).toEqual({ notebook_id: "N1", target_id: n });
     const state = await getState();
-    const note = state.graph.nodes.find((x: { id: string }) => x.id === ann.ids[0]);
-    expect(note.kind).toBe("note");
-    expect(note.label).toBe("missing retry path");
+    expect(state.graph.nodes).toHaveLength(before.graph.nodes.length); // no node added
+    expect(state.graph.revision).toBe(before.graph.revision);
+    expect(state.active_notebook).toBe("N1");
+    const nb = state.notebooks.find((x: { id: string }) => x.id === "N1");
+    expect(nb.title).toBe("notes");
+    expect(nb.body).toContain(`[[${n}]] missing retry path`);
+    const missing = await call("canvas_annotate", { target_id: "ghost", text: "x" });
+    expect(missing.res.isError).toBe(true);
+    expect(missing.text).toContain("element not found: ghost");
+  });
+
+  it("rejects an image target instead of writing a ref nothing can resolve", async () => {
+    const imgId = mutations.addImage(sessions.open(boardId), "human", {
+      src: "/images/annotate.png",
+      natural: [10, 10],
+      at: [9999, 9999],
+      size: [10, 10],
+    }).ids[0]!;
+    const before = await getState();
+    const res = await call("canvas_annotate", { target_id: imgId, text: "x" });
+    expect(res.res.isError).toBe(true);
+    expect(res.text).toContain(`images can't be annotated: ${imgId}`);
+    const state = await getState();
+    expect(state.notebooks).toEqual(before.notebooks); // nothing written
   });
 
   it("screenshot with no client falls back to the server renderer (valid PNG)", async () => {
@@ -689,5 +723,164 @@ describe("drafts", () => {
     expect((await getState()).active_draft).toBeNull();
     expect((await getState()).drafts).toEqual([]);
     expect((await call("drafts_delete", { draft_id: "D1" })).text).toContain("draft not found: D1");
+  });
+});
+
+describe("notebooks", () => {
+  it("create assigns the next id, clamps the title at 40, and touches neither history nor revisions", async () => {
+    const s0 = await getState();
+    const out = (await call("notebooks_create", { title: "x".repeat(50), body: "hello" })).json();
+    expect(out.notebook_id).toMatch(/^N\d+$/);
+    const s1 = await getState();
+    expect(s1.graph.revision).toBe(s0.graph.revision);
+    expect(s1.layout.revision).toBe(s0.layout.revision);
+    expect(s1.history.steps).toBe(s0.history.steps);
+    const nb = s1.notebooks.find((n: { id: string }) => n.id === out.notebook_id);
+    expect(nb).toMatchObject({ id: out.notebook_id, title: "x".repeat(40), body: "hello", author: "ai" });
+  });
+
+  it("update retitles, replaces the body, or appends; append is last write wins", async () => {
+    const id = (await call("notebooks_create", { title: "notes on x" })).json().notebook_id;
+    await call("notebooks_update", { notebook_id: id, body: "first line" });
+    await call("notebooks_update", { notebook_id: id, append: "second line" });
+    const nb1 = (await getState()).notebooks.find((n: { id: string }) => n.id === id);
+    expect(nb1.body).toBe("first line\nsecond line");
+    await call("notebooks_update", { notebook_id: id, title: "renamed" });
+    const nb2 = (await getState()).notebooks.find((n: { id: string }) => n.id === id);
+    expect(nb2.title).toBe("renamed");
+    expect(nb2.body).toBe("first line\nsecond line"); // title-only update leaves the body alone
+    expect((await call("notebooks_update", { notebook_id: "N999", title: "x" })).text).toContain("notebook not found: N999");
+  });
+
+  it("get resolves [[id]] refs to labels, and names a dangling ref gone", async () => {
+    const n = (await call("canvas_add_node", { label: "worker", kind: "service" })).json().ids[0];
+    const id = (await call("notebooks_create", { title: "refs", body: `[[${n}]] does the work. [[n_ghost]] is gone.` })).json().notebook_id;
+    const got = (await call("notebooks_get", { notebook_id: id })).json();
+    expect(got).toEqual({ notebook_id: id, title: "refs", body: `${n} (worker) does the work. n_ghost (gone) is gone.` });
+    await call("canvas_delete", { id: n });
+    const got2 = (await call("notebooks_get", { notebook_id: id })).json();
+    expect(got2.body).toBe(`${n} (gone) does the work. n_ghost (gone) is gone.`);
+  });
+
+  it("open sets active_notebook, shared by every read; unknown id fails; null releases", async () => {
+    const id = (await call("notebooks_create", { title: "open me" })).json().notebook_id;
+    expect((await call("notebooks_open", { notebook_id: id })).json()).toEqual({ ok: true });
+    expect((await getState()).active_notebook).toBe(id);
+    const bad = await call("notebooks_open", { notebook_id: "N999" });
+    expect(bad.res.isError).toBe(true);
+    expect(bad.text).toContain("notebook not found: N999");
+    expect((await call("notebooks_open", { notebook_id: null })).json()).toEqual({ ok: true });
+    expect((await getState()).active_notebook).toBeNull();
+  });
+
+  it("canvas_delete reports notebooks_affected for a live ref", async () => {
+    const n = (await call("canvas_add_node", { label: "queueX", kind: "store" })).json().ids[0];
+    const id = (await call("notebooks_create", { title: "ref test", body: `[[${n}]] watch this` })).json().notebook_id;
+    const del = (await call("canvas_delete", { id: n })).json();
+    expect(del.notebooks_affected).toContainEqual({ notebook_id: id, id: n });
+  });
+
+  it("scoped get_state carries notebooks whole, validated against the fixture", async () => {
+    await call("notebooks_create", { title: "always present" });
+    const a = (await call("canvas_add_node", { label: "sa", kind: "entry", at: [0, 0] })).json().ids[0];
+    const layerId = (await call("layers_create", { node_ids: [a], title: "scope-nb" })).json().layer_id;
+    await call("layers_focus", { layer_id: layerId });
+    const whole = { notebooks: (await call("canvas_get_board")).json().notebooks };
+    const scoped = await getState(); // validates against the handoff schema
+    expect(scoped.notebooks).toEqual(whole.notebooks);
+    await call("layers_focus", { layer_id: null });
+    await call("layers_delete", { layer_id: layerId });
+  });
+
+  it("delete removes a notebook and releases it if it was open", async () => {
+    const id = (await call("notebooks_create", { title: "doomed" })).json().notebook_id;
+    await call("notebooks_open", { notebook_id: id });
+    expect((await call("notebooks_delete", { notebook_id: id })).json()).toEqual({ ok: true });
+    expect((await getState()).active_notebook).toBeNull();
+    expect((await call("notebooks_delete", { notebook_id: id })).text).toContain("notebook not found");
+  });
+});
+
+describe("notes_migrate (WS-only — deletes note nodes, so it goes through session.mutate as one step)", () => {
+  it("one paragraph per note in reading order, [[nX]] within 80px, todo conversion, dropped edge, layer/draft cleanup, one undoable step; idempotent once notes are gone", async () => {
+    const session = sessions.open(boardId);
+    // Far off in a corner of the board no earlier test's nodes occupy, so the
+    // 80px nearest-node search can't pick up a stray node from another test.
+    const near = (await call("canvas_add_node", { label: "near", kind: "service", at: [9000, 9000], size: [40, 40] })).json().ids[0];
+    // noteA sits 60px below `near` (within the 80px rule); noteB is far away and written as a dash todo.
+    const noteA = mutations.addNode(session, "human", { label: "check the retry budget", kind: "note", at: [9000, 9060], size: [40, 40] }).ids[0]!;
+    const noteB = mutations.addNode(session, "human", { label: "- confirm the rate limiter", kind: "note", at: [9000, 9500], size: [40, 40] }).ids[0]!;
+    const noteEdge = (await call("canvas_add_edge", { from: noteA, to: near })).json().ids[0];
+    const layerId = (await call("layers_create", { node_ids: [near, noteA], title: "has a note" })).json().layer_id;
+    const draftId = (await call("drafts_create", { title: "d", marks: [{ id: noteB, role: "removed" }] })).json().draft_id;
+    const existingNotesId = (await getState()).notebooks.find((n: { title: string }) => n.title === "notes")?.id ?? null;
+    const histBefore = (await call("history_get")).json().steps.length;
+
+    const result = migrateNotes(session, "human");
+
+    expect(result.migrated).toBe(2);
+    if (existingNotesId) expect(result.notebook_id).toBe(existingNotesId);
+    expect(result.edges_dropped).toContain(noteEdge);
+    expect(result.layers_affected).toContain(layerId);
+    expect(result.drafts_affected).toContainEqual({ draft_id: draftId, id: noteB });
+
+    const state = await getState();
+    const nodeIds = state.graph.nodes.map((n: { id: string }) => n.id);
+    expect(nodeIds).not.toContain(noteA);
+    expect(nodeIds).not.toContain(noteB);
+    expect(state.graph.edges.map((e: { id: string }) => e.id)).not.toContain(noteEdge);
+    expect(state.layers.find((l: { id: string }) => l.id === layerId).nodes).toEqual([near]);
+    const draft = (await call("drafts_get", { draft_id: draftId })).json();
+    expect(draft.marks.some((m: { id: string }) => m.id === noteB)).toBe(false);
+
+    const nb = state.notebooks.find((n: { id: string }) => n.id === result.notebook_id);
+    const lines = nb.body.split("\n");
+    expect(lines).toContain(`[[${near}]] check the retry budget`);
+    expect(lines).toContain("- [ ] confirm the rate limiter");
+    expect(lines.indexOf(`[[${near}]] check the retry budget`)).toBeLessThan(lines.indexOf("- [ ] confirm the rate limiter"));
+
+    const hist = (await call("history_get")).json();
+    expect(hist.steps.length).toBe(histBefore + 1);
+    expect(hist.steps.at(-1).label).toBe(`notes → ${result.notebook_id} notes`);
+
+    const again = migrateNotes(session, "human");
+    expect(again).toEqual({
+      notebook_id: result.notebook_id,
+      migrated: 0,
+      layers_affected: [],
+      paths_affected: [],
+      drafts_affected: [],
+      edges_dropped: [],
+    });
+    expect((await call("history_get")).json().steps.length).toBe(histBefore + 1); // no new step
+  });
+
+  it("a rerun after ⌘Z (which restores the note node but not the notebook) does not duplicate the paragraph", async () => {
+    const session = sessions.open(boardId);
+    const near = (await call("canvas_add_node", { label: "near3", kind: "service", at: [9000, 30000], size: [40, 40] })).json().ids[0];
+    const note = mutations.addNode(session, "human", { label: "check the timeout", kind: "note", at: [9000, 30060], size: [40, 40] }).ids[0]!;
+    const line = `[[${near}]] check the timeout`;
+
+    const first = migrateNotes(session, "human");
+    expect(first.migrated).toBe(1);
+    const nbId = first.notebook_id!;
+    const bodyAfterFirst = (await getState()).notebooks.find((n: { id: string }) => n.id === nbId).body;
+    expect(bodyAfterFirst.split("\n").filter((l: string) => l === line)).toHaveLength(1);
+    expect((await getState()).graph.nodes.map((n: { id: string }) => n.id)).not.toContain(note);
+
+    // ⌘Z (session.historyOp, WS-only — the tool contract has no undo call):
+    // the delete step reverts, so the note node is back. The append is not
+    // history (CLAUDE.md) and is untouched by this.
+    session.historyOp("undo", undefined, "all");
+    const afterUndo = await getState();
+    expect(afterUndo.graph.nodes.map((n: { id: string }) => n.id)).toContain(note);
+    expect(afterUndo.notebooks.find((n: { id: string }) => n.id === nbId).body).toBe(bodyAfterFirst);
+
+    const second = migrateNotes(session, "human");
+    expect(second.migrated).toBe(1); // the (restored) note node really is deleted again
+    const afterSecond = await getState();
+    expect(afterSecond.graph.nodes.map((n: { id: string }) => n.id)).not.toContain(note);
+    const bodyAfterSecond = afterSecond.notebooks.find((n: { id: string }) => n.id === nbId).body;
+    expect(bodyAfterSecond.split("\n").filter((l: string) => l === line)).toHaveLength(1); // not duplicated
   });
 });
