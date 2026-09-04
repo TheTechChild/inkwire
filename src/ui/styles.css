@@ -6,6 +6,7 @@
 @import url('https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=IBM+Plex+Sans:wght@500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
 :root {
+  color-scheme: light;
   --color-bg: #f2f2f3;
   --color-surface: #e9e9ea;
   --color-text: #1d1f20;
@@ -52,6 +53,7 @@
 }
 
 [data-theme="dark"] {
+  color-scheme: dark;
   --color-bg: #15181c;
   --color-surface: #1c2026;
   --color-text: #e8ebee;
@@ -479,13 +481,21 @@ aside { position: relative; border-left: 1px solid var(--color-divider); display
 #inspector[hidden] { display: none; }
 #inspector .head { display: flex; align-items: baseline; justify-content: space-between; }
 #inspector .head .type { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; color: var(--color-accent-700); }
-#inspector .head .id { font-family: var(--font-mono); font-size: 10px; color: var(--color-neutral-600); }
+#inspector .head .id {
+  font-family: var(--font-mono); font-size: 10px; color: var(--color-neutral-600);
+  background: none; border: 0; padding: 0; cursor: pointer;
+}
+#inspector .head .id:hover { color: var(--color-accent); }
 #inspector .input { font-size: 13px; padding: 6px 8px; }
 #inspector .input.mono { font-family: var(--font-mono); font-size: 12px; }
-#inspector .kind-seg { flex-wrap: wrap; }
-#inspector .kind-seg .seg-opt { padding: 4px 8px; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; min-height: 24px; }
-#inspector .actions { display: flex; gap: 8px; }
-#inspector .actions .btn { font-size: 12px; }
+#inspector select.input { font-size: 12px; letter-spacing: 0.06em; cursor: pointer; }
+#inspector .head .del {
+  margin-right: auto; margin-left: var(--space-3);
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em;
+  color: var(--color-error);
+}
+#inspector .head .del:hover { background: color-mix(in srgb, var(--color-error) 12%, transparent); }
+#inspector .head .del:active { background: color-mix(in srgb, var(--color-error) 20%, transparent); }
 
 #tabs { width: 100%; border: 0; border-bottom: 1px solid var(--color-divider); display: flex; }
 #tabs .seg-opt { flex: 1; justify-content: center; padding: 9px 4px; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.07em; }

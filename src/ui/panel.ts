@@ -6,7 +6,7 @@ import { KIND_META, el, focusLayer, focusedLayer } from "./app.js";
 import { liveMembers, scopeState } from "../core/layers.js";
 import { markCounts } from "../core/drafts.js";
 import { NODE_KINDS, EDGE_KINDS, DRAFT_ROLES } from "../shared/types.js";
-import type { DraftRole } from "../shared/types.js";
+import type { DraftRole, NodeKind } from "../shared/types.js";
 import { renderSession } from "./session.js";
 
 const TOOLS: [Tool, string, string][] = [
@@ -338,9 +338,24 @@ function renderInspector(app: App): void {
 
   const head = document.createElement("div");
   head.className = "head";
-  head.innerHTML = `<span class="type"></span><span class="id"></span>`;
-  (head.children[0] as HTMLElement).textContent = sel.type.toUpperCase();
-  (head.children[1] as HTMLElement).textContent = sel.id;
+  const type = document.createElement("span");
+  type.className = "type";
+  type.textContent = sel.type.toUpperCase();
+  // The id is the copy button — click it to put the id on the clipboard for Claude.
+  const idBtn = document.createElement("button");
+  idBtn.className = "id";
+  idBtn.textContent = sel.id;
+  idBtn.title = "copy id for claude";
+  idBtn.addEventListener("click", () => {
+    void navigator.clipboard.writeText(sel.id);
+    idBtn.textContent = "Copied";
+    setTimeout(() => (idBtn.textContent = sel.id), 2000);
+  });
+  const del = document.createElement("button");
+  del.className = "btn btn-ghost del";
+  del.textContent = "DELETE";
+  del.addEventListener("click", () => deleteSelection(app));
+  head.append(type, del, idBtn);
   box.appendChild(head);
 
   const field = (labelText: string, value: string, mono: boolean, placeholder: string, onCommit: (v: string) => void) => {
@@ -357,46 +372,53 @@ function renderInspector(app: App): void {
     box.appendChild(label);
   };
 
+  /** A kind picker: the same labelled row as a field, with a native select. A
+   * segmented row here read as tabs — it looked like #tabs one panel down. */
+  const picker = <T extends string>(labelText: string, kinds: readonly T[], value: T, onCommit: (v: T) => void) => {
+    const label = document.createElement("label");
+    label.className = "field";
+    const span = document.createElement("span");
+    span.textContent = labelText;
+    const input = document.createElement("select");
+    input.className = "input mono";
+    for (const kind of kinds) {
+      const opt = document.createElement("option");
+      opt.value = kind;
+      opt.textContent = KIND_META[kind as NodeKind]?.label ?? kind.toUpperCase();
+      input.appendChild(opt);
+    }
+    input.value = value;
+    input.addEventListener("change", () => onCommit(input.value as T));
+    label.append(span, input);
+    box.appendChild(label);
+  };
+
   if (node) {
     field("label", node.label, false, "", (v) =>
       app.send({ type: "update_node", node_id: node.id, label: v, field: "label" }),
     );
-    const seg = document.createElement("div");
-    seg.className = "seg kind-seg";
-    for (const kind of NODE_KINDS) {
-      const opt = document.createElement("label");
-      opt.className = "seg-opt";
-      opt.innerHTML = `<input type="radio" name="kind"><span>${KIND_META[kind].label}</span>`;
-      const input = opt.querySelector("input")!;
-      input.checked = node.kind === kind;
-      input.addEventListener("change", () => app.send({ type: "update_node", node_id: node.id, kind }));
-      seg.appendChild(opt);
-    }
-    box.appendChild(seg);
+    picker("kind", NODE_KINDS, node.kind, (kind) =>
+      app.send({ type: "update_node", node_id: node.id, kind }),
+    );
     field("code ref — file/function", node.ref ?? "", true, "svc/orders/handler.ts:serve", (v) =>
       app.send({ type: "update_node", node_id: node.id, ref: v || null, field: "ref" }),
     );
-    field("endpoint", node.endpoint ?? "", true, "GET /v2/orders/:id", (v) =>
-      app.send({ type: "update_node", node_id: node.id, endpoint: v || null, field: "endpoint" }),
-    );
+    // ponytail: the endpoint row shows only when the node has one — an empty row
+    // read as data. Set it from Claude (canvas_update_node) or clear it here.
+    if (node.endpoint) {
+      field("endpoint", node.endpoint, true, "", (v) =>
+        app.send({ type: "update_node", node_id: node.id, endpoint: v || null, field: "endpoint" }),
+      );
+    }
   }
 
   if (edge) {
     field("label", edge.label ?? "", false, "miss", (v) =>
       app.send({ type: "update_edge", edge_id: edge.id, label: v || null, field: "label" }),
     );
-    const seg = document.createElement("div");
-    seg.className = "seg kind-seg";
-    for (const kind of EDGE_KINDS) {
-      const opt = document.createElement("label");
-      opt.className = "seg-opt";
-      opt.innerHTML = `<input type="radio" name="edgekind"><span>${kind.toUpperCase()}</span>`;
-      const input = opt.querySelector("input")!;
-      input.checked = edge.kind === kind;
-      input.addEventListener("change", () => app.send({ type: "update_edge", edge_id: edge.id, kind }));
-      seg.appendChild(opt);
-    }
-    box.appendChild(seg);
+    picker("kind", EDGE_KINDS, edge.kind, (kind) =>
+      app.send({ type: "update_edge", edge_id: edge.id, kind }),
+    );
     field("condition — branch predicate", edge.condition ?? "", true, "cache miss", (v) =>
       app.send({ type: "update_edge", edge_id: edge.id, condition: v || null, field: "condition" }),
     );
@@ -405,24 +427,6 @@ function renderInspector(app: App): void {
     );
   }
 
-  const actions = document.createElement("div");
-  actions.className = "actions";
-  const copy = document.createElement("button");
-  copy.className = "btn btn-secondary";
-  copy.style.flex = "1";
-  copy.textContent = "copy id for claude";
-  copy.addEventListener("click", () => {
-    const name = node?.label ?? edge?.label ?? sel.id;
-    void navigator.clipboard.writeText(`${sel.id} (${name})`);
-    copy.textContent = "copied";
-    setTimeout(() => (copy.textContent = "copy id for claude"), 1200);
-  });
-  const del = document.createElement("button");
-  del.className = "btn btn-secondary";
-  del.textContent = "delete";
-  del.addEventListener("click", () => deleteSelection(app));
-  actions.append(copy, del);
-  box.appendChild(actions);
 }
 
 function renderHistory(app: App): void {
