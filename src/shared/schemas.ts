@@ -1,10 +1,23 @@
 // zod schemas — the contract. JSON Schema is generated from these
 // (src/scripts/gen-schemas.ts) and the MCP tools register them directly.
 import { z } from "zod";
-import { DRAFT_ROLES, EDGE_KINDS, NODE_KINDS } from "./types.js";
+import { DRAFT_ROLES, EDGE_KINDS, LEGACY_NODE_KINDS, NODE_KINDS } from "./types.js";
 
 export const authorSchema = z.enum(["human", "ai"]);
-export const nodeKindSchema = z.enum(NODE_KINDS);
+/** A *stored* node's kind — the six offered kinds plus legacy "note". Used
+ * for parsing, never for what a create/retype call may offer. */
+export const nodeKindSchema = z.enum(LEGACY_NODE_KINDS);
+/** The kind a create/retype call may offer — the six current kinds. "note"
+ * fails validation here on purpose: prose goes in a notebook now — and gets
+ * a message that says where to put it instead of zod's generic enum text
+ * (SDK validates args against this schema before canvas_add_node /
+ * canvas_update_node's handler ever runs, so the message has to live here). */
+export const offeredNodeKindSchema = z.enum(NODE_KINDS, {
+  error: (issue) =>
+    issue.input === "note"
+      ? "note is not a node kind — write it in a notebook (notebooks_create) and ref the node as [[n11]]"
+      : undefined,
+});
 export const edgeKindSchema = z.enum(EDGE_KINDS);
 
 export const pointSchema = z.tuple([z.number(), z.number()]);
@@ -99,6 +112,14 @@ export const draftSchema = z.strictObject({
   author: authorSchema,
 });
 
+export const notebookSchema = z.strictObject({
+  id: z.string(),
+  title: z.string().max(40),
+  body: z.string(),
+  author: authorSchema,
+  updated: z.number(),
+});
+
 export const boundaryEdgeSchema = z.strictObject({
   id: z.string(),
   from: z.string(),
@@ -149,6 +170,8 @@ export const canvasStateSchema = z.strictObject({
   scope: scopeSchema.optional(),
   drafts: z.array(draftSchema),
   active_draft: z.string().nullable(),
+  notebooks: z.array(notebookSchema),
+  active_notebook: z.string().nullable(),
 });
 
 // ---------------------------------------------------------------------------
@@ -186,7 +209,7 @@ export const toolArgs = {
   "canvas.add_node": z.object({
     ...boardScoped,
     label: z.string(),
-    kind: nodeKindSchema,
+    kind: offeredNodeKindSchema,
     at: pointSchema.optional(),
     size: pointSchema.optional(),
     ref: z.string().optional(),
@@ -197,7 +220,7 @@ export const toolArgs = {
     ...boardScoped,
     node_id: z.string(),
     label: z.string().optional(),
-    kind: nodeKindSchema.optional(),
+    kind: offeredNodeKindSchema.optional(),
     ref: z.string().nullable().optional(),
     endpoint: z.string().nullable().optional(),
   }),
@@ -301,6 +324,21 @@ export const toolArgs = {
   "drafts.delete": z.object({ ...boardScoped, draft_id: z.string() }),
   "drafts.get": z.object({ ...boardScoped, draft_id: z.string() }),
   "drafts.activate": z.object({ ...boardScoped, draft_id: z.string().nullable() }),
+  "notebooks.create": z.object({
+    ...boardScoped,
+    title: z.string(),
+    body: z.string().optional(),
+  }),
+  "notebooks.update": z.object({
+    ...boardScoped,
+    notebook_id: z.string(),
+    title: z.string().optional(),
+    body: z.string().optional(),
+    append: z.string().optional(),
+  }),
+  "notebooks.delete": z.object({ ...boardScoped, notebook_id: z.string() }),
+  "notebooks.get": z.object({ ...boardScoped, notebook_id: z.string() }),
+  "notebooks.open": z.object({ ...boardScoped, notebook_id: z.string().nullable() }),
   "session.mode": z.object({ on: z.boolean() }),
   "session.send": z.object({
     ...boardScoped,
@@ -316,6 +354,7 @@ export const toolArgs = {
       .object({ layer_id: z.string(), path_id: z.string(), hop: z.int().min(1).optional() })
       .optional(),
     draft: z.string().optional(),
+    notebook: z.string().optional(),
   }),
 } as const;
 

@@ -9,6 +9,7 @@ import type {
   History,
   HistorySummary,
   Layer,
+  Notebook,
   StrokeSummary,
   Viewport,
 } from "../shared/types.js";
@@ -25,6 +26,9 @@ export interface StateInput {
   /** A draft is a view, like a layer — optional here so pre-drafts callers (tests) need no edits. */
   drafts?: Draft[];
   activeDraft?: string | null;
+  /** A notebook is a view too — optional so pre-notebooks callers (tests) need no edits. */
+  notebooks?: Notebook[];
+  activeNotebook?: string | null;
   includeInkGeometry?: boolean;
   includeLayout?: boolean;
 }
@@ -91,5 +95,7 @@ export function buildCanvasState(input: StateInput): CanvasState {
     focus: input.focus,
     drafts: input.drafts ?? [],
     active_draft: input.activeDraft ?? null,
+    notebooks: input.notebooks ?? [],
+    active_notebook: input.activeNotebook ?? null,
   };
 }

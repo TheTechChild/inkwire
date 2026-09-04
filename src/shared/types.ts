@@ -4,16 +4,25 @@
 
 export type Author = "human" | "ai";
 
+/** The kinds offered when creating or retyping a node — what the inspector
+ * select, the tool args, and the WS intents present. "note" is deliberately
+ * absent: prose lives in a notebook now, never as a node. */
 export const NODE_KINDS = [
   "entry",
   "service",
   "store",
   "transform",
-  "note",
   "state",
   "lifeline",
 ] as const;
-export type NodeKind = (typeof NODE_KINDS)[number];
+
+/** Every kind a *stored* node can carry — the six offered kinds plus "note"
+ * for a node loaded from an older board or SQLite row that predates
+ * notebooks. A surviving note still parses and round-trips; nothing new can
+ * be created with it (schemas.ts's offered-kind schemas use NODE_KINDS, not
+ * this). */
+export const LEGACY_NODE_KINDS = [...NODE_KINDS, "note"] as const;
+export type NodeKind = (typeof LEGACY_NODE_KINDS)[number];
 
 export const EDGE_KINDS = ["sync", "async", "error"] as const;
 export type EdgeKind = (typeof EDGE_KINDS)[number];
@@ -119,6 +128,21 @@ export interface Draft {
   /** element id (node or edge) → role. Explicit: marking a node marks none of its edges. */
   marks: Record<string, DraftRole>;
   author: Author;
+}
+
+// ---------------------------------------------------------------------------
+// Notebooks: markdown stored with the board, shown in its own pane. Not a
+// fifth pointer — the four (highlight, layer, path, draft) say where to
+// look; a notebook is where you write about them. [[id]] refs are resolved
+// at render, never stored, so deleting an element is not an edit to the
+// body — canvas_lint reports the dangling ref.
+
+export interface Notebook {
+  id: string; // "N1", "N2"… first unused across the board
+  title: string; // cap 40, "untitled" when empty
+  body: string; // markdown
+  author: Author;
+  updated: number; // epoch ms
 }
 
 export interface BoardMeta {
@@ -253,6 +277,10 @@ export interface CanvasState {
   drafts: Draft[];
   /** Active draft id, shared by every panel on the board like focus. */
   active_draft: string | null;
+  /** Every notebook, whole even on a scoped read. */
+  notebooks: Notebook[];
+  /** Notebook open in the pane, shared by every panel on the board like focus. Never persisted. */
+  active_notebook: string | null;
 }
 
 export interface MutationResult {
@@ -300,7 +328,7 @@ export interface Trace {
 
 export type ThreadEntry =
   | { id: string; at: number; type: "you"; text: string; ctx: CtxChip[] }
-  | { id: string; at: number; type: "claude"; text: string; highlight?: Highlight; path?: { layer_id: string; path_id: string }; draft?: string }
+  | { id: string; at: number; type: "claude"; text: string; highlight?: Highlight; path?: { layer_id: string; path_id: string }; draft?: string; notebook?: string }
   | { id: string; at: number; type: "call"; name: string; text: string; json?: string };
 
 /** A ThreadEntry before the server stamps id and time (Omit distributed over the union). */

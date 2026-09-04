@@ -135,7 +135,6 @@
           "service",
           "store",
           "transform",
-          "note",
           "state",
           "lifeline"
         ]
@@ -206,7 +205,6 @@
           "service",
           "store",
           "transform",
-          "note",
           "state",
           "lifeline"
         ]
@@ -886,6 +884,96 @@
       "draft_id"
     ]
   },
+  "notebooks.create": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "body": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "title"
+    ]
+  },
+  "notebooks.update": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "notebook_id": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "body": {
+        "type": "string"
+      },
+      "append": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "notebook_id"
+    ]
+  },
+  "notebooks.delete": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "notebook_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "notebook_id"
+    ]
+  },
+  "notebooks.get": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "notebook_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "notebook_id"
+    ]
+  },
+  "notebooks.open": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "notebook_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "notebook_id"
+    ]
+  },
   "session.mode": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -955,6 +1043,9 @@
         ]
       },
       "draft": {
+        "type": "string"
+      },
+      "notebook": {
         "type": "string"
       }
     },

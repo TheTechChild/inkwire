@@ -44,9 +44,9 @@
                   "service",
                   "store",
                   "transform",
-                  "note",
                   "state",
-                  "lifeline"
+                  "lifeline",
+                  "note"
                 ]
               },
               "ref": {
@@ -230,9 +230,9 @@
                   "service",
                   "store",
                   "transform",
-                  "note",
                   "state",
-                  "lifeline"
+                  "lifeline",
+                  "note"
                 ]
               },
               "stub": {
@@ -770,6 +770,48 @@
         "string",
         "null"
       ]
+    },
+    "notebooks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "body": {
+            "type": "string"
+          },
+          "author": {
+            "type": "string",
+            "enum": [
+              "human",
+              "ai"
+            ]
+          },
+          "updated": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "body",
+          "author",
+          "updated"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "active_notebook": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [
@@ -783,7 +825,9 @@
     "layers",
     "focus",
     "drafts",
-    "active_draft"
+    "active_draft",
+    "notebooks",
+    "active_notebook"
   ],
   "additionalProperties": false
 }
