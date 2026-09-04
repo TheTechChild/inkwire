@@ -43,7 +43,7 @@ const SCOPE_NOTES: Record<Scope, string> = {
 // the panel can genuinely act; the rest belong to Claude over MCP.
 const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
   ["session.mode", "Flip the mode flag the server holds. On: fails unless permission mode is auto; arms the Stop hook that redirects replies into session_send. Off: releases any pending session_send with mode_off.", "(on: boolean) → { mode, hook }", (app) => switchTab(app, "session")],
-  ["session.send", "Deliver a reply to the Session tab, optionally pointing at elements, at a path (or a hop on it), or at a draft. Blocks until the human replies (20 min timeout) and returns their message with focus, selection, scrubber position, active draft and revision as ids.", "(text, highlight?: { nodes, edges, label }, path?: { layer_id, path_id, hop? }, draft?: string) → { reply, ctx } | { status: mode_off | idle }", (app) => switchTab(app, "session")],
+  ["session.send", "Deliver a reply to the Session tab, optionally pointing at elements, at a path (or a hop on it), at a draft, or at a notebook. Blocks until the human replies (20 min timeout) and returns their message with focus, selection, scrubber position, active draft and revision as ids.", "(text, highlight?: { nodes, edges, label }, path?: { layer_id, path_id, hop? }, draft?: string, notebook?: string) → { reply, ctx } | { status: mode_off | idle }", (app) => switchTab(app, "session")],
   ["boards.list", "Board ids, names, element counts, last touched.", "() → { boards }", null as never],
   ["boards.open", "Make a board current and return its state.", "(board_id) → CanvasState", null as never],
   ["boards.create", "New empty board.", "(name) → { board_id }", null as never],
@@ -60,7 +60,7 @@ const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
   ["canvas.delete", "Remove an element; a node takes its edges with it.", "(id)", null as never],
   ["canvas.move", "Set layout for an element. Bumps layout.revision only.", "(id, at, size?)", null as never],
   ["canvas.bind_code", "Attach a file/function or endpoint to a node — validated against the project root.", "(node_id, ref | endpoint)", null as never],
-  ["canvas.annotate", "Pin a comment to an element as a note node.", "(target_id, text)", null as never],
+  ["canvas.annotate", "Write a comment about an element — a missing case, an unhandled error path. It lands in the board's notes notebook as a paragraph refbacked to the element, not on the canvas.", "(target_id, text) → { notebook_id, target_id }", null as never],
   ["canvas.set_viewport", "Pan and zoom so the human sees what you mean.", "(x, y, zoom)", null as never],
   ["canvas.export_mermaid", "Serialise the graph as text for the transcript.", "() → string", null as never],
   ["canvas.lint", "Static checks against the project root: missing refs, unbound nodes, edge shape.", "() → findings", null as never],
@@ -84,32 +84,80 @@ const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
   ["drafts.delete", "Remove a draft. The board is untouched.", "(draft_id) → { ok }", null as never],
   ["drafts.get", "One draft with its marks resolved to labels. Small — use it to answer about a mark instead of reading the board.", "(draft_id) → { draft_id, title, note, marks: [{ id, role, label, kind | edge: { from, to } }] }", null as never],
   ["drafts.activate", "Show a draft on the human's canvas, or pass null to clear. Shared by every panel; it changes what someone else is looking at.", "(draft_id | null) → { ok }", (app) => app.send({ type: "drafts_activate", draft_id: app.push?.state.active_draft ? null : (app.push?.state.drafts[0]?.id ?? null) })],
+  ["notebooks.create", "Write a notebook on this board: markdown, with [[id]] refs to nodes, edges, layers, paths and drafts. Refs resolve when the human reads it — write the id, not the label.", "(title, body?) → { notebook_id }", (app) => app.send({ type: "notebooks_create" })],
+  ["notebooks.update", "Retitle, replace the body, or append to it. Append is last write wins; a human mid-edit is warned, not blocked.", "(notebook_id, title?, body?, append?) → { notebook_id, updated }", null as never],
+  ["notebooks.delete", "Remove a notebook. The board is untouched.", "(notebook_id) → { ok }", null as never],
+  ["notebooks.get", "One notebook with every [[id]] ref resolved to its label — and named as gone when the element no longer exists.", "(notebook_id) → { notebook_id, title, body }", null as never],
+  ["notebooks.open", "Show a notebook in the human's pane, or pass null to close it. Shared by every panel; it changes what someone else is reading.", "(notebook_id | null) → { ok }", (app) => app.send({ type: "notebooks_open", notebook_id: app.push?.state.active_notebook ? null : (app.push?.state.notebooks[0]?.id ?? null) })],
 ];
 
 const PANEL_KEY = "inkwire.panel";
 const PANEL_DEFAULT_WIDTH = 372;
 const clampPanelWidth = (w: number): number => Math.min(720, Math.max(260, Math.round(w)));
+const NB_DEFAULT_WIDTH = 360;
+export const clampNbWidth = (w: number): number => Math.min(560, Math.max(260, Math.round(w)));
 
-/** Side-panel prefs (plus the rim setting) from localStorage; defaults when absent or unreadable. */
-export function loadPanelPrefs(): App["panel"] & { rim: boolean; dim: boolean } {
+/** Side-panel prefs (plus the rim setting and the notebook pane's own prefs) from
+ * localStorage; defaults when absent or unreadable. The notebook substate lives
+ * inside this same blob — not a second key. */
+export function loadPanelPrefs(): App["panel"] & { rim: boolean; dim: boolean; notebook: App["notebook"] } {
   try {
     const raw = localStorage.getItem(PANEL_KEY);
     if (raw) {
-      const p = JSON.parse(raw) as { open?: unknown; width?: unknown; rim?: unknown; dim?: unknown };
-      return { open: p.open !== false, width: clampPanelWidth(Number(p.width) || PANEL_DEFAULT_WIDTH), rim: p.rim !== false, dim: p.dim !== false };
+      const p = JSON.parse(raw) as { open?: unknown; width?: unknown; rim?: unknown; dim?: unknown; notebook?: { open?: unknown; width?: unknown; edit?: unknown } };
+      const nb = p.notebook ?? {};
+      return {
+        open: p.open !== false,
+        width: clampPanelWidth(Number(p.width) || PANEL_DEFAULT_WIDTH),
+        rim: p.rim !== false,
+        dim: p.dim !== false,
+        notebook: { open: nb.open === true, width: clampNbWidth(Number(nb.width) || NB_DEFAULT_WIDTH), edit: nb.edit === true },
+      };
     }
   } catch {
     // storage unavailable — fall through to defaults
   }
-  return { open: true, width: PANEL_DEFAULT_WIDTH, rim: true, dim: true };
+  return { open: true, width: PANEL_DEFAULT_WIDTH, rim: true, dim: true, notebook: { open: false, width: NB_DEFAULT_WIDTH, edit: false } };
 }
 
-function savePanelPrefs(app: App): void {
+export function savePanelPrefs(app: App): void {
   try {
-    localStorage.setItem(PANEL_KEY, JSON.stringify({ ...app.panel, rim: app.rim, dim: app.dim }));
+    localStorage.setItem(PANEL_KEY, JSON.stringify({ ...app.panel, rim: app.rim, dim: app.dim, notebook: app.notebook }));
   } catch {
     // storage unavailable — prefs live for this page only
   }
+}
+
+/** One drag-to-resize handle for a left-edge, pointer-captured pane — shared by
+ * the aside resizer and the notebook resizer (handoff "Notebooks"): same sign
+ * (drag left grows the pane), same pointer-capture block, different width. */
+export function bindResizer(
+  handle: HTMLElement,
+  getWidth: () => number,
+  setWidth: (w: number) => void,
+  clamp: (w: number) => number,
+  onChange: () => void,
+  onDone: () => void,
+): void {
+  handle.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const startW = getWidth();
+    const move = (ev: PointerEvent) => {
+      setWidth(clamp(startW + (startX - ev.clientX)));
+      onChange();
+    };
+    const up = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+      onDone();
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+  });
 }
 
 export function applyPanel(app: App): void {
@@ -128,26 +176,14 @@ export function setupPanel(app: App): void {
     savePanelPrefs(app);
     applyPanel(app);
   });
-  const resizer = el("aside-resizer");
-  resizer.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    resizer.setPointerCapture(e.pointerId);
-    const startX = e.clientX;
-    const startW = app.panel.width;
-    const move = (ev: PointerEvent) => {
-      app.panel.width = clampPanelWidth(startW + (startX - ev.clientX));
-      applyPanel(app);
-    };
-    const up = () => {
-      resizer.removeEventListener("pointermove", move);
-      resizer.removeEventListener("pointerup", up);
-      resizer.removeEventListener("pointercancel", up);
-      savePanelPrefs(app);
-    };
-    resizer.addEventListener("pointermove", move);
-    resizer.addEventListener("pointerup", up);
-    resizer.addEventListener("pointercancel", up);
-  });
+  bindResizer(
+    el("aside-resizer"),
+    () => app.panel.width,
+    (w) => (app.panel.width = w),
+    clampPanelWidth,
+    () => applyPanel(app),
+    () => savePanelPrefs(app),
+  );
 
   // Header: tool palette.
   const toolSeg = el("toolseg");
@@ -373,20 +409,34 @@ function renderInspector(app: App): void {
   };
 
   /** A kind picker: the same labelled row as a field, with a native select. A
-   * segmented row here read as tabs — it looked like #tabs one panel down. */
-  const picker = <T extends string>(labelText: string, kinds: readonly T[], value: T, onCommit: (v: T) => void) => {
+   * segmented row here read as tabs — it looked like #tabs one panel down.
+   * `legacyValue` (Consequence of decision 2): a value the picker can never
+   * set but the current element might still carry (a surviving "note" node)
+   * — shown as a disabled option only when it's the live value, so the
+   * select reads honestly instead of silently falling back to the first
+   * option. */
+  const picker = <T extends string>(
+    labelText: string,
+    kinds: readonly T[],
+    value: T,
+    onCommit: (v: T) => void,
+    legacyValue?: T,
+  ) => {
     const label = document.createElement("label");
     label.className = "field";
     const span = document.createElement("span");
     span.textContent = labelText;
     const input = document.createElement("select");
     input.className = "input mono";
-    for (const kind of kinds) {
-      const opt = document.createElement("option");
-      opt.value = kind;
-      opt.textContent = KIND_META[kind as NodeKind]?.label ?? kind.toUpperCase();
-      input.appendChild(opt);
-    }
+    const opt = (kind: T, disabled: boolean) => {
+      const o = document.createElement("option");
+      o.value = kind;
+      o.textContent = KIND_META[kind as NodeKind]?.label ?? kind.toUpperCase();
+      o.disabled = disabled;
+      input.appendChild(o);
+    };
+    for (const kind of kinds) opt(kind, false);
+    if (legacyValue !== undefined && value === legacyValue) opt(legacyValue, true);
     input.value = value;
     input.addEventListener("change", () => onCommit(input.value as T));
     label.append(span, input);
@@ -397,8 +447,13 @@ function renderInspector(app: App): void {
     field("label", node.label, false, "", (v) =>
       app.send({ type: "update_node", node_id: node.id, label: v, field: "label" }),
     );
-    picker("kind", NODE_KINDS, node.kind, (kind) =>
-      app.send({ type: "update_node", node_id: node.id, kind }),
+    picker<NodeKind>(
+      "kind",
+      NODE_KINDS,
+      node.kind,
+      // A disabled "note" option can never actually be committed — see picker's legacyValue.
+      (kind) => app.send({ type: "update_node", node_id: node.id, kind: kind as (typeof NODE_KINDS)[number] }),
+      "note",
     );
     field("code ref — file/function", node.ref ?? "", true, "svc/orders/handler.ts:serve", (v) =>
       app.send({ type: "update_node", node_id: node.id, ref: v || null, field: "ref" }),

@@ -2,6 +2,7 @@
 import { connectWs } from "./ws-client.js";
 import { renderWorld, setupCanvas } from "./canvas.js";
 import { loadPanelPrefs, renderPanel, setupPanel } from "./panel.js";
+import { renderNotebook, setupNotebook } from "./notebook.js";
 import { setupSession } from "./session.js";
 import { el, type App } from "./app.js";
 
@@ -14,7 +15,7 @@ if (!boardId) {
 }
 
 function boot(id: string): void {
-  const { rim, dim, ...panel } = loadPanelPrefs();
+  const { rim, dim, notebook, ...panel } = loadPanelPrefs();
   const app: App = {
     boardId: id,
     push: null,
@@ -28,6 +29,8 @@ function boot(id: string): void {
     view: { x: 40, y: 20, zoom: 1 },
     drag: null,
     panel,
+    notebook,
+    nbCaretToEnd: false,
     rim,
     dim,
     draft: "",
@@ -40,6 +43,7 @@ function boot(id: string): void {
     render: () => {
       renderWorld(app);
       renderPanel(app);
+      renderNotebook(app);
     },
     flash: () => {
       const flash = el("flash");
@@ -51,6 +55,7 @@ function boot(id: string): void {
 
   setupCanvas(app);
   setupPanel(app);
+  setupNotebook(app);
   setupSession(app);
   connectWs(app);
   app.render();

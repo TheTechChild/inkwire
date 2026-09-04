@@ -40,21 +40,28 @@ export interface App {
   drag: Drag | null;
   /** Side panel: shown or collapsed, and its width in px. Persisted locally. */
   panel: { open: boolean; width: number };
+  /** Notebook pane: shown or collapsed, its width in px, and read/edit mode.
+   * Persisted locally, inside the same inkwire.panel blob as `panel`. */
+  notebook: { open: boolean; width: number; edit: boolean };
+  /** Transient: the T tool (or a fresh notebooks_create) wants the caret at the
+   * end of the body textarea on the next render that finds one. Never persisted. */
+  nbCaretToEnd: boolean;
   /** Show the rim tier (neighbours of a focused layer). Persisted with the panel prefs. */
   rim: boolean;
   /** Dim everything outside an active highlight (handoff highlightOutside: dim | none). Persisted. */
   dim: boolean;
   /** Session tab, panel-local: the composer draft, chips dropped for this draft, open call rows. */
   draft: string;
-  dropped: { focus?: true; sel?: true; trace?: true; draft?: true };
+  dropped: { focus?: true; sel?: true; trace?: true; draft?: true; notebook?: true };
   open: Record<string, boolean>;
   /** Which payload the STATE tab shows while a layer is focused. */
   stateView: "scoped" | "board";
   /** This panel's unacknowledged seek/pause over the server trace; dropped when the push echoes it. */
   traceOverride: { t: number; running: boolean } | null;
-  /** The right-click menu (handoff "Drafts" § 4): panel-local, canvas-only. Optional
-   * so main.ts (outside this package) need not seed it — canvas.ts treats absent the same as null. */
-  menu?: { x: number; y: number; type: "node" | "edge"; id: string } | null;
+  /** The right-click menu (handoff "Drafts" § 4 / "Notebooks" § Migration): panel-local,
+   * canvas-only. Optional so main.ts (outside this package) need not seed it — canvas.ts
+   * treats absent the same as null. "empty" is the empty-space menu (import notes). */
+  menu?: { x: number; y: number; type: "node" | "edge"; id: string } | { x: number; y: number; type: "empty" } | null;
   /** The scrubber's path picker: panel-local, open only while the scrubber is pinned. */
   pathMenu?: boolean;
   connected: boolean;
@@ -68,6 +75,8 @@ export const KIND_META: Record<NodeKind, { label: string; color: string }> = {
   service: { label: "SERVICE", color: "var(--color-accent-700)" },
   store: { label: "STORE", color: "var(--color-neutral-600)" },
   transform: { label: "TRANSFORM", color: "var(--color-accent-600)" },
+  // ponytail: legacy + unknown-kind fallback (canvas.ts's `KIND_META[n.kind] ?? KIND_META.note`)
+  // — "note" is no longer offered, but a node loaded from before notebooks can still carry it.
   note: { label: "NOTE", color: "var(--color-neutral-500)" },
   state: { label: "STATE", color: "var(--color-accent-2, var(--color-accent-600))" },
   lifeline: { label: "LIFELINE", color: "var(--color-neutral-700)" },

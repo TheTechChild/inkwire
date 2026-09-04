@@ -184,8 +184,11 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
 .hist-seg .seg-opt { padding: 6px 10px; font-family: var(--font-mono); font-size: 11px; }
 .theme-seg .seg-opt { padding: 7px 10px; }
 
-#body { display: grid; grid-template-columns: 1fr var(--panel-w, 372px); min-height: 0; }
-#app.panel-closed #body { grid-template-columns: 1fr 0; }
+/* three tracks: canvas | notebook | aside (handoff "Notebooks"). --nb-col is set
+   by notebook.ts — var(--nb-w, 360px) open, 28px collapsed (JS picks the value,
+   not CSS, since the same var carries both states). */
+#body { display: grid; grid-template-columns: 1fr var(--nb-col, 28px) var(--panel-w, 372px); min-height: 0; }
+#app.panel-closed #body { grid-template-columns: 1fr var(--nb-col, 28px) 0; }
 #app.panel-closed aside { display: none; }
 
 #canvas {
@@ -230,10 +233,6 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
 /* dot: no kicker; edge labels only on the selected edge */
 #world[data-lod="dot"] .node-kicker { display: none; }
 #world[data-lod="dot"] .edge:not(.selected) .edge-label, #world[data-lod="dot"] .edge:not(.selected) .edge-label-bg { display: none; }
-/* notes: canvas.ts wraps and clamps the text in JS (wrapText); lines arrive joined by newlines */
-#world .node-box[data-kind="note"] .node-label {
-  white-space: pre-line; overflow-wrap: anywhere; overflow: hidden; text-overflow: clip;
-}
 /* layer tiers (handoff "Derived tiers"): presentation only, no transition */
 #world [data-tier="rim"] { opacity: 0.3; filter: blur(1.4px); }
 #world [data-tier="out"] { opacity: 0.28; filter: blur(3px); }
@@ -410,6 +409,8 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
 .ctx-menu .role-row[data-role="changed"] .name, .ctx-menu .role-row[data-role="changed"] .line-sample { color: var(--color-draft-changed); }
 .ctx-menu .role-row[data-role="added"] .name, .ctx-menu .role-row[data-role="added"] .line-sample { color: var(--color-draft-added); }
 .ctx-menu .clear-row { font-family: var(--font-mono); font-size: 11px; color: var(--color-neutral-700); }
+.ctx-menu .clear-row.disabled { cursor: default; opacity: 0.5; }
+.ctx-menu .clear-row.disabled:hover { background: transparent; }
 .ctx-menu .footer {
   padding: 5px 10px 6px; border-top: 1px dashed var(--color-divider);
   font-family: var(--font-mono); font-size: 9.5px; color: var(--color-neutral-500);
@@ -475,8 +476,85 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
 @keyframes blink { 0%, 100% { opacity: 1 } 50% { opacity: 0.25 } }
 
 aside { position: relative; border-left: 1px solid var(--color-divider); display: grid; grid-template-rows: auto auto 1fr; min-height: 0; }
-#aside-resizer { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 2; touch-action: none; }
-#aside-resizer:hover, #aside-resizer:active { background: color-mix(in srgb, var(--color-accent) 35%, transparent); }
+/* shared with #nb-resizer below (handoff "Notebooks"): same handle, same sign */
+#aside-resizer, #nb-resizer { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 2; touch-action: none; }
+#aside-resizer:hover, #aside-resizer:active, #nb-resizer:hover, #nb-resizer:active { background: color-mix(in srgb, var(--color-accent) 35%, transparent); }
+
+/* — notebook pane (handoff "Notebooks"): tab strip / head / scrolling body / foot — */
+#notebook { position: relative; border-left: 1px solid var(--color-divider); min-height: 0; background: var(--color-bg); }
+#nb-pane { height: 100%; display: grid; grid-template-rows: auto auto 1fr auto; min-height: 0; }
+#nb-pane[hidden] { display: none; }
+#nb-tabs { display: flex; align-items: stretch; border-bottom: 1px solid var(--color-divider); min-height: 0; }
+#nb-tablist { display: flex; align-items: stretch; overflow: auto; min-width: 0; }
+.nb-tab {
+  display: flex; align-items: baseline; gap: 7px; flex-shrink: 0; cursor: pointer;
+  border: 0; border-right: 1px solid var(--color-divider); border-radius: 0; padding: 8px 12px;
+  background: transparent; color: var(--color-text); font-family: inherit;
+}
+.nb-tab.on { background: var(--color-accent-100); }
+.nb-tab .id { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; color: var(--color-neutral-600); }
+.nb-tab.on .id { color: var(--color-accent-700); }
+.nb-tab .title { font-family: var(--font-heading); font-weight: 600; font-size: 12.5px; white-space: nowrap; }
+#btn-nb-new {
+  margin-left: auto; flex-shrink: 0; cursor: pointer; border: 0; border-left: 1px solid var(--color-divider);
+  border-radius: 0; padding: 8px 13px; background: transparent; color: var(--color-neutral-600);
+  font-family: var(--font-mono); font-size: 13px;
+}
+#btn-nb-new:hover { color: var(--color-accent); }
+#nb-head { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px 10px; }
+#nb-head-row { display: flex; align-items: baseline; gap: 8px; }
+#nb-head-row .kicker { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; color: var(--color-accent-700); }
+#nb-head-row .id { font-family: var(--font-mono); font-size: 10px; color: var(--color-neutral-600); }
+#nb-head-row .by { margin-left: auto; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em; color: var(--color-neutral-500); }
+#nb-title { font-family: var(--font-heading); font-weight: 600; font-size: 15px; padding: 5px 8px; }
+#nb-body { overflow: auto; min-height: 0; padding: 0 14px 14px; display: flex; flex-direction: column; gap: 9px; }
+#nb-textarea { min-height: 340px; height: 92%; resize: none; font-family: var(--font-mono); font-size: 12px; line-height: 1.65; padding: 9px 10px; color: var(--color-neutral-800); }
+#nb-foot {
+  display: flex; align-items: center; gap: 10px; padding: 7px 14px; border-top: 1px solid var(--color-divider);
+  font-family: var(--font-mono); font-size: 10px; color: var(--color-neutral-500);
+}
+#btn-nb-edit { margin-left: auto; font-family: inherit; font-size: inherit; padding: 2px 6px; }
+#nb-rail { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; padding: 14px 0; cursor: pointer; border: 0; border-radius: 0; background: transparent; }
+#nb-rail[hidden] { display: none; }
+#nb-rail span { writing-mode: vertical-rl; white-space: nowrap; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.12em; color: var(--color-neutral-600); }
+
+/* the markdown subset (handoff "Notebooks" § parser): heading / paragraph / bullet / task */
+.nb-block { display: flex; align-items: baseline; gap: 8px; }
+.nb-block[data-type="h"] { margin-top: 12px; }
+.nb-check {
+  flex-shrink: 0; width: 13px; height: 13px; padding: 0; cursor: pointer; border-radius: 0;
+  border: 1px solid var(--color-neutral-600); background: transparent; color: var(--color-bg);
+  font-family: var(--font-mono); font-size: 9px; line-height: 1; display: flex; align-items: center; justify-content: center;
+}
+.nb-check.done { background: var(--color-neutral-600); }
+.nb-bullet-mark { flex-shrink: 0; font-family: var(--font-mono); font-size: 11px; color: var(--color-neutral-500); }
+.nb-text { min-width: 0; text-wrap: pretty; }
+.nb-text[data-type="h"] { font-family: var(--font-mono); font-size: 10px; font-weight: 500; letter-spacing: 0.1em; line-height: 1.6; text-transform: uppercase; color: var(--color-neutral-600); }
+.nb-text[data-type="para"] { font-family: var(--font-body); font-size: 13px; line-height: 1.55; color: var(--color-text); }
+.nb-text[data-type="bullet"], .nb-text[data-type="task"] { font-family: var(--font-body); font-size: 12.5px; line-height: 1.5; color: var(--color-neutral-800); }
+.nb-text.done { color: var(--color-neutral-500); text-decoration: line-through; }
+
+/* [[id]] ref chips (handoff "Notebooks" § 2), read mode only — in edit mode the
+   raw [[id]] is what you're editing, so no chip markup exists there at all. */
+.nb-chip {
+  display: inline-flex; align-items: baseline; gap: 5px; vertical-align: baseline; margin: 0 1px;
+  padding: 0 5px 1px; cursor: pointer; border-radius: 0; text-align: left; user-select: none; touch-action: none;
+  background: transparent; border: 1px solid var(--color-divider); color: var(--color-text);
+  font-family: var(--font-body); font-size: 12px;
+}
+.nb-chip .id { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; color: var(--color-neutral-600); }
+.nb-chip .label { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 190px; }
+.nb-chip .counts { display: inline-flex; gap: 5px; font-family: var(--font-mono); font-size: 9.5px; }
+.nb-chip[data-kind="layer"] { border-color: var(--color-accent-400); color: var(--color-accent-700); }
+.nb-chip[data-kind="layer"] .id { color: var(--color-accent-700); }
+.nb-chip[data-kind="path"] { border-color: var(--color-signal); }
+.nb-chip[data-kind="path"] .id { color: var(--color-signal); }
+.nb-chip[data-kind="draft"] { border-color: var(--color-neutral-700); }
+.nb-chip[data-kind="draft"] .id { color: var(--color-neutral-700); }
+.nb-chip[data-kind="draft"].on { background: var(--color-text); color: var(--color-bg); }
+.nb-chip[data-kind="draft"].on .id { color: var(--color-bg); }
+.nb-chip[data-kind="gone"] { cursor: default; opacity: 0.5; color: var(--color-neutral-500); border-color: var(--color-divider); }
+.nb-chip[data-kind="gone"] .id { color: var(--color-neutral-500); }
 #inspector { padding: 14px; border-bottom: 1px solid var(--color-divider); display: flex; flex-direction: column; gap: 10px; }
 #inspector[hidden] { display: none; }
 #inspector .head { display: flex; align-items: baseline; justify-content: space-between; }
@@ -573,6 +651,18 @@ aside { position: relative; border-left: 1px solid var(--color-divider); display
 .draft-msg-chip.on { background: var(--color-text); color: var(--color-bg); }
 .draft-msg-chip.on .glyph, .draft-msg-chip.on .ref, .draft-msg-chip.on .counts .removed, .draft-msg-chip.on .counts .changed, .draft-msg-chip.on .counts .added { color: var(--color-bg); }
 .draft-msg-chip:disabled { cursor: default; opacity: 0.5; }
+/* notebook chip (handoff "Notebooks" § thread): the message that carried a
+   notebook; inverted text/bg while it is the open pane, mirrors .draft-msg-chip. */
+.nb-msg-chip {
+  display: flex; align-items: center; gap: 8px; width: 100%; cursor: pointer; text-align: left; margin-top: 4px;
+  padding: 5px 9px; border-radius: 0; background: transparent; border: 1px solid var(--color-neutral-700); color: var(--color-text);
+}
+.nb-msg-chip .glyph, .nb-msg-chip .ref { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; color: var(--color-neutral-700); }
+.nb-msg-chip .title { font-family: var(--font-heading); font-weight: 600; font-size: 12px; letter-spacing: 0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nb-msg-chip .count { margin-left: auto; font-family: var(--font-mono); font-size: 10px; opacity: 0.8; white-space: nowrap; }
+.nb-msg-chip.on { background: var(--color-text); color: var(--color-bg); }
+.nb-msg-chip.on .glyph, .nb-msg-chip.on .ref { color: var(--color-bg); }
+.nb-msg-chip:disabled { cursor: default; opacity: 0.5; }
 
 .call-group { display: flex; flex-direction: column; gap: 8px; }
 .call-row {

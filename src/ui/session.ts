@@ -7,7 +7,7 @@ import type { ThreadEntry } from "../shared/types.js";
 import type { App } from "./app.js";
 import { el, focusedLayer } from "./app.js";
 import { traceInfo } from "./canvas.js";
-import { fmtTime, toast } from "./panel.js";
+import { fmtTime, savePanelPrefs, toast } from "./panel.js";
 
 type Agent = "off" | "waiting" | "working";
 
@@ -48,6 +48,7 @@ function send(app: App): void {
     selection: chips.find((c) => c.key === "sel")?.id ?? null,
     trace: ((c) => (c?.id ? { path: c.id, hop: c.hop! } : null))(chips.find((c) => c.key === "trace")),
     draft: chips.find((c) => c.key === "draft")?.id ?? null,
+    notebook: chips.find((c) => c.key === "notebook")?.id ?? null,
   });
   app.draft = "";
   app.dropped = {};
@@ -56,7 +57,7 @@ function send(app: App): void {
 }
 
 interface Chip {
-  key: "focus" | "sel" | "trace" | "draft" | "rev";
+  key: "focus" | "sel" | "trace" | "draft" | "notebook" | "rev";
   id: string | null;
   label: string;
   title: string;
@@ -92,12 +93,26 @@ function ctxChips(app: App): Chip[] {
     const total = counts.removed + counts.changed + counts.added;
     out.push({ key: "draft", id: activeDraft.id, label: `${activeDraft.id} · ${total} marks`, title: "the active draft — sent as an id" });
   }
+  // The open notebook rides along as an id, like the active draft — never its body.
+  const activeNotebook = state.active_notebook ? state.notebooks.find((n) => n.id === state.active_notebook) : undefined;
+  if (activeNotebook && app.notebook.open && !app.dropped.notebook) {
+    out.push({ key: "notebook", id: activeNotebook.id, label: `${activeNotebook.id} · ${activeNotebook.title || "untitled"}`, title: "the open notebook — sent as an id" });
+  }
   out.push({ key: "rev", id: null, label: `rev ${state.graph.revision}`, title: "graph.revision the message is written against" });
   return out;
 }
 
 let threadKey = "";
 const mounted = new Set<string>();
+
+/** Pin the thread to its newest message now, then again once the browser's
+ * next frame and web fonts have settled — a font swap or a rewrap can still
+ * grow the thread after the first paint, so pinning only on mount misses it. */
+function pinThreadBottom(thread: HTMLElement): void {
+  thread.scrollTop = thread.scrollHeight;
+  requestAnimationFrame(() => (thread.scrollTop = thread.scrollHeight));
+  if (document.fonts?.ready) void document.fonts.ready.then(() => (thread.scrollTop = thread.scrollHeight));
+}
 
 export function renderSession(app: App): void {
   const s = app.push?.session;
@@ -142,7 +157,13 @@ export function renderSession(app: App): void {
   // Cheap fingerprint of every draft's id/title/marks — a title edit or a new
   // mark must invalidate the key too, not just a draft appearing/disappearing.
   const draftsFingerprint = app.push?.state.drafts.map((d) => JSON.stringify({ id: d.id, title: d.title, marks: d.marks })).join(",") ?? "";
-  const key = `${entries.length}:${entries.at(-1)?.id ?? ""}:${s?.highlight?.msg_id ?? ""}:${s?.trace?.path_id ?? ""}:${app.push?.state.layers.flatMap((l) => l.paths.map((p) => p.id)).join(",") ?? ""}:${app.push?.state.active_draft ?? ""}:${draftsFingerprint}:${agent}:${JSON.stringify(app.open)}`;
+  // A notebook chip's "on" state depends on active_notebook + the pane being open;
+  // its task count depends on the body. All three must invalidate the thread key.
+  const notebooksFingerprint =
+    app.push?.state.notebooks
+      .map((n) => `${n.id}:${n.title}:${(n.body.match(/- \[( |x)\]/g) ?? []).length}:${(n.body.match(/- \[x\]/g) ?? []).length}`)
+      .join(",") ?? "";
+  const key = `${entries.length}:${entries.at(-1)?.id ?? ""}:${s?.highlight?.msg_id ?? ""}:${s?.trace?.path_id ?? ""}:${app.push?.state.layers.flatMap((l) => l.paths.map((p) => p.id)).join(",") ?? ""}:${app.push?.state.active_draft ?? ""}:${draftsFingerprint}:${agent}:${JSON.stringify(app.open)}:${app.push?.state.active_notebook ?? ""}:${notebooksFingerprint}:${app.notebook.open}`;
   if (key !== threadKey) {
     threadKey = key;
     thread.replaceChildren();
@@ -159,7 +180,7 @@ export function renderSession(app: App): void {
       note.textContent = inkwire ? "SESSION — claude code's replies land here" : "SESSION — type /use-inkwire in the terminal to talk here";
       thread.appendChild(note);
     }
-    thread.scrollTop = thread.scrollHeight;
+    pinThreadBottom(thread);
   }
 
   // Composer.
@@ -185,7 +206,7 @@ export function renderSession(app: App): void {
       x.textContent = "✕";
       x.title = "don't send this";
       x.addEventListener("click", () => {
-        app.dropped[c.key as "focus" | "sel" | "trace" | "draft"] = true;
+        app.dropped[c.key as "focus" | "sel" | "trace" | "draft" | "notebook"] = true;
         app.render();
       });
       chip.appendChild(x);
@@ -322,6 +343,37 @@ function messageCard(app: App, m: ThreadEntry): HTMLElement {
       (counts.children[2] as HTMLElement).textContent = String(c.added);
     }
     chip.addEventListener("click", () => app.send({ type: "drafts_activate", draft_id: active ? null : draftId }));
+    div.appendChild(chip);
+  }
+
+  if (m.type === "claude" && m.notebook) {
+    const nbId = m.notebook;
+    const nb = app.push?.state.notebooks.find((n) => n.id === nbId);
+    const open = !!nb && app.push?.state.active_notebook === nbId && app.notebook.open;
+    const chip = document.createElement("button");
+    chip.className = open ? "nb-msg-chip on" : "nb-msg-chip";
+    chip.title = nb ? (open ? "close the notebook pane" : `open ${nb.id} in the notebook pane`) : "this notebook no longer exists";
+    chip.disabled = !nb;
+    chip.innerHTML = `<span class="glyph">▤</span><span class="ref"></span><span class="title"></span><span class="count"></span>`;
+    (chip.children[1] as HTMLElement).textContent = nbId;
+    (chip.children[2] as HTMLElement).textContent = nb?.title || "deleted";
+    if (nb) {
+      const total = (nb.body.match(/- \[( |x)\]/g) ?? []).length;
+      const done = (nb.body.match(/- \[x\]/g) ?? []).length;
+      (chip.children[3] as HTMLElement).textContent = total ? `${done}/${total} tasks` : "";
+    }
+    chip.addEventListener("click", () => {
+      if (!nb) return;
+      if (open) {
+        app.notebook.open = false;
+      } else {
+        app.send({ type: "notebooks_open", notebook_id: nb.id });
+        app.notebook.open = true;
+        app.notebook.edit = false;
+      }
+      savePanelPrefs(app);
+      app.render();
+    });
     div.appendChild(chip);
   }
   return div;
