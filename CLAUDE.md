@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Inkwire is a local MCP server plus a browser canvas panel. A person draws a system freehand; the server infers structure; Claude reads the board as data and edits it over MCP. The server owns all state. The panel is a view that sends intents over a WebSocket. The design handoff in `design_handoff_inkwire/` is the authority: `SPEC.md` wins over the prototype, `TESTS.md` names the invariants, and `design/Shared Canvas.dc.html` is the visual spec.
 
+## Where the code is — read the map, do not grep
+
+**`MAP.md`** names the entry point, the call order, the tests, and the traps for every task surface: write path, fold, history, inference, MCP tools, WS protocol, contract, panel, rendering, session mode, layers, paths, drafts, notebooks, persistence, plugin. Open it **before** you search.
+
+Map anchors are `path:line  symbol`. A Stop hook (`scripts/map-anchor-check.mjs`; run by hand with `yarn map-anchors`) re-reads every anchor pointing into a TypeScript file your branch changed and blocks if the symbol moved. When you change a mapped file, fix its anchors; when you add a task surface, add an entry. The hook catches stale anchors — it cannot tell that new code needs a new entry. That part is on you.
+
 ## Commands
 
 Use **yarn** only. Do not use npm or npx.
@@ -14,6 +20,7 @@ Use **yarn** only. Do not use npm or npx.
 - `yarn typecheck` — tsc, no emit.
 - `yarn build` — compiles the server to `dist/` and bundles the panel to `dist/ui/` (esbuild).
 - `yarn dev` — server (tsx watch) + panel (esbuild watch). Panel URL: `http://127.0.0.1:4691/?board=<id>`.
+- `yarn map-anchors` — check every MAP.md anchor.
 - `yarn gen:schemas` — regenerate `schema/*.generated.json` from the zod contract.
 
 Env: `INKWIRE_PORT` (default 4691), `INKWIRE_DATA_DIR` (default `~/.inkwire`), `INKWIRE_PROJECT_ROOT` (root for `bind_code` refs). To use from Claude Code, the repo is a plugin and its own one-plugin marketplace (build first): `claude plugin marketplace add <repo>` then `claude plugin install inkwire@inkwire`; `claude --plugin-dir <repo>` for a one-off. The plugin pieces live at the root: `.claude-plugin/plugin.json` (manifest + the MCP server entry) and `marketplace.json`, `hooks/hooks.json` + `hooks/forward.sh`, `skills/use-inkwire`, `skills/back-to-claude-code`, `skills/trace-path` (model-invocable). The Session tab's two requirements (`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0`, permission mode `auto`) live in `.claude/settings.json` here and in the README for other projects. `.claude/skills/ship` is a dev-only skill, not part of the plugin.

@@ -1,4 +1,18 @@
 {
   "env": { "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS": "0" },
-  "permissions": { "defaultMode": "auto" }
+  "permissions": { "defaultMode": "auto" },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/scripts/map-anchor-check.mjs\"",
+            "timeout": 20,
+            "statusMessage": "Checking MAP.md anchors"
+          }
+        ]
+      }
+    ]
+  }
 }
