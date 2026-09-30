@@ -1,6 +1,6 @@
 // Boot: board id from the query string, WS connection, render loop.
 import { connectWs } from "./ws-client.js";
-import { renderWorld, setupCanvas } from "./canvas.js";
+import { renderTrace, renderWorld, setupCanvas } from "./canvas.js";
 import { loadPanelPrefs, renderPanel, setupPanel } from "./panel.js";
 import { renderNotebook, setupNotebook } from "./notebook.js";
 import { setupSession } from "./session.js";
@@ -43,6 +43,7 @@ function boot(id: string): void {
     render: () => {
       renderWorld(app);
       renderPanel(app);
+      renderTrace(app);
       renderNotebook(app);
     },
     flash: () => {

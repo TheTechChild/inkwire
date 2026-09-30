@@ -1,6 +1,6 @@
 // Right panel (inspector + four tabs), header controls, and the footer.
 import { captureBoard } from "./capture.js";
-import { deleteSelection, togglePlay, traceInfo } from "./canvas.js";
+import { abortHold, beginHold, deleteSelection, holdFired, renderWalk, startPeek, togglePlay, traceInfo } from "./canvas.js";
 import type { App, Scope, Tab, Tool } from "./app.js";
 import { KIND_META, el, focusLayer, focusedLayer } from "./app.js";
 import { liveMembers, scopeState } from "../core/layers.js";
@@ -300,11 +300,16 @@ export function toast(text: string, isError = false): void {
   }, 6000);
 }
 
-export function switchTab(app: App, tab: Tab): void {
+/** Set the tab without rendering: the caller owns the render. */
+export function setTab(app: App, tab: Tab): void {
   app.tab = tab;
   for (const input of el("tabs").querySelectorAll("input")) {
     input.checked = input.value === tab;
   }
+}
+
+export function switchTab(app: App, tab: Tab): void {
+  setTab(app, tab);
   app.render();
 }
 
@@ -334,6 +339,7 @@ export function renderPanel(app: App): void {
   el("btn-redo").style.color = canRedo ? "var(--color-text)" : "var(--color-neutral-400)";
 
   renderInspector(app);
+  renderAsideStrip(app);
 
   for (const [id] of TABS) {
     el(`pane-${id}`).hidden = app.tab !== id;
@@ -589,6 +595,25 @@ function renderHistory(app: App): void {
   pane.appendChild(base);
 }
 
+/** The highlight strip above the tabs: the agent's pointer, cleared here or with esc. */
+function renderAsideStrip(app: App): void {
+  const bar = el("asidestrip");
+  bar.replaceChildren();
+  const hl = app.push?.session.highlight;
+  if (!hl) return;
+  const strip = document.createElement("div");
+  strip.className = "hl-strip";
+  strip.innerHTML = `<span class="diamond">◆</span><span class="kicker">HIGHLIGHT</span><span class="label"></span><span class="count"></span>`;
+  (strip.children[2] as HTMLElement).textContent = hl.label;
+  (strip.children[3] as HTMLElement).textContent = `${hl.nodes.length} nodes · ${hl.edges.length} edges`;
+  const clear = document.createElement("button");
+  clear.textContent = "clear · esc";
+  clear.title = "clear highlight — esc";
+  clear.addEventListener("click", () => app.send({ type: "highlight_set", msg_id: null }));
+  strip.appendChild(clear);
+  bar.appendChild(strip);
+}
+
 function renderLayers(app: App): void {
   const pane = el("pane-layers");
   // Never rebuild under the user's caret (the title input).
@@ -658,14 +683,44 @@ function renderLayers(app: App): void {
       const tr = traceInfo(app);
       for (const p of layer.paths) {
         const playing = tr?.path.id === p.id;
+        const pinned = playing && !tr.peek; // a peek lights the canvas only
         const row = document.createElement("div");
-        row.className = playing ? "path-row on" : "path-row";
+        row.className = pinned ? "path-row on scrubber" : playing ? "path-row on" : "path-row";
         row.innerHTML = `<button class="play" title="play — opens the scrubber"></button><span class="id"></span><span class="title"></span><span class="hops"></span>`;
         (row.children[0] as HTMLElement).textContent = playing && tr.running ? "❚❚" : "▸";
         (row.children[1] as HTMLElement).textContent = p.id;
         (row.children[2] as HTMLElement).textContent = p.title;
         (row.children[3] as HTMLElement).textContent = `${p.steps.length} hops`;
-        row.children[0]!.addEventListener("click", () => (playing ? togglePlay(app) : app.send({ type: "trace_set", path_id: p.id })));
+        // Hold ▸ to peek; the window release in setupCanvas ends it (same as notebook.ts's path chip).
+        // Not on the pinned row's own button: it already plays/pauses that walk.
+        if (!playing) {
+          row.children[0]!.addEventListener("pointerdown", (e) => {
+            if ((e as PointerEvent).button !== 0) return;
+            beginHold(() => startPeek(app, layer.id, p.id));
+          });
+          row.children[0]!.addEventListener("pointerleave", () => abortHold(app));
+        }
+        row.children[0]!.addEventListener("click", () => {
+          if (holdFired()) return;
+          if (playing) togglePlay(app);
+          else app.send({ type: "trace_set", path_id: p.id });
+        });
+        if (pinned) {
+          const loop = document.createElement("button");
+          loop.className = tr.tr.loop ? "loop on" : "loop";
+          loop.textContent = "↻ loop";
+          loop.title = "loop playback";
+          loop.addEventListener("click", () => {
+            const live = traceInfo(app); // t at click time, not at build time
+            if (live) app.send({ type: "trace_run", running: live.tr.running, loop: !live.tr.loop, t: live.t });
+          });
+          const close = document.createElement("button");
+          close.className = "close";
+          close.textContent = "close · esc";
+          close.title = "close the walk — esc";
+          close.addEventListener("click", () => app.send({ type: "trace_set", path_id: null }));
+          row.append(loop, close, renderWalk(app, tr));
+        }
         paths.appendChild(row);
       }
     }
