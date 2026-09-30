@@ -387,7 +387,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
       const session = sessions.resolve(args.board_id);
       return text({
         head: session.history.head,
-        steps: session.historyRows(args.limit).map(({ ahead, index, ...row }) => ({ index, ...row })),
+        steps: session.historyRows(args.limit).map(({ ahead: _ahead, index, ...row }) => ({ index, ...row })),
       });
     },
   );

@@ -9,7 +9,7 @@ import { noteOwnSend } from "./notebook.js";
 import { liveMembers, pathsAffected, tiers, traceT } from "../core/layers.js";
 import type { PathBreak } from "../core/layers.js";
 import { edgeLabel, lodFor, monoPx, quantizeZoom } from "../core/lod.js";
-import type { App, Drag, Tool } from "./app.js";
+import type { App, Tool } from "./app.js";
 import { KIND_META, clampZoom, el, focusLayer, focusedLayer } from "./app.js";
 import { DRAFT_ROLES } from "../shared/types.js";
 import type { Box, CanvasState, Draft, DraftRole, EdgeEl, Layer, LayoutMap, Path, PathStep, Point, Trace } from "../shared/types.js";

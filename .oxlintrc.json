@@ -1,0 +1,12 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript"],
+  "env": { "node": true, "browser": true },
+  "ignorePatterns": ["node_modules/", "dist/", "design_handoff_inkwire/", "schema/", ".yarn/", "worktrees/"],
+  "rules": {
+    "no-unused-vars": [
+      "error",
+      { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_", "caughtErrorsIgnorePattern": "^_" }
+    ]
+  }
+}
