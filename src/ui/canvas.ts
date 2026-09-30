@@ -3,7 +3,7 @@
 // are pointer-events: none. Gestures commit ONE intent, on release.
 import { edgeEndpoints, resizeBox } from "../core/geometry.js";
 import type { Corner } from "../core/geometry.js";
-import { markCounts, nextDraftId } from "../core/drafts.js";
+import { nextDraftId } from "../core/drafts.js";
 import { nearestNodeWithin, nextNotebookId } from "../core/notebooks.js";
 import { noteOwnSend } from "./notebook.js";
 import { liveMembers, pathsAffected, tiers, traceT } from "../core/layers.js";
@@ -144,11 +144,6 @@ export function setupCanvas(app: App): void {
       app.render();
     }
     if (e.key === "Escape") {
-      if (app.pathMenu) {
-        app.pathMenu = false;
-        app.render();
-        return;
-      }
       app.sel = null;
       app.pendingFrom = null;
       app.menu = null;
@@ -173,10 +168,10 @@ export function setupCanvas(app: App): void {
       seek(app, Math.round(info.t) + (e.key === "ArrowRight" ? 1 : -1), true);
     }
   });
-  // Chip hold and track scrub both release on window: chips are rebuilt on
-  // every render, so nothing may live on the chip element.
+  // Path-row hold and track scrub both release on window: rows are rebuilt on
+  // every render, so nothing may live on the row element.
   window.addEventListener("pointermove", (e) => {
-    if (scrub) seek(app, trackT(app, e.clientX), false);
+    if (scrub) seek(app, trackT(app, e.clientY), false);
   });
   const release = () => {
     if (scrub) {
@@ -198,22 +193,6 @@ export function setupCanvas(app: App): void {
   };
   window.addEventListener("pointerup", release);
   window.addEventListener("pointercancel", release);
-  // Gotcha 1: the canvas captures the pointer on pointerdown, which would
-  // retarget the gesture away from any button inside it. Stop it at the bar —
-  // but a stopped pointerdown never reaches the window listener below, so
-  // close the menu here too, and a stopped contextmenu never reaches the
-  // host's either, so a right-click on a chip must not hit-test the world.
-  el("layerbar").addEventListener("pointerdown", (e) => {
-    e.stopPropagation();
-    if (app.menu) {
-      app.menu = null;
-      app.render();
-    }
-  });
-  el("layerbar").addEventListener("contextmenu", (e) => {
-    e.stopPropagation();
-    e.preventDefault();
-  });
   // The right-click menu (handoff "Drafts" § 4) closes on any pointerdown that
   // isn't on it — the menu's own pointerdown handler (renderMenu) stops
   // propagation, so this only ever sees the "elsewhere" case.
@@ -223,20 +202,6 @@ export function setupCanvas(app: App): void {
       app.render();
     }
   });
-  // The path picker closes on any pointerdown outside it — capture phase,
-  // because the scrubber stops pointerdown at bubble (below), so a bubble
-  // listener here would never see a click inside the scrubber but outside
-  // the menu (e.g. the track, or dismissing by clicking the title again).
-  window.addEventListener(
-    "pointerdown",
-    (e) => {
-      if (app.pathMenu && !(e.target as HTMLElement).closest(".path-menu, .row1 .pick")) {
-        app.pathMenu = false;
-        app.render();
-      }
-    },
-    true,
-  );
   window.addEventListener("keyup", (e) => {
     if (e.key === " ") {
       app.space = false;
@@ -440,7 +405,7 @@ function markVia(app: App, id: string, role: DraftRole | null): void {
   app.render();
 }
 
-/** Key for what the menu currently shows — same trick as lastScrubberPath: rebuild
+/** Key for what the menu currently shows — rebuild
  * the DOM only when this changes, so a press that straddles a server push doesn't
  * lose its click or replay the pulsein animation. */
 let lastMenuKey = "";
@@ -678,10 +643,16 @@ export function renderWorld(app: App): void {
 
   el("canvas").style.cursor = app.space ? "grabbing" : app.tool === "select" ? "default" : "crosshair";
   const info = traceInfo(app);
+  const focus = focusedLayer(app);
+  const draft = app.push?.state.drafts.find((d) => d.id === app.push?.state.active_draft);
   el("hint").textContent =
     info && !info.peek
       ? `scrubbing ${info.path.id} · ← → step a hop · esc closes`
-      : app.tool === "arrow" && app.pendingFrom
+      : focus
+        ? `focus ${focus.letter} · ${focus.title} · esc shows all`
+        : draft
+          ? `draft ${draft.id} · ${draft.title} · esc clears`
+          : app.tool === "arrow" && app.pendingFrom
         ? "now click the target node"
         : HINTS[app.tool];
 
@@ -693,7 +664,6 @@ export function renderWorld(app: App): void {
   edges.replaceChildren();
   preview.replaceChildren();
   nodes.replaceChildren();
-  renderLayerBar(app);
   if (!state) return;
 
   // Layer tiers: every element resolves to in / rim / out; CSS carries the look.
@@ -914,171 +884,7 @@ export function renderWorld(app: App): void {
     if (selected) div.appendChild(resizeHandle());
     nodes.appendChild(div);
   }
-  renderTrace(app);
   ensureLoop(app);
-}
-
-/** Chip bar + focus strip + highlight strip over the canvas. All three live on the server. */
-function renderLayerBar(app: App): void {
-  const bar = el("layerbar");
-  bar.replaceChildren();
-  const state = app.push?.state;
-  if (!state) return;
-  if (state.layers.length > 0) renderLayerChips(app, bar);
-  if (state.drafts.length > 0) renderDraftChips(app, bar);
-  const info = traceInfo(app);
-  if (info) renderScrubber(app, bar, info);
-  else {
-    lastScrubberPath = "";
-    app.pathMenu = false;
-  }
-  // The strip is suppressed with the marks themselves while a trace plays
-  // (handoff "Drafts" § "Stacking") — mutually exclusive with the scrubber above.
-  const activeDraft = !info ? (state.drafts.find((d) => d.id === state.active_draft) ?? null) : null;
-  if (activeDraft) renderDraftStrip(app, bar, activeDraft);
-  const focused = focusedLayer(app);
-  if (focused) {
-    const strip = document.createElement("div");
-    strip.className = "focus-strip";
-    strip.innerHTML = `<span class="meta"></span><span class="note"></span>`;
-    (strip.children[0] as HTMLElement).textContent = `${focused.letter} · ${liveMembers(focused, state.graph.nodes).size}`;
-    (strip.children[1] as HTMLElement).textContent = focused.note;
-    bar.appendChild(strip);
-  }
-  const hl = app.push?.session.highlight;
-  if (!hl || info) return;
-  const strip = document.createElement("div");
-  strip.className = "hl-strip";
-  strip.innerHTML = `<span class="diamond">◆</span><span class="kicker">HIGHLIGHT</span><span class="label"></span><span class="count"></span>`;
-  (strip.children[2] as HTMLElement).textContent = hl.label;
-  (strip.children[3] as HTMLElement).textContent = `${hl.nodes.length} nodes · ${hl.edges.length} edges`;
-  const clear = document.createElement("button");
-  clear.textContent = "clear · esc";
-  clear.title = "clear highlight — esc";
-  clear.addEventListener("click", () => app.send({ type: "highlight_set", msg_id: null }));
-  strip.appendChild(clear);
-  bar.appendChild(strip);
-}
-
-function renderLayerChips(app: App, bar: HTMLElement): void {
-  const state = app.push!.state;
-  const focused = focusedLayer(app);
-  const row = document.createElement("div");
-  row.className = "layer-chips";
-  const lead = document.createElement("span");
-  lead.className = "lead";
-  lead.textContent = "LAYERS";
-  row.appendChild(lead);
-  const playing = traceInfo(app)?.layer.id ?? null;
-  for (const layer of state.layers) {
-    const first = layer.paths[0];
-    const chip = document.createElement("button");
-    chip.className = "layer-chip" + (layer.id === state.focus ? " on" : "") + (layer.id === playing ? " playing" : "");
-    chip.title = layer.note + (first ? `\n\nclick = focus · hold = peek ${first.id} · ${first.title} · ▸ = open the scrubber` : "");
-    chip.innerHTML = `<span class="letter"></span><span class="title"></span><span class="count"></span>`;
-    (chip.children[0] as HTMLElement).textContent = layer.letter;
-    (chip.children[1] as HTMLElement).textContent = layer.title;
-    (chip.children[2] as HTMLElement).textContent = String(liveMembers(layer, state.graph.nodes).size);
-    chip.addEventListener("click", () => {
-      if (hold?.fired) return; // a hold that peeked is not a click
-      focusLayer(app, layer.id);
-    });
-    if (first) {
-      // Hold 230 ms → peek the first path; the window pointerup ends it.
-      chip.addEventListener("pointerdown", (e) => {
-        if (e.button !== 0) return;
-        if (hold) window.clearTimeout(hold.timer);
-        const h = { timer: 0, fired: false };
-        h.timer = window.setTimeout(() => {
-          h.fired = true;
-          peek = { layer_id: layer.id, path_id: first.id, at: Date.now() };
-          app.render();
-        }, 230);
-        hold = h;
-      });
-      chip.addEventListener("pointerleave", () => {
-        if (hold && !hold.fired) {
-          window.clearTimeout(hold.timer); // an aborted press must not peek later
-          hold = null;
-        } else if (hold?.fired) endPeek(app);
-      });
-      const seg = document.createElement("span");
-      seg.className = "paths";
-      seg.textContent = `▸ ${layer.paths.length}`;
-      seg.title = `open the scrubber on ${first.id} — stays open, no loop`;
-      seg.addEventListener("pointerdown", (e) => e.stopPropagation());
-      seg.addEventListener("click", (e) => {
-        e.stopPropagation();
-        app.send({ type: "trace_set", path_id: first.id });
-      });
-      chip.appendChild(seg);
-    }
-    row.appendChild(chip);
-  }
-  if (focused) {
-    const release = document.createElement("button");
-    release.className = "layer-release";
-    release.textContent = "show all · esc";
-    release.addEventListener("click", () => focusLayer(app, null));
-    row.appendChild(release);
-  }
-  bar.appendChild(row);
-}
-
-/** The DRAFTS chip row (handoff "Drafts" § 1): one chip per draft, counts via markCounts (never a local reimplementation). */
-function renderDraftChips(app: App, bar: HTMLElement): void {
-  const state = app.push!.state;
-  const row = document.createElement("div");
-  row.className = "draft-chips";
-  const lead = document.createElement("span");
-  lead.className = "lead";
-  lead.textContent = "DRAFTS";
-  row.appendChild(lead);
-  for (const d of state.drafts) {
-    const counts = markCounts(d, state.graph.nodes, state.graph.edges);
-    const chip = document.createElement("button");
-    chip.className = "draft-chip" + (d.id === state.active_draft ? " on" : "");
-    chip.title = d.note + "\n\nclick = activate · right-click an element to mark it";
-    chip.innerHTML = `<span class="id"></span><span class="title"></span><span class="counts"><span class="cnt"></span><span class="cnt"></span><span class="cnt"></span></span>`;
-    (chip.querySelector(".id") as HTMLElement).textContent = d.id;
-    (chip.querySelector(".title") as HTMLElement).textContent = d.title;
-    const cnts = chip.querySelectorAll<HTMLElement>(".cnt");
-    DRAFT_ROLES.forEach((role, i) => {
-      const n = counts[role];
-      cnts[i]!.textContent = String(n);
-      cnts[i]!.style.color = n === 0 ? "var(--color-neutral-500)" : roleHue(role);
-    });
-    chip.addEventListener("click", () => app.send({ type: "drafts_activate", draft_id: d.id === state.active_draft ? null : d.id }));
-    row.appendChild(chip);
-  }
-  bar.appendChild(row);
-}
-
-/** The draft strip (handoff "Drafts" § 2): shown while `draft` is active and no trace plays. */
-function renderDraftStrip(app: App, bar: HTMLElement, draft: Draft): void {
-  const state = app.push!.state;
-  const counts = markCounts(draft, state.graph.nodes, state.graph.edges);
-  const strip = document.createElement("div");
-  strip.className = "draft-strip";
-  strip.innerHTML = `<span class="kicker">▣ DRAFT</span><span class="id"></span><span class="title"></span><span class="legend"></span>`;
-  (strip.children[1] as HTMLElement).textContent = draft.id;
-  (strip.children[2] as HTMLElement).textContent = draft.title;
-  const legend = strip.children[3] as HTMLElement;
-  for (const role of DRAFT_ROLES) {
-    const n = counts[role];
-    const item = document.createElement("span");
-    item.className = "legend-item";
-    item.style.color = n === 0 ? "var(--color-neutral-500)" : roleHue(role);
-    item.innerHTML = `<i class="line-sample" data-draft="${role}"></i><span></span>`;
-    (item.children[1] as HTMLElement).textContent = `${role} ${n}`;
-    legend.appendChild(item);
-  }
-  const clear = document.createElement("button");
-  clear.textContent = "clear · esc";
-  clear.title = "clear the active draft — esc";
-  clear.addEventListener("click", () => app.send({ type: "drafts_activate", draft_id: null }));
-  strip.appendChild(clear);
-  bar.appendChild(strip);
 }
 
 // ---------------------------------------------------------------------------
@@ -1092,7 +898,7 @@ let scrub = false;
 let seekTimer: number | null = null;
 let seekT: number | null = null;
 let raf = 0;
-let lastScrubberPath = "";
+let lastK = -1;
 
 export interface TraceInfo {
   tr: Trace;
@@ -1175,15 +981,15 @@ export function endPeek(app: App): void {
   app.render();
 }
 
-/** Start a held peek from outside the layer chip bar — the notebook pane's
+/** Start a held peek — from the path row's play button in the Layers tab or the notebook pane's
  * path chip (handoff "Notebooks" § 2: hold to peek, click to play). */
 export function startPeek(app: App, layerId: string, pathId: string): void {
   peek = { layer_id: layerId, path_id: pathId, at: Date.now() };
   app.render();
 }
 
-/** Begin a 230ms hold-to-fire gesture, same shape the layer chip bar uses
- * (`hold`, above). Release always happens on the window pointerup/
+/** Begin a 230ms hold-to-fire gesture, same shape as the path row's play button
+ * in the Layers tab (`hold`, above). Release always happens on the window pointerup/
  * pointercancel registered once in setupCanvas — never on the chip's own
  * listeners, since firing typically re-renders and rebuilds the chip that
  * started the hold (this file's own note on the window listener below).
@@ -1196,6 +1002,15 @@ export function beginHold(onFire: () => void): void {
     onFire();
   }, 230);
   hold = h;
+}
+
+/** The pointer left the pressed element: an unfired hold must not peek later; a fired one ends
+ * its peek, and the window release clears `hold`. */
+export function abortHold(app: App): void {
+  if (hold && !hold.fired) {
+    window.clearTimeout(hold.timer);
+    hold = null;
+  } else if (hold?.fired) endPeek(app);
 }
 
 /** True while a beginHold gesture has fired but its window release hasn't
@@ -1214,13 +1029,16 @@ export function togglePlay(app: App): void {
   else app.send({ type: "trace_run", running: true, t: info.t >= info.nGood ? 0 : info.t });
 }
 
-/** The track position under clientX, in hops. */
-function trackT(app: App, clientX: number): number {
-  const track = document.querySelector<HTMLElement>(".scrubber .track");
-  const info = track && traceInfo(app);
-  if (!track || !info) return 0;
-  const r = track.getBoundingClientRect();
-  return Math.max(0, Math.min(1, (clientX - r.left) / r.width)) * info.n; // seek clamps to nGood
+/** The walk position under clientY, in hops: a hop row maps linearly, the node row above it to its whole number. */
+function trackT(app: App, clientY: number): number {
+  const rows = [...document.querySelectorAll<HTMLElement>(".walk .whop")].map((r) => r.getBoundingClientRect());
+  const info = rows.length && traceInfo(app);
+  if (!info) return 0;
+  if (clientY < rows[0]!.top) return 0;
+  if (clientY > rows[rows.length - 1]!.bottom) return info.n;
+  const j = rows.findIndex((r) => clientY <= r.bottom);
+  const r = rows[j]!;
+  return clientY < r.top ? j : j + (clientY - r.top) / r.height; // seek clamps to nGood
 }
 
 /** Seek and pause: patch locally at once, tell the server debounced (60 ms) or now. */
@@ -1270,13 +1088,13 @@ function ensureLoop(app: App): void {
   raf = requestAnimationFrame(frame);
 }
 
-/** Patch the walk's data-trace states, the gold front, and the scrubber from the live t. */
-function renderTrace(app: App): void {
+/** Patch the walk's data-trace states, the gold front, and the scrubber from the live t. Runs
+ * after both the world and the panel are built (main.ts `render`) because it patches both. */
+export function renderTrace(app: App): void {
   const info = traceInfo(app);
   const group = el("tracegroup");
   group.replaceChildren();
   if (!info) return;
-  const state = app.push!.state;
   const nodes = el("nodelayer");
   const edges = el("edgegroup");
   for (const id of info.onPath) {
@@ -1321,211 +1139,72 @@ function renderTrace(app: App): void {
     }
   }
 
-  // The scrubber.
-  const sc = document.querySelector<HTMLElement>(".scrubber");
-  if (!sc) return;
-  const q = <T extends HTMLElement>(sel: string) => sc.querySelector<T>(sel)!;
+  // The walk in the Layers tab (absent on another tab, or during a peek).
+  const sc = document.querySelector<HTMLElement>(".path-row.scrubber");
+  if (!sc || info.peek) return;
   const atEnd = info.t >= info.nGood;
-  q(".play").textContent = info.running ? "❚❚" : atEnd ? "↺" : "▸";
-  q(".play").title = info.running ? "pause" : atEnd ? "play again" : "play";
-  const pct = `${((info.t / info.n) * 100).toFixed(2)}%`;
-  q(".prog").style.width = pct;
-  q(".head").style.left = pct;
+  const play = sc.querySelector<HTMLElement>(".play")!;
+  play.textContent = info.running ? "❚❚" : atEnd ? "↺" : "▸";
+  play.title = info.running ? "pause" : atEnd ? "play again" : "play";
   const k = Math.floor(info.t);
   const last = info.nodeIds.length - 1; // the last playable node: below n on a broken path
   const curNode = Math.min(last, k);
-  for (const tick of sc.querySelectorAll<HTMLElement>(".tick")) {
-    const j = Number(tick.dataset.j);
-    tick.dataset.on = j <= k ? "reached" : "";
-    tick.classList.toggle("cur", j === curNode);
+  for (const node of sc.querySelectorAll<HTMLElement>(".wnode")) {
+    const j = Number(node.dataset.j);
+    node.dataset.on = j <= k ? "reached" : "";
+    node.classList.toggle("cur", j === curNode);
   }
-  // Label widths follow the live track width (the aside can resize it without a rebuild).
-  // At ≥120px a hop (track-wrap scrolls sideways instead of squeezing) every label fits, so
-  // there is no dense fallback any more — just the wide-label-near-an-end pin below.
-  const track = q(".track");
-  const slot = 100 / info.n;
-  // A wide label centred near an end of the track pins to that end instead of overhanging it.
-  const pin = (el: HTMLElement, centrePct: number, widthPct: number) => {
-    const half = widthPct / 2;
-    const at = centrePct - half < 0 ? "start" : centrePct + half > 100 ? "end" : "mid";
-    el.style.left = at === "start" ? "0%" : at === "end" ? "100%" : `${centrePct.toFixed(2)}%`;
-    el.style.transform = `translateX(${at === "start" ? "0" : at === "end" ? "-100%" : "-50%"})`;
-  };
-  for (const label of sc.querySelectorAll<HTMLElement>(".tick-label")) {
-    const j = Number(label.dataset.j);
-    const cur = j === curNode;
-    const end = j === 0 || j === info.n;
-    label.dataset.on = cur ? "cur" : j <= k ? "reached" : "";
-    const w = end ? slot * 0.46 : slot * 0.92;
-    label.style.maxWidth = cur && !end ? `calc(${w.toFixed(1)}% + 8px)` : `${w.toFixed(1)}%`; // + its padding
-    pin(label, j * slot, w);
-  }
-  for (const hop of sc.querySelectorAll<HTMLElement>(".hop")) {
+  for (const hop of sc.querySelectorAll<HTMLElement>(".whop")) {
     const j = Number(hop.dataset.j);
     hop.classList.toggle("lit", !hop.classList.contains("broken") && (j < k || (j === info.i && info.frac >= 0.5)));
-    const w = slot * 0.88;
-    hop.style.maxWidth = `${w.toFixed(1)}%`;
-    pin(hop, (j + 0.5) * slot, w);
+    hop.classList.toggle("cur", j === info.i);
+    hop.style.setProperty("--frac", String(j < k ? 1 : j === info.i ? info.frac : 0));
   }
-  // Keep the head in view: the wrap is rebuilt on every render, so its scrollLeft resets to
-  // 0 and a paused scrub would snap back to hop 0 on the next push. Never during a drag —
-  // that would fight the pointer.
-  if (!scrub) {
-    const x = (info.t / info.n) * track.clientWidth;
-    const w = track.parentElement!;
-    if (x < w.scrollLeft + 60 || x > w.scrollLeft + w.clientWidth - 60) w.scrollLeft = x - w.clientWidth / 2;
-  }
-  const st = info.path.steps[info.i]!;
-  const edge = state.graph.edges.find((e) => e.id === st.edge);
-  const clip = (s: string) => (s.length > 28 ? `${s.slice(0, 27)}…` : s);
-  const label = (id: string) => clip(state.graph.nodes.find((n) => n.id === id)?.label ?? id);
-  q(".cap .kicker").textContent = `HOP ${info.i + 1}/${info.n} · ${st.edge}` + (edge ? ` · ${label(edge.from)} → ${label(edge.to)}` : "");
-  q(".cap .text").textContent =
-    info.broken && info.i === info.broken.hop - 1
-      ? `hop ${info.broken.hop} is broken — ${st.edge} ${info.broken.reason === "edge pruned" ? "no longer exists" : "leaves the layer"}`
-      : st.caption || "no caption on this hop";
+  // Follow the head, but never while dragging — that would fight the pointer.
+  if (k !== lastK && !scrub) sc.querySelector(".wnode.cur")?.scrollIntoView({ block: "nearest" });
+  lastK = k;
   // The composer's step chip reads the same clock, so what the human sees is what send() puts in the reply.
   const chip = document.querySelector<HTMLElement>('#ctxrow [data-key="trace"] span');
   if (chip && !info.peek) chip.textContent = `${info.path.id} · hop ${Math.max(1, Math.ceil(info.t))}/${info.n}`;
 }
 
-/** The scrubber header's path picker (only `paths[0]` was reachable from the canvas
- * before this): reuses the right-click menu's box/hover CSS, one row per path in
- * the same layer, picking one starts it at 0 running — same as every other play
- * affordance (▸ N chip segment, chip-hold peek). */
-function pathMenu(app: App, info: TraceInfo): HTMLElement {
-  const menu = document.createElement("div");
-  menu.className = "ctx-menu path-menu";
-  const header = document.createElement("div");
-  header.className = "header";
-  header.innerHTML = `<span class="kind"></span><span class="label"></span>`;
-  (header.children[0] as HTMLElement).textContent = `PATHS · LAYER ${info.layer.letter}`;
-  (header.children[1] as HTMLElement).textContent = info.layer.title;
-  menu.appendChild(header);
-  for (const p of info.layer.paths) {
-    const row = document.createElement("div");
-    row.className = "role-row";
-    row.innerHTML = `<span class="name"></span><span class="hops"></span><span class="check"></span>`;
-    (row.children[0] as HTMLElement).textContent = `${p.id} · ${p.title}`;
-    (row.children[1] as HTMLElement).textContent = `${p.steps.length} hops`;
-    (row.children[2] as HTMLElement).textContent = p.id === info.path.id ? "✓" : "";
-    row.addEventListener("click", () => {
-      app.pathMenu = false;
-      app.send({ type: "trace_set", path_id: p.id });
-    });
-    menu.appendChild(row);
-  }
-  return menu;
-}
-
-/** The timeline across the top of the canvas: three rows, built once per render and patched by renderTrace. */
-function renderScrubber(app: App, bar: HTMLElement, info: TraceInfo): void {
+/** The vertical walk under a pinned path row in the Layers tab: built per render, patched by renderTrace. */
+export function renderWalk(app: App, info: TraceInfo): HTMLElement {
   const state = app.push!.state;
-  const { tr } = info;
-  const pinned = !info.peek;
-  const sc = document.createElement("div");
-  sc.className = "scrubber" + (info.path.id !== lastScrubberPath ? " mount" : "") + (pinned ? " pinned" : "");
-  lastScrubberPath = info.path.id;
-  sc.addEventListener("pointerdown", (e) => e.stopPropagation());
-  // #canvas turns wheel into zoom (setupCanvas, above) and preventDefault()s it, which would
-  // eat the scroll of anything scrollable in here — the track and the path picker both.
-  sc.addEventListener("wheel", (e) => e.stopPropagation());
-
-  const row = document.createElement("div");
-  row.className = "row1";
-  row.innerHTML = `<button class="play"></button><span class="kicker">PATH</span><span class="ref"></span><span class="title"></span><span class="count"></span><span class="note"></span>`;
-  row.querySelector(".play")!.addEventListener("click", () => togglePlay(app));
-  (row.children[2] as HTMLElement).textContent = `${info.layer.letter} · ${info.path.id}`;
-  (row.children[3] as HTMLElement).textContent = info.path.title;
-  (row.children[4] as HTMLElement).textContent = `${info.n} hops · ${info.nodeIds.length} nodes`;
-  (row.children[5] as HTMLElement).textContent = pinned ? "drag to scrub · ← → step" : "peeking · ↵ keeps it open · release to stop";
-  if (pinned) {
-    const loop = document.createElement("button");
-    loop.className = tr.loop ? "loop on" : "loop";
-    loop.textContent = "↻ loop";
-    loop.title = "loop playback";
-    loop.addEventListener("click", () => {
-      const live = traceInfo(app); // t at click time, not at build time
-      if (live) app.send({ type: "trace_run", running: live.tr.running, loop: !live.tr.loop, t: live.t });
-    });
-    const close = document.createElement("button");
-    close.className = "close";
-    close.textContent = "close · esc";
-    close.title = "close the scrubber — esc";
-    close.addEventListener("click", () => app.send({ type: "trace_set", path_id: null }));
-    row.append(loop, close);
-
-    // The header's own children are read by index above (row.children[2..5]),
-    // so this only marks two of them clickable and appends — never inserts.
-    const ref = row.children[2] as HTMLElement;
-    const title = row.children[3] as HTMLElement;
-    ref.classList.add("pick");
-    title.classList.add("pick");
-    const openPicker = () => {
-      app.pathMenu = !app.pathMenu;
-      app.render();
-    };
-    ref.addEventListener("click", openPicker);
-    title.addEventListener("click", openPicker);
-
-    if (app.pathMenu) row.appendChild(pathMenu(app, info));
-  }
-
-  const track = document.createElement("div");
-  track.className = "track";
-  info.path.steps.forEach((st, j) => {
-    const edge = state.graph.edges.find((e) => e.id === st.edge);
-    const hop = document.createElement("span");
-    hop.className = "hop" + (info.broken && j === info.broken.hop - 1 ? " broken" : "");
+  lastK = -1; // a fresh mount scrolls its current row into view
+  const nodeLabels = new Map(state.graph.nodes.map((n) => [n.id, n.label]));
+  const walk = document.createElement("div");
+  walk.className = "walk";
+  walk.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault(); // no text selection while scrubbing
+    scrub = true;
+    seek(app, trackT(app, e.clientY), false);
+  });
+  for (let j = 0; j <= info.n; j++) {
+    const id = info.nodeIds[j] ?? "";
+    const label = nodeLabels.get(id) ?? (id || "—");
+    const node = document.createElement("div");
+    node.className = "wnode";
+    node.dataset.j = String(j);
+    node.innerHTML = `<i class="tick"></i><span class="label"></span>`;
+    (node.children[1] as HTMLElement).textContent = label;
+    node.title = `${id} · ${label}`;
+    walk.appendChild(node);
+    if (j === info.n) break;
+    const st = info.path.steps[j]!;
+    const broken = info.broken && j === info.broken.hop - 1;
+    const hop = document.createElement("div");
+    hop.className = "whop" + (broken ? " broken" : "");
     hop.dataset.j = String(j);
-    hop.textContent = edge?.label || st.edge;
-    hop.title = `${st.edge} · ${edge?.label ?? ""}`;
-    track.appendChild(hop);
-  });
-  const base = document.createElement("div");
-  base.className = "base";
-  const prog = document.createElement("div");
-  prog.className = "prog";
-  track.append(base, prog);
-  info.nodeIds.forEach((id, j) => {
-    const node = state.graph.nodes.find((n) => n.id === id);
-    const left = `${((j / info.n) * 100).toFixed(2)}%`;
-    const tick = document.createElement("div");
-    tick.className = "tick";
-    tick.dataset.j = String(j);
-    tick.style.left = left;
-    const label = document.createElement("span");
-    label.className = "tick-label";
-    label.dataset.j = String(j);
-    label.textContent = node?.label ?? id;
-    label.title = `${id} · ${node?.label ?? ""}`;
-    track.append(tick, label);
-  });
-  const head = document.createElement("div");
-  head.className = "head";
-  track.appendChild(head);
-  if (pinned) {
-    track.addEventListener("pointerdown", (e) => {
-      e.stopPropagation();
-      scrub = true;
-      seek(app, trackT(app, e.clientX), false);
-    });
+    hop.innerHTML = `<span class="edge"></span><span class="cap"></span>`;
+    (hop.children[0] as HTMLElement).textContent = (info.steps[j]?.edge.label ?? "") || st.edge;
+    (hop.children[1] as HTMLElement).textContent = broken
+      ? `hop ${info.broken!.hop} is broken — ${st.edge} ${info.broken!.reason === "edge pruned" ? "no longer exists" : "leaves the layer"}`
+      : st.caption || "no caption on this hop";
+    walk.appendChild(hop);
   }
-
-  // Wrapped so the track scrolls sideways at ~120px a hop instead of squeezing into the box.
-  const wrap = document.createElement("div");
-  wrap.className = "track-wrap";
-  // 6px shy of the wrap: the end tick (11px when current) and the head both centre on
-  // 100%, and their halves would otherwise overflow into a phantom scrollbar on a short path.
-  track.style.width = `max(calc(100% - 6px), ${info.n * 120}px)`; // ≥120px a hop: every label fits
-  wrap.appendChild(track);
-
-  const cap = document.createElement("div");
-  cap.className = "cap";
-  cap.innerHTML = `<span class="kicker"></span><span class="text"></span>`;
-
-  sc.append(row, wrap, cap);
-  bar.appendChild(sc);
+  return walk;
 }
 
 function resizeHandle(): DocumentFragment {

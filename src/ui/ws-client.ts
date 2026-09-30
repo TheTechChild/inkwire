@@ -2,6 +2,7 @@
 import { captureBoard } from "./capture.js";
 import type { App, StatePush } from "./app.js";
 import { isServerMessage } from "./app.js";
+import { applyPanel, setTab } from "./panel.js";
 import type { ClientIntent } from "../shared/protocol.js";
 
 export function connectWs(app: App): void {
@@ -59,7 +60,12 @@ export function connectWs(app: App): void {
         const hl = msg.session.highlight?.msg_id ?? null;
         if (hl !== lastHighlight) {
           lastHighlight = hl;
-          if (hl) app.sel = null;
+          if (hl) {
+            app.sel = null;
+            // The strip sits above the tabs, so any tab shows it. Prefs stay as the human left them.
+            app.panel.open = true;
+            applyPanel(app);
+          }
         }
         // A trace opened or closed (a chip, paths_play, a session_send): it is a
         // stronger pointer than the selection, and any local seek is stale.
@@ -68,6 +74,15 @@ export function connectWs(app: App): void {
           lastTrace = tr?.path_id ?? null;
           app.sel = null;
           app.traceOverride = null;
+          // The walk lives in the Layers tab: show it, unless the Session thread
+          // already shows the path chip as active. Prefs stay as the human left them.
+          if (tr) {
+            if (app.tab !== "session") setTab(app, "layers");
+            if (!app.panel.open) {
+              app.panel.open = true;
+              applyPanel(app);
+            }
+          }
         }
         // The push echoes this panel's seek: the override has done its job.
         const ov = app.traceOverride;

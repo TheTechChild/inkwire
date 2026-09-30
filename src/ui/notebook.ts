@@ -4,7 +4,7 @@
 // against the live push state — refs are never rewritten by anything here.
 import { markCounts } from "../core/drafts.js";
 import { nextNotebookId, parseNotebook, toggleTaskLine } from "../core/notebooks.js";
-import { beginHold, clearNbHover, holdFired, nbHoverRef, roleHue, setNbHover, startPeek } from "./canvas.js";
+import { abortHold, beginHold, clearNbHover, holdFired, nbHoverRef, roleHue, setNbHover, startPeek } from "./canvas.js";
 import type { App } from "./app.js";
 import { el, focusLayer } from "./app.js";
 import { bindResizer, clampNbWidth, savePanelPrefs, toast } from "./panel.js";
@@ -360,7 +360,7 @@ function buildChip(app: App, state: CanvasState, ref: string): HTMLButtonElement
   } else if (res.kind === "path") {
     chip.title = `hold to peek · click to play ${ref} · ${res.hops} hops`;
     // Hold releases on window (canvas.ts's beginHold/holdFired), same as the
-    // layer chip bar — startPeek's render rebuilds this very chip, so a
+    // path row's play button in the Layers tab — startPeek's render rebuilds this very chip, so a
     // pointerup/pointerleave bound to it would never fire (finding: peek
     // never ends). A quick tap (hold never fires) reaches here as a native
     // click instead, and plays the path.
@@ -368,6 +368,7 @@ function buildChip(app: App, state: CanvasState, ref: string): HTMLButtonElement
       e.stopPropagation();
       beginHold(() => startPeek(app, res.layerId!, ref));
     });
+    chip.addEventListener("pointerleave", () => abortHold(app));
     chip.addEventListener("click", () => {
       if (holdFired()) return;
       app.send({ type: "trace_set", path_id: ref });

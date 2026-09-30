@@ -62,8 +62,6 @@ export interface App {
    * canvas-only. Optional so main.ts (outside this package) need not seed it — canvas.ts
    * treats absent the same as null. "empty" is the empty-space menu (import notes). */
   menu?: { x: number; y: number; type: "node" | "edge"; id: string } | { x: number; y: number; type: "empty" } | null;
-  /** The scrubber's path picker: panel-local, open only while the scrubber is pinned. */
-  pathMenu?: boolean;
   connected: boolean;
   send: (intent: ClientIntent) => void;
   render: () => void;
