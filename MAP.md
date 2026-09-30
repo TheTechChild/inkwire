@@ -207,9 +207,9 @@ src/server/ws.ts:96           handle
 src/server/ws.ts:103          case "add_node":
 src/server/ws.ts:203          push
 src/server/ws.ts:224          requestCapture
-src/ui/ws-client.ts:7         connectWs
-src/ui/ws-client.ts:99        answerCapture
-src/ui/app.ts:91              isServerMessage
+src/ui/ws-client.ts:8         connectWs
+src/ui/ws-client.ts:114       answerCapture
+src/ui/app.ts:89              isServerMessage
 ```
 
 A rejected intent triggers a re-sync push to that client. On board delete the socket closes with
@@ -255,17 +255,19 @@ shared UI state.
 
 ```
 src/ui/main.ts:17           boot
-src/ui/main.ts:64           showBoardPicker
-src/ui/app.ts:73            KIND_META
-src/ui/app.ts:106           focusLayer
+src/ui/main.ts:65           showBoardPicker
+src/ui/app.ts:71            KIND_META
+src/ui/app.ts:104           focusLayer
 src/ui/canvas.ts:57         setupCanvas
-src/ui/canvas.ts:663        renderWorld
-src/ui/canvas.ts:600        hitNode
-src/ui/canvas.ts:654        deleteSelection
+src/ui/canvas.ts:628        renderWorld
+src/ui/canvas.ts:565        hitNode
+src/ui/canvas.ts:619        deleteSelection
 src/ui/panel.ts:171         setupPanel
-src/ui/panel.ts:324         renderPanel
-src/ui/panel.ts:350         renderInspector
-src/ui/panel.ts:487         renderHistory
+src/ui/panel.ts:329         renderPanel
+src/ui/panel.ts:356         renderInspector
+src/ui/panel.ts:599         renderAsideStrip
+src/ui/panel.ts:617         renderLayers
+src/ui/panel.ts:493         renderHistory
 src/ui/panel.ts:103         loadPanelPrefs
 ```
 
@@ -358,19 +360,20 @@ src/server/layers.ts:58    updateLayer
 src/server/layers.ts:82    deleteLayer
 src/server/session.ts:234  updateLayers
 src/server/session.ts:245  setFocus
-src/ui/canvas.ts:922       renderLayerBar
-src/ui/panel.ts:592        renderLayers
+src/ui/panel.ts:617        renderLayers
 ```
 
 Beware: layer members are never pruned when a node is deleted; `liveMembers` filters at read time.
 Scoped reads (`get_state` with a scope) go through `scopeState`. Screenshots ignore focus.
+
+Beware: no panel draws over the graph. Layer, draft and scrubber UI live in the aside; focus and draft state show in the canvas hint line; the canvas shows only nodes, edges, ink and the gold front (product decision, 2026-09-30).
 
 Tests: `tests/core/layers.test.ts`.
 
 ## Paths and trace
 
 A path is an ordered walk over a layer's edges with one caption per hop. `openTrace` puts it in the
-session's trace, and the panel plays it with a scrubber. The `trace-path` skill writes one.
+session's trace, and the panel plays it as a vertical walk in the Layers tab (`renderLayers` mounts `renderWalk`). The `trace-path` skill writes one.
 
 ```
 src/core/layers.ts:139    nextPathId
@@ -383,15 +386,15 @@ src/server/layers.ts:178  getPath
 src/server/layers.ts:208  openTrace
 src/server/session.ts:326 setTrace
 src/server/session.ts:333 updateTrace
-src/ui/canvas.ts:1122     effectiveTrace
-src/ui/canvas.ts:1274     renderTrace
-src/ui/canvas.ts:1422     renderScrubber
+src/ui/canvas.ts:928      effectiveTrace
+src/ui/canvas.ts:1093     renderTrace
+src/ui/canvas.ts:1172     renderWalk
 ```
 
 The trace rides in `SessionPush`. The WS intents are `trace_set`, `trace_seek`, `trace_run`.
 
 Beware: a delete or remove breaks paths (collateral); `pathsAffected` reports it. Only delete and
-remove do this. A peek (holding a layer chip) is panel-local and never sent to the server.
+remove do this. A peek (holding a path row's play button) is panel-local and never sent to the server.
 
 Tests: `tests/core/layers.test.ts`.
 
@@ -408,9 +411,7 @@ src/server/drafts.ts:42    updateDraft
 src/server/drafts.ts:101   markElement
 src/server/session.ts:258  updateDrafts
 src/server/session.ts:266  setActiveDraft
-src/ui/canvas.ts:1029      renderDraftChips
-src/ui/canvas.ts:1058      renderDraftStrip
-src/ui/panel.ts:690        renderDrafts
+src/ui/panel.ts:745        renderDrafts
 ```
 
 Beware: `active_draft` is never persisted. The error hue is shared between draft roles and lint. Draft
