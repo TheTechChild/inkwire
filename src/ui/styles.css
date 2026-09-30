@@ -446,7 +446,7 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-di
 .scrubber .loop.on { background: var(--color-signal); color: var(--color-bg); border-color: var(--color-signal); }
 .scrubber .track-wrap { overflow-x: auto; overflow-y: hidden; margin: 0 6px; }
 .scrubber .track { position: relative; height: 54px; touch-action: none; }
-.scrubber.pinned .track { cursor: ew-resize; }
+.scrubber.pinned .track { cursor: ew-resize; user-select: none; }
 .scrubber .hop {
   position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.02em; color: var(--color-neutral-500);
