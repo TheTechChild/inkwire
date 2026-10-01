@@ -170,14 +170,14 @@ src/server/mcp.ts:305   bind_code
 src/server/mcp.ts:368   lint
 src/server/mcp.ts:384   history.get
 src/server/mcp.ts:396   layers.list
-src/server/mcp.ts:458   paths.create
-src/server/mcp.ts:503   drafts.create
-src/server/mcp.ts:549   notebooks.create
+src/server/mcp.ts:459   paths.create
+src/server/mcp.ts:514   drafts.create
+src/server/mcp.ts:560   notebooks.create
 ```
 
 Families, in file order: `session_*` (102, 109), `boards_*` (142-172), `canvas_*` (199-368),
-`history_get` (384), `layers_*` (396-442), `paths_*` (458-492), `drafts_*` (503-539),
-`notebooks_*` (549-591).
+`history_get` (384), `layers_*` (396-442), `paths_*` (459-499), `drafts_*` (514-550),
+`notebooks_*` (560-602).
 
 Beware: tool names use underscores (`canvas_add_node`) because the tool-name charset forbids dots.
 The spec's dotted names appear in descriptions only. The `toolArgs` keys are still dotted.
@@ -230,10 +230,10 @@ JSON Schema is generated from it into `schema/canvas-state.generated.json` and
 ```
 src/shared/schemas.ts:26      nodeSchema
 src/shared/schemas.ts:36      edgeSchema
-src/shared/schemas.ts:94      layerSchema
-src/shared/schemas.ts:150     canvasStateSchema
-src/shared/schemas.ts:189     toolArgs
-src/shared/schemas.ts:361     ToolName
+src/shared/schemas.ts:95      layerSchema
+src/shared/schemas.ts:151     canvasStateSchema
+src/shared/schemas.ts:190     toolArgs
+src/shared/schemas.ts:363     ToolName
 src/shared/types.ts:10        NODE_KINDS
 src/scripts/gen-schemas.ts:11 toJSONSchema
 ```
@@ -382,8 +382,8 @@ src/core/layers.ts:182    resolveNodesToSteps
 src/core/layers.ts:210    pathsAffected
 src/core/layers.ts:244    traceT
 src/server/layers.ts:108  createPath
-src/server/layers.ts:178  getPath
-src/server/layers.ts:208  openTrace
+src/server/layers.ts:196  getPath
+src/server/layers.ts:227  openTrace
 src/server/session.ts:326 setTrace
 src/server/session.ts:333 updateTrace
 src/ui/canvas.ts:928      effectiveTrace
@@ -391,7 +391,7 @@ src/ui/canvas.ts:1093     renderTrace
 src/ui/canvas.ts:1172     renderWalk
 ```
 
-The trace rides in `SessionPush`. The WS intents are `trace_set`, `trace_seek`, `trace_run`.
+Each step with a ref carries a server-written `ref_hash`; `paths_update` takes `verify` to restamp hops (see Code binding and lint). The trace rides in `SessionPush`. The WS intents are `trace_set`, `trace_seek`, `trace_run`.
 
 Beware: a delete or remove breaks paths (collateral); `pathsAffected` reports it. Only delete and
 remove do this. A peek (holding a path row's play button) is panel-local and never sent to the server.
@@ -452,13 +452,22 @@ Tests: `tests/core/notebooks.test.ts`.
 `INKWIRE_PROJECT_ROOT`. `lintBoard` reports findings for `canvas_lint`.
 
 ```
-src/server/bindcode.ts:12   splitRef
-src/server/bindcode.ts:20   validateRef
+src/server/bindcode.ts:16   splitRef
+src/server/bindcode.ts:38   validateRef
+src/server/bindcode.ts:54   stampRef
+src/server/bindcode.ts:63   refStatus
+src/core/symbols.ts:19      findSymbol
+src/core/symbols.ts:66      blockText
 src/server/lint.ts:11       LintFinding
-src/server/lint.ts:29       lintBoard
+src/server/lint.ts:33       lintPath
+src/server/lint.ts:66       lintBoard
 ```
 
-Checks include `note_node`, `ref_missing`, `symbol_missing`, `unbound`, `path_broken`, `draft_mark_gone` and `notebook_ref_gone`. Add a check inside `lintBoard`.
+Checks include `note_node`, `ref_missing`, `symbol_missing`, `unbound`, `path_broken`, `path_ref_changed`, `path_ref_unverified`, `path_hop_unbound`, `draft_mark_gone` and `notebook_ref_gone`. Add a check inside `lintBoard`; the path checks live in `lintPath`, which `paths_play` also calls.
+
+`findSymbol` (pure) finds the declaration line and an indentation-plus-bracket-depth block end; `validateRef` returns `line` and `end`; `stampRef` returns the `blockText` hash for a ref (null when the symbol is gone). `refStatus` is the one step check (`ok`, `ref_missing`, `symbol_missing`, `changed`, `unverified`) shared by lint, `paths_get` and `paths_play`.
+
+Beware: a path step's `ref_hash` is written by the server, never a tool argument. An unchanged step (same edge, caption and ref) keeps its old stamp on `paths_update`; a new or changed step is stamped fresh. `verify: [hop]` is the only way to restamp without a change. A ref whose symbol is not found gets no stamp.
 
 ## Board files and Mermaid
 
