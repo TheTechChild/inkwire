@@ -564,6 +564,12 @@
                           "string",
                           "null"
                         ]
+                      },
+                      "ref_hash": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       }
                     },
                     "required": [
@@ -675,6 +681,12 @@
                       "maxLength": 160
                     },
                     "ref": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "ref_hash": {
                       "type": [
                         "string",
                         "null"

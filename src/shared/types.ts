@@ -101,6 +101,7 @@ export interface PathStep {
   edge: string; // edge id, internal to the layer
   caption: string; // "" when absent; cap 160 chars
   ref: string | null; // optional "path/to/file.ts:symbol", validated like bind_code
+  ref_hash?: string | null; // server-written hash of the ref's symbol block when last verified; never a tool argument
 }
 
 /** An ordering over a layer, never a second copy of the graph: edge ids only.

@@ -511,12 +511,19 @@ describe("paths", () => {
       condition: null,
       caption: "in",
       ref: null,
+      ref_hash: null,
+      line: null,
+      end: null,
+      ref_status: null,
     });
     expect(got.hops[1]).toMatchObject({ index: 2, edge: qr, label: null, caption: "" });
   });
 
   it("play pins the trace: running from 0, or paused at hop (clamped); a highlight closes it", async () => {
-    expect((await call("paths_play", { path_id: "P1" })).json()).toEqual({ ok: true });
+    expect((await call("paths_play", { path_id: "P1" })).json()).toEqual({
+      ok: true,
+      warnings: ["path P1 hop 2: no ref on the hop or on either node"],
+    });
     expect(session().trace).toMatchObject({ layer_id: layerId, path_id: "P1", running: true, loop: false, t: 0 });
     await call("paths_play", { path_id: "P1", hop: 2 });
     expect(session().trace).toMatchObject({ path_id: "P1", running: false, t: 2 });
@@ -550,6 +557,8 @@ describe("paths", () => {
     let { findings } = (await call("canvas_lint")).json();
     expect(findings.filter((f: { target_id: string }) => f.target_id === "P2")).toEqual([
       { target_id: "P2", check: "path_broken", level: "warn", message: `path P2 hop 2: ${rs} leaves layer A` },
+      { target_id: "P2", check: "path_hop_unbound", level: "warn", message: "path P2 hop 1: no ref on the hop or on either node" },
+      { target_id: "P2", check: "path_hop_unbound", level: "warn", message: "path P2 hop 2: no ref on the hop or on either node" },
     ]);
     expect(findings.filter((f: { target_id: string }) => f.target_id === "P3")).toEqual([
       { target_id: "P3", check: "path_symbol_missing", level: "warn", message: "path P3 hop 1: symbol gone" },
@@ -567,6 +576,7 @@ describe("paths", () => {
     expect(findings.find((f: { target_id: string }) => f.target_id === "P1")).toEqual({
       target_id: "P1", check: "path_broken", level: "warn", message: "path P1 hop 2 references a pruned edge",
     });
+    expect((await call("paths_play", { path_id: "P1" })).json().warnings).toContain("path P1 hop 2 references a pruned edge");
     // The path survives; get gives nulls for the pruned hop.
     const got = (await call("paths_get", { path_id: "P1" })).json();
     expect(got.hops[1]).toMatchObject({ edge: qr, from: null, to: null, label: null });
@@ -576,7 +586,7 @@ describe("paths", () => {
     await call("layers_focus", { layer_id: layerId });
     const scoped = await getState();
     expect(scoped.scope.paths.map((x: { id: string }) => x.id)).toEqual(["P1", "P2", "P3"]);
-    expect(scoped.scope.paths[0].steps[0]).toEqual({ edge: pq, caption: "in", ref: null });
+    expect(scoped.scope.paths[0].steps[0]).toEqual({ edge: pq, caption: "in", ref: null, ref_hash: null });
     await call("layers_focus", { layer_id: null });
   });
 
@@ -590,6 +600,136 @@ describe("paths", () => {
     await call("layers_delete", { layer_id: layerId });
     expect(session().trace).toBeNull();
     expect((await call("layers_list")).json().layers).toEqual([]);
+  });
+});
+
+describe("ref stamps", () => {
+  const file = () => path.join(projectRoot, "stamp.ts");
+  const src = (body: string) => `export function work() {\n${body}\n}\nexport function other() {\n  return 1;\n}\n`;
+  let a: string;
+  let b: string;
+  let c: string;
+  let ab: string;
+  let bc: string;
+  let layer: string;
+  const lint = async (id: string) =>
+    (await call("canvas_lint")).json().findings.filter((f: { target_id: string; check: string }) => f.target_id === id && f.check !== "path_hop_unbound");
+
+  beforeAll(async () => {
+    writeFileSync(file(), src("  return 1;"));
+    [a, b, c] = [
+      (await call("canvas_add_node", { label: "sa", kind: "entry" })).json().ids[0],
+      (await call("canvas_add_node", { label: "sb", kind: "service" })).json().ids[0],
+      (await call("canvas_add_node", { label: "sc", kind: "store" })).json().ids[0],
+    ];
+    ab = (await call("canvas_add_edge", { from: a, to: b })).json().ids[0];
+    bc = (await call("canvas_add_edge", { from: b, to: c })).json().ids[0];
+    layer = (await call("layers_create", { node_ids: [a, b, c], title: "stamps" })).json().layer_id;
+  });
+
+  it("bind_code returns line and end; get no longer matches getPath", async () => {
+    writeFileSync(path.join(projectRoot, "only.ts"), "export function getPath() {\n  return 1;\n}\n");
+    const ok = (await call("canvas_bind_code", { node_id: a, ref: "only.ts:getPath" })).json();
+    expect(ok).toMatchObject({ symbol_found: true, line: 1, end: 3 });
+    const no = (await call("canvas_bind_code", { node_id: a, ref: "only.ts:get" })).json();
+    expect(no).toMatchObject({ symbol_found: false, line: null, end: null });
+  });
+
+  it("create stamps the hop; a body edit flags it, a re-indent does not; update keeps and verify clears the flag", async () => {
+    const out = (await call("paths_create", {
+      layer_id: layer,
+      title: "stamped",
+      steps: [{ edge: ab, caption: "one", ref: "stamp.ts:work" }, { edge: bc, caption: "two", ref: "stamp.ts:other" }],
+    })).json();
+    const id = out.path_id;
+    expect(await lint(id)).toEqual([]);
+    const got = (await call("paths_get", { path_id: id })).json();
+    expect(got.hops[0]).toMatchObject({ line: 1, end: 3, ref_status: "ok" });
+
+    writeFileSync(file(), src("      return 1;")); // re-indent only
+    expect(await lint(id)).toEqual([]);
+
+    writeFileSync(file(), src("  return 2;")); // real edit to work; other is untouched
+    const flagged = await lint(id);
+    expect(flagged).toEqual([
+      { target_id: id, check: "path_ref_changed", level: "warn", message: `path ${id} hop 1: stamp.ts:work (line 1) changed since the hop was verified` },
+    ]);
+    expect((await call("paths_get", { path_id: id })).json().hops[0].ref_status).toBe("changed");
+    expect((await call("paths_play", { path_id: id })).json().warnings).toEqual([flagged[0].message]);
+
+    // Changing hop 2 keeps hop 1's stale flag.
+    await call("paths_update", { path_id: id, steps: [{ edge: ab, caption: "one", ref: "stamp.ts:work" }, { edge: bc, caption: "two!", ref: "stamp.ts:other" }] });
+    expect((await lint(id)).map((f: { message: string }) => f.message)).toEqual([flagged[0].message]);
+
+    // verify on a hop with no ref fails.
+    const noRef = await call("paths_update", { path_id: id, steps: [{ edge: ab, caption: "one", ref: "stamp.ts:work" }, { edge: bc, caption: "two!" }], verify: [2] });
+    expect(noRef.res.isError).toBe(true);
+    expect(noRef.text).toContain("hop 2 has no ref to verify");
+    const range = await call("paths_update", { path_id: id, verify: [9] });
+    expect(range.text).toContain("hop 9 is out of range");
+
+    expect((await call("paths_update", { path_id: id, verify: [1] })).json()).toEqual({ path_id: id, hops: 2 });
+    expect(await lint(id)).toEqual([]);
+  });
+
+  it("a stored step with no ref_hash is never verified; a hop with no ref anywhere is unbound", async () => {
+    const id = (await call("paths_create", { layer_id: layer, title: "legacy", steps: [{ edge: ab, ref: "stamp.ts:work" }, { edge: bc }] })).json().path_id;
+    const s = sessions.open(boardId);
+    s.updateLayers("ai", "legacy", (ls) =>
+      ls.map((l) => ({ ...l, paths: l.paths.map((p) => (p.id === id ? { ...p, steps: p.steps.map(({ ref_hash: _h, ...rest }) => rest) } : p)) })),
+    );
+    const { findings } = (await call("canvas_lint")).json();
+    const mine = findings.filter((f: { target_id: string }) => f.target_id === id).map((f: { check: string; message: string }) => [f.check, f.message]);
+    expect(mine).toEqual([
+      ["path_ref_unverified", `path ${id} hop 1: stamp.ts:work (line 1) was never verified`],
+      ["path_hop_unbound", `path ${id} hop 2: no ref on the hop or on either node`],
+    ]);
+  });
+
+  it("a hop between two endpoint-only nodes is not unbound", async () => {
+    const [x, y] = [
+      (await call("canvas_add_node", { label: "ex", kind: "entry" })).json().ids[0],
+      (await call("canvas_add_node", { label: "ey", kind: "service" })).json().ids[0],
+    ];
+    await call("canvas_bind_code", { node_id: x, endpoint: "GET /x" });
+    await call("canvas_bind_code", { node_id: y, endpoint: "GET /y" });
+    const xy = (await call("canvas_add_edge", { from: x, to: y })).json().ids[0];
+    const l = (await call("layers_create", { node_ids: [x, y], title: "endpoints" })).json().layer_id;
+    const id = (await call("paths_create", { layer_id: l, title: "ep", steps: [{ edge: xy }] })).json().path_id;
+    const { findings } = (await call("canvas_lint")).json();
+    expect(findings.filter((f: { target_id: string }) => f.target_id === id)).toEqual([]);
+  });
+
+  it("a ref whose symbol is missing gets no stamp; the symbol appearing later reads as never verified", async () => {
+    const out = (await call("paths_create", { layer_id: layer, title: "later", steps: [{ edge: ab, ref: "stamp.ts:later" }] })).json();
+    const id = out.path_id;
+    expect(out.warnings).toEqual(["hop 1: symbol not found in stamp.ts:later"]);
+    const stored = () => sessions.open(boardId).layers.flatMap((l) => l.paths).find((p) => p.id === id)!.steps[0]!;
+    expect(stored().ref_hash).toBeNull();
+
+    const verify = await call("paths_update", { path_id: id, verify: [1] });
+    expect(verify.res.isError).toBe(true);
+    expect(verify.text).toContain("hop 1: symbol not found in stamp.ts:later — nothing to verify");
+
+    writeFileSync(file(), `${src("  return 2;")}export function later() {\n  return 3;\n}\n`);
+    expect((await lint(id)).map((f: { message: string }) => f.message)).toEqual([`path ${id} hop 1: stamp.ts:later (line 7) was never verified`]);
+  });
+
+  it("a ref_hash sent in a step never lands; a ref to a missing file fails and writes nothing", async () => {
+    const hash = (id: string) => sessions.open(boardId).layers.flatMap((l) => l.paths).find((p) => p.id === id)!.steps[0]!.ref_hash;
+    const made = await call("paths_create", { layer_id: layer, title: "forged", steps: [{ edge: ab, ref: "stamp.ts:work", ref_hash: "forged" }] });
+    const id = made.json().path_id;
+    expect(hash(id)).not.toBe("forged");
+    const upd = await call("paths_update", { path_id: id, steps: [{ edge: ab, caption: "x", ref: "stamp.ts:work", ref_hash: "forged" }] });
+    expect(upd.res.isError).not.toBe(true);
+    expect(hash(id)).not.toBe("forged");
+
+    const before = JSON.stringify(sessions.open(boardId).layers);
+    const c1 = await call("paths_create", { layer_id: layer, title: "nofile", steps: [{ edge: ab, ref: "nofile.ts:x" }] });
+    expect(c1.res.isError).toBe(true);
+    const c2 = await call("paths_update", { path_id: id, steps: [{ edge: ab, ref: "nofile.ts:x" }] });
+    expect(c2.res.isError).toBe(true);
+    expect(JSON.stringify(sessions.open(boardId).layers)).toBe(before);
   });
 });
 

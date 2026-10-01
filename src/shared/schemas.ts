@@ -82,6 +82,7 @@ export const pathStepSchema = z.strictObject({
   edge: z.string(),
   caption: z.string().max(160),
   ref: z.string().nullable(),
+  ref_hash: z.string().nullable().optional(), // server-written stamp, never a tool argument
 });
 
 export const pathSchema = z.strictObject({
@@ -303,6 +304,7 @@ export const toolArgs = {
     path_id: z.string(),
     title: z.string().optional(),
     steps: z.array(pathStepArg).min(1).optional(),
+    verify: z.array(z.int().min(1)).optional(),
   }),
   "paths.delete": z.object({ ...boardScoped, path_id: z.string() }),
   "paths.get": z.object({ ...boardScoped, path_id: z.string() }),
