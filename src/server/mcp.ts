@@ -14,9 +14,9 @@ import { importBoard } from "./board-file.js";
 import type { Sessions } from "./session.js";
 import type { Screenshots } from "./screenshot.js";
 import * as mutations from "./mutations.js";
-import { validateRef } from "./bindcode.js";
-import { lintBoard } from "./lint.js";
-import { createLayer, createPath, deleteLayer, deletePath, getPath, memberCount, openTrace, updateLayer, updatePath } from "./layers.js";
+import { refStatus, stampRef, validateRef } from "./bindcode.js";
+import { lintBoard, lintPath } from "./lint.js";
+import { createLayer, createPath, deleteLayer, deletePath, findPath, getPath, memberCount, openTrace, updateLayer, updatePath } from "./layers.js";
 import { createDraft, deleteDraft, getDraft, updateDraft } from "./drafts.js";
 import { appendToNotebook, createNotebook, deleteNotebook, findNotebook, findOrCreateNotesNotebook, updateNotebook } from "./notebooks.js";
 import { sessionMode, sessionSend } from "./session-mode.js";
@@ -306,10 +306,10 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     `Attach a source location or endpoint to a node. Refs are resolved against the project root (${deps.projectRoot}); write them relative to it as path/to/file.ts, path/to/file.ts:symbol, or path/to/file.ts#symbol. The call fails if the file does not exist; a missing symbol is a warning, not a failure.`,
     (args: { board_id?: string; node_id: string; ref?: string; endpoint?: string }) => {
       const session = sessions.resolve(args.board_id);
-      let bind = { resolved_path: null as string | null, symbol_found: null as boolean | null };
+      let bind = { resolved_path: null as string | null, symbol_found: null as boolean | null, line: null as number | null, end: null as number | null };
       if (args.ref) {
         const r = validateRef(deps.projectRoot, args.ref);
-        bind = { resolved_path: r.resolved_path, symbol_found: r.symbol_found };
+        bind = { resolved_path: r.resolved_path, symbol_found: r.symbol_found, line: r.line, end: r.end };
       }
       const result = mutations.updateNode(session, AUTHOR, {
         node_id: args.node_id,
@@ -366,7 +366,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "canvas.lint",
-    `Static checks against the project root (${deps.projectRoot}), no model: refs to missing files (error), refs whose symbol is gone (warn), nodes with neither ref nor endpoint (warn), error edges with no condition (warn), conditions on a node with a single outgoing edge (warn), paths with a broken hop or a hop ref that no longer resolves, drafts marking an element that no longer exists (warn), a surviving note node (error — run the notes migration), a notebook ref that no longer resolves (warn). Run after a refactor to find board rot. For a semantic audit — does the edge really call what it says — read get_state and check the code yourself.`,
+    `Static checks against the project root (${deps.projectRoot}), no model: refs to missing files (error), refs whose symbol is gone (warn), nodes with neither ref nor endpoint (warn), error edges with no condition (warn), conditions on a node with a single outgoing edge (warn), paths with a broken hop or a hop ref that no longer resolves, path_ref_changed (warn: the hop's symbol block changed since it was verified), path_ref_unverified (warn: the hop was never verified), path_hop_unbound (warn: a hop with no ref on it or on either node), drafts marking an element that no longer exists (warn), a surviving note node (error — run the notes migration), a notebook ref that no longer resolves (warn). Run after a refactor to find board rot. For a semantic audit — does the edge really call what it says — read get_state and check the code yourself.`,
     (args: { board_id?: string }) => {
       const session = sessions.resolve(args.board_id);
       const c = session.collections();
@@ -452,25 +452,26 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     (steps ?? []).flatMap((s, i) =>
       s.ref && validateRef(deps.projectRoot, s.ref).symbol_found === false ? [`hop ${i + 1}: symbol not found in ${s.ref}`] : [],
     );
+  const stamp = (ref: string) => stampRef(deps.projectRoot, ref);
   const withWarnings = <T extends object>(result: T, warnings: string[]) => text(warnings.length ? { ...result, warnings } : result);
 
   register(
     "paths.create",
-    "Write an ordered walk on a layer: one hop per edge, each hop's `to` is the next hop's `from`, every edge inside the layer. Pass nodes and the server resolves the edges, naming both when a pair is joined twice. A caption per hop is what the human reads while it plays; a ref per hop is its citation. Fails naming the first hop that breaks the chain.",
+    "Write an ordered walk on a layer: one hop per edge, each hop's `to` is the next hop's `from`, every edge inside the layer. Pass nodes and the server resolves the edges, naming both when a pair is joined twice. A caption per hop is what the human reads while it plays; a ref per hop is its citation. Fails naming the first hop that breaks the chain. The server stamps each hop's ref with a hash of the symbol block, and canvas_lint reports path_ref_changed when the code moves on.",
     (args: Parameters<typeof createPath>[2] & { board_id?: string }) => {
       const session = sessions.resolve(args.board_id);
       const warnings = refWarnings(args.steps ?? args.refs?.map((ref) => ({ ref })));
-      return withWarnings(createPath(session, AUTHOR, args), warnings);
+      return withWarnings(createPath(session, AUTHOR, args, stamp), warnings);
     },
   );
 
   register(
     "paths.update",
-    "Retitle, or replace the steps whole. Steps are set as a list, never patched by index.",
+    "Retitle, or replace the steps whole. Steps are set as a list, never patched by index. Pass verify: [hop…] after you re-read the code and the caption is still true — an unchanged step keeps its old stamp otherwise.",
     (args: Parameters<typeof updatePath>[2] & { board_id?: string }) => {
       const session = sessions.resolve(args.board_id);
       const warnings = refWarnings(args.steps);
-      return withWarnings(updatePath(session, AUTHOR, args), warnings);
+      return withWarnings(updatePath(session, AUTHOR, args, stamp), warnings);
     },
   );
 
@@ -484,7 +485,14 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "One path with its hops resolved: node labels, refs, edge labels, captions. Small — use it to answer about a hop instead of reading the board.",
     (args: { board_id?: string; path_id: string }) => {
       const session = sessions.resolve(args.board_id);
-      return text(getPath(session, args));
+      const got = getPath(session, args);
+      return text({
+        ...got,
+        hops: got.hops.map((h) => {
+          const r = refStatus(deps.projectRoot, h);
+          return { ...h, line: r?.line ?? null, end: r?.end ?? null, ref_status: r?.status ?? null };
+        }),
+      });
     },
   );
 
@@ -495,7 +503,10 @@ export function buildMcpServer(deps: McpDeps): McpServer {
       const session = sessions.resolve(args.board_id);
       openTrace(session, args.path_id, { t: args.hop, running: args.hop === undefined });
       session.addLog(AUTHOR, `paths_play · ${args.path_id}`);
-      return text({ ok: true });
+      const c = session.collections();
+      const { layer, path } = findPath(session, args.path_id);
+      const warnings = lintPath(deps.projectRoot, layer, path, c.nodes, c.edges).map((f) => f.message);
+      return withWarnings({ ok: true }, warnings);
     },
   );
 

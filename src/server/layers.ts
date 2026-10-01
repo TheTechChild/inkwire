@@ -117,11 +117,14 @@ export function createPath(
     refs?: (string | null)[];
     extend_layer?: boolean;
   },
+  stamp: (ref: string) => string | null,
 ): { path_id: string; hops: number; nodes: string[]; layer_extended: string[] } {
   const layer = findLayer(session, args.layer_id);
   const edges = session.collections().edges;
   if (!args.steps && !args.nodes) throw new Error("pass steps or nodes");
-  const steps = args.steps ? normalizeSteps(args.steps) : resolveNodesToSteps(edges, args.nodes!, args.captions, args.refs);
+  const steps = (args.steps ? normalizeSteps(args.steps) : resolveNodesToSteps(edges, args.nodes!, args.captions, args.refs)).map(
+    (s) => ({ ...s, ref_hash: s.ref ? stamp(s.ref) : null }),
+  );
   // extend_layer: add missing endpoints (same shape as layers_update.add) before the walk rule runs.
   const members = new Set(layer.nodes);
   const layer_extended: string[] = [];
@@ -149,13 +152,28 @@ export function createPath(
 export function updatePath(
   session: BoardSession,
   author: Author,
-  args: { path_id: string; title?: string; steps?: { edge: string; caption?: string; ref?: string | null }[] },
+  args: { path_id: string; title?: string; steps?: { edge: string; caption?: string; ref?: string | null }[]; verify?: number[] },
+  stamp: (ref: string) => string | null,
 ): { path_id: string; hops: number } {
   const { layer, path } = findPath(session, args.path_id);
-  const steps = args.steps ? normalizeSteps(args.steps) : path.steps;
+  let steps = args.steps ? normalizeSteps(args.steps) : path.steps;
   if (args.steps) {
     const err = validateWalk(layer, session.collections().edges, steps);
     if (err) throw new Error(err);
+  }
+  if (args.steps || args.verify) {
+    for (const n of args.verify ?? []) {
+      if (!steps[n - 1]) throw new Error(`hop ${n} is out of range`);
+      if (!steps[n - 1]!.ref) throw new Error(`hop ${n} has no ref to verify`);
+    }
+    // An unchanged hop keeps its old stamp: fixing one hop must not clear the flags on the hops nobody re-read.
+    steps = steps.map((s, i) => {
+      const old = args.steps ? path.steps.find((o) => o.edge === s.edge && o.caption === s.caption && o.ref === s.ref) : s;
+      if (!args.verify?.includes(i + 1) && old) return { ...s, ref_hash: old.ref_hash ?? null };
+      const fresh = s.ref ? stamp(s.ref) : null;
+      if (fresh === null && args.verify?.includes(i + 1)) throw new Error(`hop ${i + 1}: symbol not found in ${s.ref} — nothing to verify`);
+      return { ...s, ref_hash: fresh };
+    });
   }
   const next: Path = { ...path, steps, ...(args.title !== undefined ? { title: clampTitle(args.title) } : {}) };
   session.updateLayers(author, `path ${path.id} · update`, (ls) =>
@@ -199,6 +217,7 @@ export function getPath(session: BoardSession, args: { path_id: string }) {
         condition: e?.condition ?? null,
         caption: s.caption,
         ref: s.ref,
+        ref_hash: s.ref_hash ?? null,
       };
     }),
   };

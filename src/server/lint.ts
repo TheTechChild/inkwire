@@ -5,8 +5,8 @@
 import { pathsAffected } from "../core/layers.js";
 import { goneMarks } from "../core/drafts.js";
 import { goneRefs } from "../core/notebooks.js";
-import { validateRef } from "./bindcode.js";
-import type { Draft, EdgeEl, Layer, NodeEl, Notebook } from "../shared/types.js";
+import { refStatus, validateRef } from "./bindcode.js";
+import type { Draft, EdgeEl, Layer, NodeEl, Notebook, Path } from "../shared/types.js";
 
 export interface LintFinding {
   target_id: string;
@@ -19,11 +19,48 @@ export interface LintFinding {
     | "path_broken"
     | "path_ref_missing"
     | "path_symbol_missing"
+    | "path_ref_changed"
+    | "path_ref_unverified"
+    | "path_hop_unbound"
     | "draft_mark_gone"
     | "notebook_ref_gone"
     | "note_node";
   level: "error" | "warn";
   message: string;
+}
+
+/** Every finding for one path: broken hops, then each step's ref and binding. Shared by canvas.lint and paths.play. */
+export function lintPath(projectRoot: string, layer: Layer, path: Path, nodes: NodeEl[], edges: EdgeEl[]): LintFinding[] {
+  const out: LintFinding[] = [];
+  for (const b of pathsAffected([{ ...layer, paths: [path] }], edges)) {
+    const message =
+      b.reason === "edge pruned"
+        ? `path ${b.path_id} hop ${b.hop} references a pruned edge`
+        : `path ${b.path_id} hop ${b.hop}: ${path.steps[b.hop - 1]!.edge} leaves layer ${layer.letter}`;
+    out.push({ target_id: path.id, check: "path_broken", level: "warn", message });
+  }
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  const edgeById = new Map(edges.map((e) => [e.id, e]));
+  const bound = (id: string | undefined) => {
+    const n = id ? nodeById.get(id) : undefined;
+    return !!(n?.ref || n?.endpoint);
+  };
+  path.steps.forEach((s, i) => {
+    const hop = `path ${path.id} hop ${i + 1}`;
+    const warn = (check: LintFinding["check"], message: string) => out.push({ target_id: path.id, check, level: "warn", message });
+    const r = refStatus(projectRoot, s);
+    const at = r?.line ? ` (line ${r.line})` : "";
+    if (r?.status === "ref_missing") {
+      out.push({ target_id: path.id, check: "path_ref_missing", level: "error", message: `${hop}: ref points at a missing file` });
+    } else if (r?.status === "symbol_missing") warn("path_symbol_missing", `${hop}: symbol gone`);
+    else if (r?.status === "changed") warn("path_ref_changed", `${hop}: ${s.ref}${at} changed since the hop was verified`);
+    else if (r?.status === "unverified") warn("path_ref_unverified", `${hop}: ${s.ref}${at} was never verified`);
+    else if (!s.ref) {
+      const e = edgeById.get(s.edge);
+      if (e && !bound(e.from) && !bound(e.to)) warn("path_hop_unbound", `${hop}: no ref on the hop or on either node`);
+    }
+  });
+  return out;
 }
 
 export function lintBoard(
@@ -67,29 +104,7 @@ export function lintBoard(
       out.push({ target_id: e.id, check: "condition_no_branch", level: "warn", message: `condition "${e.condition}" but ${e.from} has no other outgoing edge` });
     }
   }
-  for (const b of pathsAffected(layers, edges)) {
-    const layer = layers.find((l) => l.paths.some((p) => p.id === b.path_id))!;
-    const edge = layer.paths.find((p) => p.id === b.path_id)!.steps[b.hop - 1]!.edge;
-    const message =
-      b.reason === "edge pruned"
-        ? `path ${b.path_id} hop ${b.hop} references a pruned edge`
-        : `path ${b.path_id} hop ${b.hop}: ${edge} leaves layer ${layer.letter}`;
-    out.push({ target_id: b.path_id, check: "path_broken", level: "warn", message });
-  }
-  for (const l of layers) {
-    for (const p of l.paths) {
-      p.steps.forEach((s, i) => {
-        if (!s.ref) return;
-        try {
-          if (validateRef(projectRoot, s.ref).symbol_found === false) {
-            out.push({ target_id: p.id, check: "path_symbol_missing", level: "warn", message: `path ${p.id} hop ${i + 1}: symbol gone` });
-          }
-        } catch {
-          out.push({ target_id: p.id, check: "path_ref_missing", level: "error", message: `path ${p.id} hop ${i + 1}: ref points at a missing file` });
-        }
-      });
-    }
-  }
+  for (const l of layers) for (const p of l.paths) out.push(...lintPath(projectRoot, l, p, nodes, edges));
   for (const g of goneMarks(drafts, nodes.map((n) => n.id), edges.map((e) => e.id))) {
     out.push({
       target_id: g.id,

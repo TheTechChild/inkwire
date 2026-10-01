@@ -200,6 +200,26 @@ describe("integration", () => {
     store2.close();
   });
 
+  it("board file: path steps with no ref_hash import and export", async () => {
+    const src = sessions.create("No stamps");
+    const a = mutations.addNode(src, "human", { label: "a", kind: "entry", at: [0, 0] }).ids[0]!;
+    const b = mutations.addNode(src, "human", { label: "b", kind: "service", at: [300, 0] }).ids[0]!;
+    const e = mutations.addEdge(src, "human", { from: a, to: b }).ids[0]!;
+    src.updateLayers("ai", "layer", () => [
+      { id: "L_1", letter: "A", title: "t", note: "", nodes: [a, b], author: "ai", paths: [{ id: "P1", title: "p", steps: [{ edge: e, caption: "c", ref: "x.ts:y" }], author: "ai" }] },
+    ]);
+    const file = await (await fetch(`http://127.0.0.1:${port}/api/boards/${src.boardId}/export`)).json();
+    expect(file.layers[0].paths[0].steps[0]).not.toHaveProperty("ref_hash");
+    const imp = await fetch(`http://127.0.0.1:${port}/api/boards/import`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(file),
+    });
+    expect(imp.status).toBe(200);
+    const id = (await imp.json()).board_id;
+    expect((await (await fetch(`http://127.0.0.1:${port}/api/boards/${id}/export`)).json()).layers).toEqual(file.layers);
+  });
+
   it("board file: export embeds bitmaps, import creates an equal board", async () => {
     const src = sessions.create("Export me");
     const a = mutations.addNode(src, "human", { label: "gateway", kind: "entry", at: [10, 20] }).ids[0]!;
