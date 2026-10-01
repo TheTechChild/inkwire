@@ -270,7 +270,8 @@
       "properties": {
         "edge": { "type": "string", "description": "Edge id, internal to the layer." },
         "caption": { "type": "string", "maxLength": 160, "description": "\"\" when absent." },
-        "ref": { "type": ["string", "null"], "description": "path/to/file.ts:symbol, validated like bind_code." }
+        "ref": { "type": ["string", "null"], "description": "path/to/file.ts:symbol, validated like bind_code." },
+        "ref_hash": { "type": ["string", "null"], "description": "Server-written hash of the ref's symbol block when the hop was last verified. Never a tool argument." }
       }
     },
     "draft": {
