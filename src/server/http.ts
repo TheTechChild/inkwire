@@ -7,6 +7,7 @@ import path from "node:path";
 import type { Store } from "./store.js";
 import type { Screenshots } from "./screenshot.js";
 import type { Sessions } from "./session.js";
+import type { Clients } from "./clients.js";
 import * as mutations from "./mutations.js";
 import { ImportError, exportBoard, exportFilename, importBoard } from "./board-file.js";
 import { hookEvent } from "./session-mode.js";
@@ -28,6 +29,7 @@ const MIME: Record<string, string> = {
 export interface HttpDeps {
   store: Store;
   sessions: Sessions;
+  clients: Clients;
   screenshots: () => Screenshots;
 }
 
@@ -61,7 +63,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HttpDeps)
     } catch {
       // not JSON — treat as an empty event; the verdict is still "ok"
     }
-    const verdict = hookEvent(deps.sessions, (input ?? {}) as Record<string, unknown>, url.searchParams.get("bg") ?? "unset");
+    // forward.sh adds ?pid=<Claude Code pid> when it finds a claude ancestor.
+    const pid = Number.parseInt(url.searchParams.get("pid") ?? "", 10);
+    const claude_pid = Number.isInteger(pid) && pid > 0 ? pid : null;
+    const verdict = hookEvent(deps.clients, { ...((input ?? {}) as Record<string, unknown>), claude_pid }, url.searchParams.get("bg") ?? "unset");
     res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
     res.end(verdict.block ? `block\n${verdict.block}` : verdict.context ? `context\n${verdict.context}` : "ok");
     return;

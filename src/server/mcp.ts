@@ -12,6 +12,7 @@ import { exportMermaid } from "../core/mermaid.js";
 import { toolArgs } from "../shared/schemas.js";
 import { importBoard } from "./board-file.js";
 import type { Sessions } from "./session.js";
+import type { Client, Clients } from "./clients.js";
 import type { Screenshots } from "./screenshot.js";
 import * as mutations from "./mutations.js";
 import { refStatus, stampRef, validateRef } from "./bindcode.js";
@@ -25,22 +26,27 @@ import { canonicalPath, checkRootArg, listBoards, mainRootOf, readRoot, writeRoo
 
 export interface McpDeps {
   sessions: Sessions;
+  clients: Clients;
+  /** The Client this server speaks for: its current board, session mode and hook report. */
+  client: Client;
   store: Store;
   screenshots: () => Screenshots;
-  /** The caller's cwd: the boards_list overlap filter and relative import paths. Default process.cwd(). */
+  /** The caller's cwd: the boards_list overlap filter and relative import paths. Default the Client's cwd. */
   cwd?: () => string;
   panelUrl: (boardId: string) => string;
   /** Repo root, for the plugin relaunch hint. */
   pluginRoot?: string;
-  focusTerminal?: () => void;
+  focusTerminal?: (termProgram: string | undefined) => void;
 }
 
 const AUTHOR = "ai" as const;
 
 export function buildMcpServer(deps: McpDeps): McpServer {
   const server = new McpServer({ name: "inkwire", version: "0.1.0" });
-  const { sessions } = deps;
-  const cwd = deps.cwd ?? (() => process.cwd());
+  const { sessions, clients, client } = deps;
+  const cwd = deps.cwd ?? (() => client.cwd || process.cwd());
+  /** A tool's board: board_id, else this Client's current board. */
+  const resolve = (boardId: string | undefined) => sessions.resolve(boardId, client.currentBoardId);
 
   const text = (value: unknown) => ({
     content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
@@ -51,7 +57,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
   // session_send writes its own message and session_mode its own row.
   const SELF_RECORDING = new Set<string>(["session.send", "session.mode"]);
   const BIG_RESULTS = new Set<string>(["canvas.get_state", "canvas.get_board", "canvas.screenshot", "boards.open", "notebooks.get"]);
-  const current = () => (sessions.currentBoardId ? sessions.open(sessions.currentBoardId) : null);
+  const current = () => (client.currentBoardId ? sessions.open(client.currentBoardId) : null);
   const recordCall = (name: string, args: Record<string, unknown>, s0: ReturnType<typeof current>, seq0: number, result: any) => {
     const s1 = current();
     if (!s1 || s1.closed) return;
@@ -103,9 +109,9 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "session.mode",
-    "Flip the mode flag the server holds. On: fails unless permission mode is auto; arms the Stop hook that redirects replies into session_send. Off: releases any pending session_send with mode_off.",
+    "Set your session mode. On: fails unless permission mode is auto, and fails when another Claude Code session is the author of your current board; on a board with no author, it makes you the author. On arms the Stop hook that sends replies to session_send. Off: releases your pending session_send with mode_off.",
     (args: { on: boolean }) =>
-      text(sessionMode(sessions, args.on, { pluginRoot: deps.pluginRoot, focusTerminal: deps.focusTerminal })),
+      text(sessionMode(clients, client, args.on, { pluginRoot: deps.pluginRoot, focusTerminal: deps.focusTerminal })),
   );
 
   register(
@@ -122,7 +128,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
       },
       extra: any,
     ) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       // Progress keeps Claude Code's idle timer from cutting the wait short.
       const token = extra?._meta?.progressToken;
       let ticks = 0;
@@ -135,7 +141,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
           }, 30_000)
         : null;
       try {
-        return text(await sessionSend(sessions, session, args, extra?.signal));
+        return text(await sessionSend(clients, client, session, args, extra?.signal));
       } finally {
         if (tick) clearInterval(tick);
       }
@@ -149,11 +155,21 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "boards.open",
-    "Return the state of a board and make it your current board. If the board is already open, its in-memory history and revision counters stay. A board that is not open yet starts at step 0. The result names the panel URL.",
+    "Return the state of a board and make it your current board. In inkwire mode, your current board stays the board you talk on. If the board is already open, its in-memory history and revision counters stay. A board that is not open yet starts at step 0. The result names the panel URL.",
     (args: { board_id: string }) => {
       const session = sessions.open(args.board_id);
-      sessions.currentBoardId = session.boardId;
-      return text({ panel_url: deps.panelUrl(session.boardId), state: session.state() });
+      // ADR 0002 and CONTEXT.md: a talking Author's current board is the board it talks on. Opening does not move it.
+      const own = client.mode === "inkwire" ? clients.authoredBy(client) : null;
+      const result = text({ panel_url: deps.panelUrl(session.boardId), state: session.state() });
+      if (own !== null && own !== session.boardId) {
+        result.content.push({
+          type: "text" as const,
+          text: `You are talking with the person on ${own}. Your current board is still ${own}. Turn the mode off before you move to a different board.`,
+        });
+      } else {
+        client.currentBoardId = session.boardId;
+      }
+      return result;
     },
   );
 
@@ -167,7 +183,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
   );
 
   // The board a boards_* write acts on. M3 adds the Author gate here.
-  const writable = (boardId: string) => sessions.resolve(boardId);
+  const writable = (boardId: string) => resolve(boardId);
 
   register("boards.update",
     "Rename a board or set its project_root (an existing absolute directory; every code ref on the board resolves against it). Give one field or both. This is not a history step, so it cannot be undone from the timeline.",
@@ -190,7 +206,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
       const root = checkRootArg(args.project_root);
       const { name, ...check } = sessions.uniqueName(args.name);
       const session = sessions.create(name, root);
-      sessions.currentBoardId = session.boardId;
+      client.currentBoardId = session.boardId;
       return text({ board_id: session.boardId, name, project_root: root, panel_url: deps.panelUrl(session.boardId), ...check });
     },
   );
@@ -204,7 +220,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
         args.name ?? (canonicalPath(root) === canonicalPath(src.meta.project_root) ? `${src.meta.name} copy` : `${src.meta.name} · ${path.basename(root)}`);
       const { name, ...check } = sessions.uniqueName(base);
       const session = sessions.clone(src.boardId, name, root);
-      sessions.currentBoardId = session.boardId;
+      client.currentBoardId = session.boardId;
       return text({ board_id: session.boardId, name, project_root: root, source: src.boardId, panel_url: deps.panelUrl(session.boardId), ...check });
     },
   );
@@ -221,7 +237,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
       }
       const { session, ...check } = importBoard(sessions, deps.store, raw, { projectRoot: args.project_root });
       session.persistNow();
-      sessions.currentBoardId = session.boardId;
+      client.currentBoardId = session.boardId;
       const c = session.collections();
       return text({
         board_id: session.boardId,
@@ -241,7 +257,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "canvas.get_state",
     "What the human is looking at right now. While a layer is focused this returns only that layer — members, internal edges, and the seams: boundary_edges marked out_of_scope with crosses_to, and boundary_nodes as stubs — and scope.omitted says what it left out. For the whole board regardless of focus call canvas_get_board. graph.revision / layout.revision are board-level and never move on a focus change.",
     (args: { board_id?: string; include_ink_geometry?: boolean; include_layout?: boolean }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       const state = session.state({
         includeInkGeometry: args.include_ink_geometry,
         includeLayout: args.include_layout,
@@ -255,11 +271,12 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "canvas.get_board",
     "The whole board regardless of focus, plus layers[] and focus so you know what the human is looking at. Use when a scoped read is not enough.",
     (args: { board_id?: string; include_layout?: boolean }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       const result = text(session.state({ includeLayout: args.include_layout }));
       // A gone worktree: ref reads fall back to the main checkout, and say so beside the state.
-      const { root, warnings } = readRoot(session);
-      if (root !== null && warnings.length) result.content.push({ type: "text" as const, text: `warning: ${warnings.join("; ")}` });
+      // An unset or gone root with no usable main_root gets the same warning as paths_get and paths_play.
+      const { warnings } = readRoot(session);
+      if (warnings.length) result.content.push({ type: "text" as const, text: `warning: ${warnings.join("; ")}` });
       return result;
     },
   );
@@ -268,7 +285,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "canvas.screenshot",
     "PNG of the board as the human sees it. Use this to read handwriting, judge spatial intent, or check what an ambiguous stroke actually looks like. Structure comes from get_state; pixels come from here.",
     async (args: { board_id?: string; viewport?: { x: number; y: number; zoom: number }; fit?: boolean }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       const shot = await deps.screenshots().capture(session, args.viewport, args.fit ?? false);
       if (session.closed) throw new Error(`board deleted during capture: ${session.boardId}`);
       return {
@@ -287,13 +304,13 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "canvas.infer_structure",
     'Run the built-in geometric heuristic over unresolved ink: closed strokes become nodes, open strokes become edges snapped to nearby nodes. Nodes come out labelled "untitled" — read a screenshot and rename them with canvas_update_node. Consumed strokes are deleted; created elements carry from_ink provenance.',
     (args: { board_id?: string; stroke_ids?: string[] }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text(mutations.inferFromInk(session, AUTHOR, args.stroke_ids));
     },
   );
 
   register("canvas.add_node", "Place a node on the board.", (args: Parameters<typeof mutations.addNode>[2] & { board_id?: string }) => {
-    const session = sessions.resolve(args.board_id);
+    const session = resolve(args.board_id);
     return text(mutations.addNode(session, AUTHOR, args));
   });
 
@@ -301,7 +318,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "canvas.update_node",
     "Change a node's label, kind, or bindings. Omitted fields are left alone.",
     (args: Parameters<typeof mutations.updateNode>[2] & { board_id?: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text(mutations.updateNode(session, AUTHOR, args));
     },
   );
@@ -310,7 +327,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "canvas.add_edge",
     "Connect two nodes. label is the short name of the transition, schema is the payload type crossing it, condition is the branch predicate. Fails if either endpoint does not exist.",
     (args: Parameters<typeof mutations.addEdge>[2] & { board_id?: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text(mutations.addEdge(session, AUTHOR, args));
     },
   );
@@ -319,7 +336,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "canvas.update_edge",
     "Change an edge's label, schema, kind, or condition.",
     (args: Parameters<typeof mutations.updateEdge>[2] & { board_id?: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text(mutations.updateEdge(session, AUTHOR, args));
     },
   );
@@ -328,7 +345,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "canvas.delete",
     "Remove an element by id. Deleting a node also removes its edges — the result reports every id that went, paths_affected names the paths whose walk it broke, and drafts_affected names the draft marks it left gone.",
     (args: { board_id?: string; id: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       const before = new Set(pathsAffected(session.layers, session.collections().edges).map((b) => `${b.path_id}:${b.hop}`));
       const result = mutations.deleteElement(session, AUTHOR, args.id);
       const paths_affected = pathsAffected(session.layers, session.collections().edges).filter((b) => !before.has(`${b.path_id}:${b.hop}`));
@@ -342,7 +359,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "canvas.move",
     "Set an element's position and size. Bumps layout.revision only — a move is not a change of meaning.",
     (args: { board_id?: string; id: string; at: [number, number]; size?: [number, number] }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text(mutations.moveElement(session, AUTHOR, args));
     },
   );
@@ -351,7 +368,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "canvas.bind_code",
     "Attach a source location or endpoint to a node. Refs are resolved against the board's project_root; write them relative to it as path/to/file.ts, path/to/file.ts:symbol, or path/to/file.ts#symbol. The call fails if the file does not exist, or if the board's root is unset or gone (fix it with boards_update); a missing symbol is a warning, not a failure.",
     (args: { board_id?: string; node_id: string; ref?: string; endpoint?: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       let bind = { resolved_path: null as string | null, symbol_found: null as boolean | null, line: null as number | null, end: null as number | null };
       if (args.ref) {
         const r = validateRef(writeRoot(session), args.ref);
@@ -370,7 +387,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "canvas.annotate",
     "Write a comment about a node or edge — a missing case, an unhandled error path. It lands in the board's notes notebook as a paragraph refbacked to the element, not on the canvas.",
     (args: { board_id?: string; target_id: string; text: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       const c = session.collections();
       const exists = c.nodes.some((n) => n.id === args.target_id) || c.edges.some((e) => e.id === args.target_id);
       if (!exists) {
@@ -393,7 +410,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "canvas.set_viewport",
     "Pan and zoom the human's view. Use it to direct attention to what you are talking about, sparingly — it moves someone else's screen.",
     (args: { board_id?: string; x: number; y: number; zoom: number }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       session.setViewport({ x: args.x, y: args.y, zoom: args.zoom });
       session.addLog(AUTHOR, `set_viewport · zoom ${args.zoom}`);
       return text({ ok: true });
@@ -404,7 +421,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "canvas.export_mermaid",
     "Serialize the graph as Mermaid flowchart text, for quoting the diagram in the conversation.",
     (args: { board_id?: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       const c = session.collections();
       return text({ mermaid: exportMermaid(c.nodes, c.edges) });
     },
@@ -414,7 +431,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "canvas.lint",
     `Static checks resolved against the board's project_root, no model (fails when the root is unset or gone — fix it with boards_update): refs to missing files (error), refs whose symbol is gone (warn), nodes with neither ref nor endpoint (warn), error edges with no condition (warn), conditions on a node with a single outgoing edge (warn), paths with a broken hop or a hop ref that no longer resolves, path_ref_changed (warn: the hop's symbol block changed since it was verified), path_ref_unverified (warn: the hop was never verified), path_hop_unbound (warn: a hop with no ref on it or on either node), drafts marking an element that no longer exists (warn), a surviving note node (error — run the notes migration), a notebook ref that no longer resolves (warn). Run after a refactor to find board rot. For a semantic audit — does the edge really call what it says — read get_state and check the code yourself.`,
     (args: { board_id?: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       const c = session.collections();
       const root = writeRoot(session);
       const findings = lintBoard(root, c.nodes, c.edges, session.layers, session.drafts, session.notebooks);
@@ -431,7 +448,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "history.get",
     "Read the timeline: every step with its label, author, skipped flag, and conflict flag. Read-only by design — rewind, skip, and drop belong to the human.",
     (args: { board_id?: string; limit?: number }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text({
         head: session.history.head,
         steps: session.historyRows(args.limit).map(({ ahead: _ahead, index, ...row }) => ({ index, ...row })),
@@ -443,7 +460,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "layers.list",
     "Every layer with its letter, title, member count, paths — and which one the human is looking at.",
     (args: { board_id?: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text({
         focus: session.focus,
         layers: session.layers.map((l) => ({
@@ -461,7 +478,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "layers.create",
     "Cut a named subset out of the board. node_ids are the members (notes are nodes; ink and images cannot be members); downstream: true also adds everything reachable from them along edges. Letters auto-assign A–Z; titles cap at 24 chars. Does not change focus.",
     (args: Parameters<typeof createLayer>[2] & { board_id?: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text(createLayer(session, AUTHOR, args));
     },
   );
@@ -470,7 +487,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "layers.update",
     "Add or remove members, retitle, or rewrite the note. Elements themselves are untouched.",
     (args: Parameters<typeof updateLayer>[2] & { board_id?: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text(updateLayer(session, AUTHOR, args));
     },
   );
@@ -479,7 +496,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "layers.focus",
     "Focus a layer in the human's viewport, or pass null to release. Use sparingly — it moves someone else's screen.",
     (args: { board_id?: string; layer_id: string | null }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       session.setFocus(args.layer_id, AUTHOR);
       return text({ ok: true });
     },
@@ -489,7 +506,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "layers.delete",
     "Remove a layer. A layer is a view over the board, so nothing on the board is deleted.",
     (args: { board_id?: string; layer_id: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text(deleteLayer(session, AUTHOR, args));
     },
   );
@@ -514,7 +531,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "paths.create",
     "Write an ordered walk on a layer: one hop per edge, each hop's `to` is the next hop's `from`, every edge inside the layer. Pass nodes and the server resolves the edges, naming both when a pair is joined twice. A caption per hop is what the human reads while it plays; a ref per hop is its citation. Fails naming the first hop that breaks the chain. The server stamps each hop's ref with a hash of the symbol block, and canvas_lint reports path_ref_changed when the code moves on.",
     (args: Parameters<typeof createPath>[2] & { board_id?: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       const { refWarnings, stamp } = refTools(session);
       const warnings = refWarnings(args.steps ?? args.refs?.map((ref) => ({ ref })));
       return withWarnings(createPath(session, AUTHOR, args, stamp), warnings);
@@ -525,7 +542,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "paths.update",
     "Retitle, or replace the steps whole. Steps are set as a list, never patched by index. Pass verify: [hop…] after you re-read the code and the caption is still true — an unchanged step keeps its old stamp otherwise.",
     (args: Parameters<typeof updatePath>[2] & { board_id?: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       const { refWarnings, stamp, rootFor } = refTools(session);
       if (args.verify?.length) rootFor();
       const warnings = refWarnings(args.steps);
@@ -534,7 +551,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
   );
 
   register("paths.delete", "Remove a path. The layer and the board are untouched.", (args: { board_id?: string; path_id: string }) => {
-    const session = sessions.resolve(args.board_id);
+    const session = resolve(args.board_id);
     return text(deletePath(session, AUTHOR, args));
   });
 
@@ -542,7 +559,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "paths.get",
     "One path with its hops resolved: node labels, refs, edge labels, captions. Small — use it to answer about a hop instead of reading the board.",
     (args: { board_id?: string; path_id: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       const got = getPath(session, args);
       // An unset or gone root keeps the path readable: ref_status null and a warning that names boards_update.
       const { root, warnings } = readRoot(session);
@@ -563,7 +580,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "paths.play",
     "Open the scrubber on a path in the human's panel: play it once, or pause at a hop. Moves someone else's screen — use when the reply is about the order.",
     (args: { board_id?: string; path_id: string; hop?: number }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       openTrace(session, args.path_id, { t: args.hop, running: args.hop === undefined });
       session.addLog(AUTHOR, `paths_play · ${args.path_id}`);
       const c = session.collections();
@@ -578,7 +595,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "drafts.create",
     "Propose a change: a title, a note saying what and why, and marks — element ids with one of removed, changed, added. A draft changes nothing on the board; it says what would. Marks are explicit: mark the edges you mean, the server infers none.",
     (args: Parameters<typeof createDraft>[2] & { board_id?: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text(createDraft(session, AUTHOR, args));
     },
   );
@@ -587,7 +604,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "drafts.update",
     "Retitle, rewrite the note, mark or unmark elements. Marking again replaces the role.",
     (args: Parameters<typeof updateDraft>[2] & { board_id?: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text(updateDraft(session, AUTHOR, args));
     },
   );
@@ -596,7 +613,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "drafts.delete",
     "Remove a draft. The board is untouched.",
     (args: { board_id?: string; draft_id: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text(deleteDraft(session, AUTHOR, args));
     },
   );
@@ -605,7 +622,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "drafts.get",
     "One draft with its marks resolved to labels. Small — use it to answer about a mark instead of reading the board.",
     (args: { board_id?: string; draft_id: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text(getDraft(session, args));
     },
   );
@@ -614,7 +631,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "drafts.activate",
     "Show a draft on the human's canvas, or pass null to clear. Shared by every panel; it changes what someone else is looking at.",
     (args: { board_id?: string; draft_id: string | null }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       session.setActiveDraft(args.draft_id, AUTHOR);
       return text({ ok: true });
     },
@@ -624,7 +641,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "notebooks.create",
     "Write a notebook on this board: markdown, with `[[id]]` refs to nodes, edges, layers, paths and drafts. Refs resolve when the human reads it — write the id, not the label.",
     (args: Parameters<typeof createNotebook>[2] & { board_id?: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text(createNotebook(session, AUTHOR, args));
     },
   );
@@ -633,7 +650,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "notebooks.update",
     "Retitle, replace the body, or append to it. Append is last write wins; a human mid-edit is warned, not blocked.",
     (args: Parameters<typeof updateNotebook>[2] & { board_id?: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text(updateNotebook(session, AUTHOR, args));
     },
   );
@@ -642,7 +659,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "notebooks.delete",
     "Remove a notebook. The board is untouched.",
     (args: { board_id?: string; notebook_id: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       return text(deleteNotebook(session, AUTHOR, args));
     },
   );
@@ -651,7 +668,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "notebooks.get",
     "One notebook with every `[[id]]` ref resolved to its label — and named as gone when the element no longer exists.",
     (args: { board_id?: string; notebook_id: string }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       const notebook = findNotebook(session, args.notebook_id);
       const c = session.collections();
       return text({
@@ -666,7 +683,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "notebooks.open",
     "Show a notebook in the human's pane, or pass null to close it. Shared by every panel; it changes what someone else is reading.",
     (args: { board_id?: string; notebook_id: string | null }) => {
-      const session = sessions.resolve(args.board_id);
+      const session = resolve(args.board_id);
       session.setActiveNotebook(args.notebook_id, AUTHOR);
       return text({ ok: true });
     },

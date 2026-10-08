@@ -19,19 +19,20 @@ Product rules and the test list are in `CLAUDE.md`. The authority for behaviour 
 
 ## Server bootstrap
 
-`main` loads config, opens the store, builds `Sessions`, starts HTTP + WebSocket on 127.0.0.1, then
-connects the MCP server to stdio. The port may already be taken by a sibling server, which
+`main` loads config, opens the store, builds `Sessions` and `Clients`, makes the one Client of this
+stdio server (from `process.ppid`), starts HTTP + WebSocket on 127.0.0.1, then connects the MCP
+server to stdio. The port may already be taken by a sibling server, which
 `probeHealth` detects.
 
 ```
-src/server/index.ts:14     main
-src/server/index.ts:69     probeHealth
+src/server/index.ts:15     main
+src/server/index.ts:81     probeHealth
 src/server/config.ts:11    loadConfig
-src/server/http.ts:34      createHttpServer
-src/server/http.ts:44      handle
-src/server/http.ts:193     serveFile
-src/server/ws.ts:16        PanelHub
-src/server/mcp.ts:40       buildMcpServer
+src/server/http.ts:36      createHttpServer
+src/server/http.ts:46      handle
+src/server/http.ts:198     serveFile
+src/server/ws.ts:17        PanelHub
+src/server/mcp.ts:44       buildMcpServer
 ```
 
 Env: `INKWIRE_PORT`, `INKWIRE_DATA_DIR`. There is no project-root env (see Project root). HTTP serves the panel from
@@ -51,15 +52,15 @@ appends to history, refolds, bumps revisions, schedules a 500 ms persist, and no
 MCP handlers pass author `"ai"`, WS handlers pass `"human"`. Authorship is never a tool argument.
 
 ```
-src/server/session.ts:71     class BoardSession
-src/server/session.ts:60     MutationSpec
-src/server/session.ts:167    mutate
-src/server/session.ts:151    refold
-src/server/session.ts:403    schedulePersist
-src/server/session.ts:409    persistNow
-src/server/session.ts:394    onChange
-src/server/session.ts:458    class Sessions
-src/server/session.ts:504    open
+src/server/session.ts:70     class BoardSession
+src/server/session.ts:59     MutationSpec
+src/server/session.ts:166    mutate
+src/server/session.ts:150    refold
+src/server/session.ts:402    schedulePersist
+src/server/session.ts:408    persistNow
+src/server/session.ts:393    onChange
+src/server/session.ts:450    class Sessions
+src/server/session.ts:488    open
 src/server/mutations.ts:49   addNode
 src/server/mutations.ts:125  addEdge
 src/server/mutations.ts:202  deleteElement
@@ -67,8 +68,8 @@ src/server/mutations.ts:225  moveElement
 ```
 
 `mutations.ts` holds one function per element edit, each building a `MutationSpec` (label, optional
-coalescing key, ids, `apply`). `Sessions` owns the open boards, the current board id, and the
-server-wide session mode.
+coalescing key, ids, `apply`). `Sessions` holds the open boards only. The current board and the
+session mode of each Claude Code session are in `Clients` (see Clients and authorship).
 
 Beware: revisions are derived, per session. `refold` fingerprints the fold's graph and layout
 sections and bumps each counter only on content change. A move must never touch `graph.revision`.
@@ -93,7 +94,7 @@ src/core/fold.ts:96       applyStep
 src/core/state.ts:80      buildCanvasState
 src/core/state.ts:36      historySummary
 src/core/state.ts:63      strokeSummaries
-src/server/session.ts:362 state
+src/server/session.ts:361 state
 ```
 
 A step whose op missed (add over an existing id, set or del of an absent id) is flagged conflict.
@@ -119,8 +120,8 @@ src/core/history.ts:117   undo
 src/core/history.ts:129   redo
 src/core/diff.ts:39       diffCollections
 src/core/diff.ts:49       isEmptyOps
-src/server/session.ts:203 historyOp
-src/server/session.ts:380 historyRows
+src/server/session.ts:202 historyOp
+src/server/session.ts:379 historyRows
 ```
 
 Beware: coalescing re-diffs from the tip step's original `before` snapshot. Never concatenate op
@@ -160,20 +161,20 @@ name into an underscore name, takes the input shape from `toolArgs`, turns throw
 `bindcode.ts`, `board-file.ts`.
 
 ```
-src/server/mcp.ts:40    buildMcpServer
-src/server/mcp.ts:104   register
-src/server/mcp.ts:145   register("boards.list"
-src/server/mcp.ts:241   get_state
-src/server/mcp.ts:268   screenshot
-src/server/mcp.ts:287   infer_structure
-src/server/mcp.ts:295   register("canvas.add_node"
-src/server/mcp.ts:351   bind_code
-src/server/mcp.ts:414   lint
-src/server/mcp.ts:431   history.get
-src/server/mcp.ts:443   layers.list
-src/server/mcp.ts:514   paths.create
-src/server/mcp.ts:578   drafts.create
-src/server/mcp.ts:624   notebooks.create
+src/server/mcp.ts:44    buildMcpServer
+src/server/mcp.ts:110   register
+src/server/mcp.ts:151   register("boards.list"
+src/server/mcp.ts:257   get_state
+src/server/mcp.ts:285   screenshot
+src/server/mcp.ts:304   infer_structure
+src/server/mcp.ts:312   register("canvas.add_node"
+src/server/mcp.ts:368   bind_code
+src/server/mcp.ts:431   lint
+src/server/mcp.ts:448   history.get
+src/server/mcp.ts:460   layers.list
+src/server/mcp.ts:531   paths.create
+src/server/mcp.ts:595   drafts.create
+src/server/mcp.ts:641   notebooks.create
 ```
 
 Families, in file order: `session_*` (105, 112), `boards_*` (145-212: list, open, delete, update,
@@ -202,12 +203,12 @@ discriminated union, then dispatched by `type` in `PanelHub.handle`.
 src/shared/protocol.ts:15     clientIntentSchema
 src/shared/protocol.ts:147    clientMessageSchema
 src/shared/protocol.ts:164    captureRequestSchema
-src/shared/protocol.ts:173    SessionPush
-src/shared/protocol.ts:186    ServerMessage
-src/server/ws.ts:96           handle
-src/server/ws.ts:103          case "add_node":
-src/server/ws.ts:203          push
-src/server/ws.ts:224          requestCapture
+src/shared/protocol.ts:174    SessionPush
+src/shared/protocol.ts:187    ServerMessage
+src/server/ws.ts:98           handle
+src/server/ws.ts:105          case "add_node":
+src/server/ws.ts:208          push
+src/server/ws.ts:231          requestCapture
 src/ui/ws-client.ts:8         connectWs
 src/ui/ws-client.ts:114       answerCapture
 src/ui/app.ts:89              isServerMessage
@@ -311,31 +312,46 @@ Tests: `tests/core/lod.test.ts`.
 
 ## Session mode and hooks
 
-A server-wide flag moves replies from the terminal into the panel's Session tab. `session_send`
+A flag on each Client moves replies from the terminal into the panel's Session tab. `session_send`
 blocks until the human answers. The plugin's hook script forwards Claude Code events to the server,
-which blocks `Stop` while the mode is on.
+which blocks `Stop` while that Client's mode is on. Every function takes `(clients, client, …)`.
 
 ```
-src/server/session-mode.ts:35    sessionMode
-src/server/session-mode.ts:103   sessionSend
-src/server/session-mode.ts:203   sessionReply
-src/server/session-mode.ts:283   hookEvent
-src/server/session-mode.ts:23    BLOCK_CEILING
-src/server/session-mode.ts:24    AUTO_MODES
-src/server/session-mode.ts:338   focusTerminal
-src/server/session.ts:448        HookReport
-src/server/http.ts:55            /api/hook
+src/server/session-mode.ts:40    sessionMode
+src/server/session-mode.ts:135   sessionSend
+src/server/session-mode.ts:242   sessionReply
+src/server/session-mode.ts:327   hookEvent
+src/server/session-mode.ts:24    BLOCK_CEILING
+src/server/session-mode.ts:25    AUTO_MODES
+src/server/session-mode.ts:118   releaseAuthorship
+src/server/session-mode.ts:385   terminalProgram
+src/server/session-mode.ts:390   focusTerminal
+src/server/clients.ts:11         HookReport
+src/server/http.ts:58            /api/hook
 src/ui/session.ts:22             setupSession
 src/ui/session.ts:117            renderSession
 src/ui/session.ts:252            messageCard
 ```
 
 Hook files (not `.ts`): `hooks/hooks.json` wires `Stop`, `PreToolUse` on the `session_mode` tool,
-and `SessionStart` with matcher `compact`. `hooks/forward.sh` only POSTs the event to `/api/hook`
-and prints the verdict (`block`, `context`, or `ok`).
+and `SessionStart` with matcher `compact|clear|resume`. `hooks/forward.sh` finds the Claude Code
+pid (the nearest ancestor whose `comm` or first `args` word is `claude`), POSTs the event to
+`/api/hook?pid=<n>`, and prints the verdict (`block`, `context`, or `ok`). It exits 0 on every
+failure.
 
-Beware: session mode is per server, not per board. The thread and the active highlight are per
+Beware: session mode is per Client (one flag on each Client record). `hookEvent` finds the Client by `claude_pid`
+(and makes it when it is new), else by `session_id`, else ignores the event. `SessionStart` `clear`
+or `resume` rekeys the Client to the new session id, but only when the hook has a pid: with no pid,
+the new id matches no Client and the rekey cannot happen. The panel push (`ws.ts` `push`) shows the mode
+and the pending send of `clients.talkingOn(board)` and the board's notice from `noticeByBoard`, so a
+panel on another board does not see a mode change. The thread and the active highlight are per
 board, shared by every panel, and never persisted. The mode is not persisted either.
+
+Beware: `session_mode(on)` needs a current board. It fails when another Client is the Author, and
+on a board with no Author it claims the board. In `inkwire` mode it fails for any board but the
+one the Client talks on, and `boards_open` does not move that Client's current board. Only the Author writes a `session_mode` row. A panel
+reply (`sessionReply`) goes only to the Client that talks on that board. `session_send` must go to
+the board that the Client authors and talks on.
 
 Beware: `session_mode(on)` fails unless a hook event was seen, the permission mode is `auto` or
 `bypassPermissions`, and `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` is `0`. `session_send` times out after
@@ -343,7 +359,49 @@ Beware: `session_mode(on)` fails unless a hook event was seen, the permission mo
 
 Beware: there is no `/use-inkwire` button in the panel. The user types it in the terminal.
 
-Tests: `tests/tools/session.test.ts`.
+Tests: `tests/tools/session.test.ts`, `tests/tools/forward-hook.test.ts`.
+
+## Clients and authorship
+
+`Clients` (`src/server/clients.ts`, no I/O, clock from `Sessions.now`) keeps one `Client` for each
+Claude Code pid (ADR 0001): `sessionId`, `cwd`, `label`, `termProgram`, `currentBoardId`, `mode`,
+`hook`, `pending`, `blocks`. It also keeps the Author of each board (`authors`, ADR 0002) and the
+panel notice of each board (`noticeByBoard`). Until the daemon (M4), the stdio server
+(`index.ts`) makes exactly one Client from `process.ppid` and passes it to `buildMcpServer`.
+
+```
+src/server/clients.ts:31         Client
+src/server/clients.ts:65         class Clients
+src/server/clients.ts:103        ensure
+src/server/clients.ts:136        attach
+src/server/clients.ts:150        detach
+src/server/clients.ts:186        remove
+src/server/clients.ts:198        sweep
+src/server/clients.ts:211        boardDeleted
+src/server/clients.ts:258        talkingOn
+src/server/clients.ts:271        checkWrite
+src/server/clients.ts:285        commitClaim
+src/server/clients.ts:301        release
+src/server/session.ts:476        onDelete
+src/server/session.ts:549        resolve
+src/server/mcp.ts:49             resolve
+src/server/index.ts:22           client
+```
+
+Beware: a hook can make a Client before its link connects. With no `attach` for that pid within
+`HOOK_ONLY_TTL_MS` (60 s), `sweep` removes it. `detach` removes the Client only when its last link
+closes, and ignores a link that the record does not hold.
+
+Beware: claims are rules, not yet a gate. M2 has `checkWrite` and `commitClaim` (one board per
+Client; a claim of B releases A with reason `switch`), but only `session_mode(on)` claims. Every
+`release` runs `releaseAuthorship`, which turns off a talking Author. `Sessions.delete` fires
+`onDelete`, and `boardDeleted` releases the board, clears it as the current board of every Client,
+and resolves a send blocked on it with `idle`.
+
+Beware: `Sessions.resolve(board_id, currentBoardId)` takes the caller's current board. In
+`mcp.ts`, use the local `resolve`, which passes `client.currentBoardId`.
+
+Tests: `tests/tools/clients.test.ts`, `tests/tools/session.test.ts` (per-client state).
 
 ## Layers and focus
 
@@ -359,8 +417,8 @@ src/core/layers.ts:28      downstream
 src/server/layers.ts:36    createLayer
 src/server/layers.ts:58    updateLayer
 src/server/layers.ts:82    deleteLayer
-src/server/session.ts:247  updateLayers
-src/server/session.ts:258  setFocus
+src/server/session.ts:246  updateLayers
+src/server/session.ts:257  setFocus
 src/ui/panel.ts:633        renderLayers
 ```
 
@@ -385,8 +443,8 @@ src/core/layers.ts:244    traceT
 src/server/layers.ts:108  createPath
 src/server/layers.ts:196  getPath
 src/server/layers.ts:227  openTrace
-src/server/session.ts:339 setTrace
-src/server/session.ts:346 updateTrace
+src/server/session.ts:338 setTrace
+src/server/session.ts:345 updateTrace
 src/ui/canvas.ts:928      effectiveTrace
 src/ui/canvas.ts:1093     renderTrace
 src/ui/canvas.ts:1172     renderWalk
@@ -410,8 +468,8 @@ src/core/drafts.ts:30      goneMarks
 src/server/drafts.ts:23    createDraft
 src/server/drafts.ts:42    updateDraft
 src/server/drafts.ts:101   markElement
-src/server/session.ts:271  updateDrafts
-src/server/session.ts:279  setActiveDraft
+src/server/session.ts:270  updateDrafts
+src/server/session.ts:278  setActiveDraft
 src/ui/panel.ts:761        renderDrafts
 ```
 
@@ -435,7 +493,7 @@ src/core/notebooks.ts:142    resolveNotebookRefs
 src/server/notebooks.ts:16   createNotebook
 src/server/notebooks.ts:69   appendToNotebook
 src/server/notebooks.ts:112  migrateNotes
-src/server/session.ts:288    updateNotebooks
+src/server/session.ts:287    updateNotebooks
 src/ui/notebook.ts:41        setupNotebook
 src/ui/notebook.ts:136       renderNotebook
 src/ui/notebook.ts:338       buildChip
@@ -508,15 +566,15 @@ src/server/project-root.ts:109  canonicalPath
 src/server/project-root.ts:118  rootOverlaps
 src/server/project-root.ts:130  listBoards
 src/shared/import-root.ts:9     importNeedsRoot
-src/server/session.ts:516       create
-src/server/session.ts:534       uniqueName
-src/server/session.ts:550       clone
-src/server/session.ts:235       updateMeta
-src/server/mcp.ts:145           register("boards.list"
-src/server/mcp.ts:172           register("boards.update"
-src/server/mcp.ts:187           register("boards.create"
-src/server/mcp.ts:198           register("boards.clone"
-src/server/mcp.ts:212           register("boards.import"
+src/server/session.ts:500       create
+src/server/session.ts:518       uniqueName
+src/server/session.ts:534       clone
+src/server/session.ts:234       updateMeta
+src/server/mcp.ts:151           register("boards.list"
+src/server/mcp.ts:188           register("boards.update"
+src/server/mcp.ts:203           register("boards.create"
+src/server/mcp.ts:214           register("boards.clone"
+src/server/mcp.ts:228           register("boards.import"
 src/server/board-file.ts:60     importRoot
 ```
 

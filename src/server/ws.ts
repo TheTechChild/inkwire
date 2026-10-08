@@ -6,11 +6,12 @@ import type { Server } from "node:http";
 import { clientMessageSchema, type ServerMessage } from "../shared/protocol.js";
 import type { Viewport } from "../shared/types.js";
 import type { Sessions, BoardSession } from "./session.js";
+import type { Clients } from "./clients.js";
 import * as mutations from "./mutations.js";
 import { createLayer, deleteLayer, openTrace, updateLayer } from "./layers.js";
 import { createDraft, deleteDraft, markElement, updateDraft } from "./drafts.js";
 import { createNotebook, deleteNotebook, migrateNotes, updateNotebook } from "./notebooks.js";
-import { sessionMode, sessionReply } from "./session-mode.js";
+import { sessionMode, sessionReply, type ModeDeps } from "./session-mode.js";
 import type { CaptureBroker } from "./screenshot.js";
 
 export class PanelHub implements CaptureBroker {
@@ -19,9 +20,10 @@ export class PanelHub implements CaptureBroker {
   constructor(
     server: Server,
     private sessions: Sessions,
-    private modeDeps: { focusTerminal?: () => void; pluginRoot?: string } = {},
+    private clients: Clients,
+    private modeDeps: ModeDeps = {},
   ) {
-    // Mode, pending, and notice are server-wide: every board's panels redraw the strip.
+    // Mode, pending, notice and authorship changes: every board's panels redraw the strip.
     sessions.onChange(() => {
       for (const s of sessions.all()) if (this.byBoard.get(s.boardId)?.size) this.push(s);
     });
@@ -143,11 +145,14 @@ export class PanelHub implements CaptureBroker {
         createLayer(session, author, msg);
         break;
       case "session_reply":
-        sessionReply(this.sessions, session, msg);
+        sessionReply(this.clients, session, msg);
         break;
-      case "session_mode_off":
-        sessionMode(this.sessions, false, this.modeDeps);
+      case "session_mode_off": {
+        // Turns off the Client that talks on this board; a no-op when none does.
+        const talker = this.clients.talkingOn(session.boardId);
+        if (talker) sessionMode(this.clients, talker, false, this.modeDeps);
         break;
+      }
       case "highlight_set":
         session.setHighlight(msg.msg_id);
         break;
@@ -201,15 +206,17 @@ export class PanelHub implements CaptureBroker {
   }
 
   push(session: BoardSession, only?: WebSocket): void {
+    // Per board: the mode and the pending send of the Client that talks on it, and the board's notice.
+    const talker = this.clients.talkingOn(session.boardId);
     const message: ServerMessage = {
       type: "state",
       state: session.state({ includeInkGeometry: true }),
       history: session.historyRows(),
       session: {
-        mode: this.sessions.mode,
-        pending: this.sessions.pending !== null,
-        pending_board: this.sessions.pending?.boardId ?? null,
-        notice: this.sessions.notice,
+        mode: talker ? talker.mode : "pty",
+        pending: talker?.pending != null,
+        pending_board: talker?.pending?.boardId ?? null,
+        notice: this.clients.noticeByBoard.get(session.boardId) ?? null,
         thread: session.thread,
         highlight: session.highlight
           ? { msg_id: session.highlight.msgId, label: session.highlight.label, nodes: session.highlight.nodes, edges: session.highlight.edges }

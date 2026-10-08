@@ -13,7 +13,7 @@
     ],
     "SessionStart": [
       {
-        "matcher": "compact",
+        "matcher": "compact|clear|resume",
         "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/forward.sh", "timeout": 10 }]
       }
     ]

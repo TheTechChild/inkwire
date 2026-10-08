@@ -16,6 +16,7 @@ import { migrateNotes } from "../../src/server/notebooks.js";
 import * as mutations from "../../src/server/mutations.js";
 import { Screenshots } from "../../src/server/screenshot.js";
 import { Sessions } from "../../src/server/session.js";
+import { Clients } from "../../src/server/clients.js";
 import { Store } from "../../src/server/store.js";
 
 const handoffSchema = JSON.parse(
@@ -62,9 +63,12 @@ beforeAll(async () => {
   writeFileSync(path.join(projectRoot, "auth.ts"), "export function verifyToken() {}\n");
   store = new Store(dataDir);
   sessions = new Sessions(store, { debounceMs: 50 });
+  const clients = new Clients(sessions);
   const screenshots = new Screenshots({ requestCapture: () => false }, store.imagesDir);
   const mcp = buildMcpServer({
     sessions,
+    clients,
+    client: clients.ensure(101),
     store,
     screenshots: () => screenshots,
     cwd: () => cwdNow,
@@ -1291,6 +1295,37 @@ describe("project root (ADR 0003)", () => {
     expect((await call("canvas_lint")).res.isError).toBeFalsy();
     const root2 = (await call("boards_update", { board_id: id, project_root: main })).json();
     expect(root2.main_root).toBe("");
+  });
+
+  it("canvas_get_board on an unset or gone root with no main_root gives the paths_get warning as a second text block", async () => {
+    // Unset root: a migrated row.
+    const unset = unsetBoard("get_board unset");
+    const { e, layer } = await seed(unset);
+    const pathId = (await call("paths_create", { board_id: unset, layer_id: layer, title: "p", steps: [{ edge: e }] })).json().path_id;
+    const unsetWarning = (await call("paths_get", { board_id: unset, path_id: pathId })).json().warnings;
+    expect(unsetWarning).toEqual([`board ${unset} has no project root — set one with boards_update(board_id, project_root)`]);
+    expect((await call("paths_play", { board_id: unset, path_id: pathId })).json().warnings).toContain(unsetWarning[0]);
+    let board = await call("canvas_get_board", { board_id: unset });
+    expect(board.res.isError).toBeFalsy();
+    expect(board.json().board.id).toBe(unset);
+    expect(board.res.content).toHaveLength(2);
+    expect(board.res.content[1]?.text).toBe(`warning: ${unsetWarning[0]}`);
+
+    // Gone root, not a worktree, so main_root is '' and there is no fallback.
+    const gone = tmp("inkwire-gone-root-");
+    const id = (await call("boards_create", { name: "get_board gone", project_root: gone })).json().board_id;
+    expect(store.load(id)!.meta.main_root).toBe("");
+    const goneSeed = await seed(id);
+    const gonePath = (await call("paths_create", { board_id: id, layer_id: goneSeed.layer, title: "p", steps: [{ edge: goneSeed.e }] })).json().path_id;
+    rmSync(gone, { recursive: true, force: true });
+    const goneWarning = (await call("paths_get", { board_id: id, path_id: gonePath })).json().warnings;
+    expect(goneWarning).toEqual([`project root ${gone} of board ${id} no longer exists — set a new one with boards_update(board_id, project_root)`]);
+    board = await call("canvas_get_board", { board_id: id });
+    expect(board.res.isError).toBeFalsy();
+    expect(board.res.content[1]?.text).toBe(`warning: ${goneWarning[0]}`);
+
+    // A board with a root that exists gets no second block.
+    expect((await call("canvas_get_board", { board_id: boardId })).res.content).toHaveLength(1);
   });
 
   it("boards_update: rename and re-root; bad roots, no fields and an unknown id fail", async () => {

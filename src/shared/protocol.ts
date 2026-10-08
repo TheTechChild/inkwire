@@ -168,8 +168,9 @@ export const captureRequestSchema = z.object({
   fit: z.boolean(),
 });
 
-/** The Session tab's slice of server state. Mode and pending are per
- * server; the thread and the highlight belong to the board. */
+/** The Session tab's slice of server state. Mode and pending are those of
+ * the Client that talks on this board (pty and none when no Client does);
+ * the notice, the thread and the highlight belong to the board. */
 export interface SessionPush {
   mode: import("./types.js").SessionMode;
   /** A session_send is blocked on the human, and on which board. */

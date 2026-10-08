@@ -6,6 +6,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { loadConfig } from "./config.js";
 import { Store } from "./store.js";
 import { Sessions } from "./session.js";
+import { Clients } from "./clients.js";
 import { createHttpServer } from "./http.js";
 import { PanelHub } from "./ws.js";
 import { Screenshots } from "./screenshot.js";
@@ -15,11 +16,20 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const store = new Store(config.dataDir);
   const sessions = new Sessions(store);
+  const clients = new Clients(sessions);
+  // Until the daemon (M4), this stdio server speaks for one Client: the Claude
+  // Code process that spawned it. Hooks from that pid route to it.
+  const client = clients.ensure(process.ppid, {
+    sessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null,
+    cwd: process.cwd(),
+    termProgram: process.env.TERM_PROGRAM ?? null,
+  });
+  clients.attach(client.pid, "stdio");
 
   let screenshots: Screenshots;
-  const http = createHttpServer({ store, sessions, screenshots: () => screenshots });
+  const http = createHttpServer({ store, sessions, clients, screenshots: () => screenshots });
   const pluginRoot = fileURLToPath(new URL("../..", import.meta.url)).replace(/\/$/, "");
-  const hub = new PanelHub(http, sessions, { pluginRoot });
+  const hub = new PanelHub(http, sessions, clients, { pluginRoot });
   screenshots = new Screenshots(hub, store.imagesDir);
 
   await new Promise<void>((resolve, reject) => {
@@ -43,6 +53,8 @@ async function main(): Promise<void> {
 
   const mcp = buildMcpServer({
     sessions,
+    clients,
+    client,
     store,
     screenshots: () => screenshots,
     pluginRoot,

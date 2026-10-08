@@ -304,7 +304,7 @@ export function emptyCollections(): Collections {
 // Session (handoff "Session"): the mode flag, the thread, and highlights.
 // None of this is persisted — it lives with the running server.
 
-/** Where Claude Code's replies go: the terminal, or the Session tab. One flag per server. */
+/** Where Claude Code's replies go: the terminal, or the Session tab. One flag per Client (src/server/clients.ts). */
 export type SessionMode = "pty" | "inkwire";
 
 /** An agent-authored, ephemeral pointer at elements. Not a layer, not focus, not selection. */

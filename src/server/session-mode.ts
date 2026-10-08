@@ -1,4 +1,4 @@
-// Session mode (handoff "Session"): the server-held flag, the blocking
+// Session mode (handoff "Session"): each Client's flag, the blocking
 // session_send, the Claude Code hook endpoint, and the thread entries they
 // produce. Shared by the MCP tools, the WS intents, and the HTTP hook route.
 // The hook script is a dumb forwarder; every decision is made here.
@@ -8,7 +8,8 @@ import { playableHops } from "../core/layers.js";
 import { findPath, openTrace } from "./layers.js";
 import { findDraft } from "./drafts.js";
 import { findNotebook } from "./notebooks.js";
-import type { BoardSession, SendResult, Sessions } from "./session.js";
+import type { BoardSession, SendResult } from "./session.js";
+import type { Client, Clients, ReleaseReason } from "./clients.js";
 
 const NOTEBOOK_LINE =
   "Four pointers say where to look. A notebook is where you write about them: markdown on the board, with `[[id]]` refs that resolve live. Never put prose on the canvas — there is no note kind.";
@@ -25,20 +26,25 @@ const AUTO_MODES = new Set(["auto", "bypassPermissions"]);
 const LABEL_MAX = 40;
 
 export interface ModeDeps {
-  /** Bring the terminal forward after mode off. Best effort; injected for tests. */
-  focusTerminal?: () => void;
+  /** Bring the terminal forward after mode off. Best effort; injected for tests. Gets the TERM_PROGRAM to use. */
+  focusTerminal?: (termProgram: string | undefined) => void;
   /** Where the plugin lives, for the relaunch hint. */
   pluginRoot?: string;
 }
 
-/** Flip the flag. On requires proof from the hook that Claude Code can run unattended. */
+/**
+ * Flip the Client's flag. On requires proof from the hook that Claude Code can
+ * run unattended, and a current board that has no other Author; on a board
+ * with no Author, mode on claims it.
+ */
 export function sessionMode(
-  sessions: Sessions,
+  clients: Clients,
+  client: Client,
   on: boolean,
   deps: ModeDeps = {},
 ): { mode: "pty" | "inkwire"; hook: string; instruction?: string } {
   if (on) {
-    const h = sessions.hook;
+    const h = client.hook;
     const root = deps.pluginRoot ?? "<inkwire repo>";
     if (!h) {
       throw new Error(
@@ -55,39 +61,65 @@ export function sessionMode(
         `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS is ${h.autoBackground}; Claude Code would move session_send to a background task after 2 minutes. Relaunch with: CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0 claude --permission-mode auto`,
       );
     }
-    sessions.mode = "inkwire";
-    sessions.notice = null;
-    sessions.blocks = 0;
-    sessions.boundSession = h.sessionId;
-    sessions.notify();
-    record(sessions, "session_mode", "on · permission mode is auto, flag on. Stop hook armed.", { mode: "inkwire", hook: "Stop" });
+    const boardId = client.currentBoardId;
+    if (!boardId) throw new Error("no board is open — call boards_open first, then turn the mode on");
+    // ADR 0002: in inkwire mode, nothing the Client does can claim another board.
+    const talkingOn = clients.authoredBy(client);
+    if (client.mode === "inkwire" && talkingOn !== null && talkingOn !== boardId) {
+      throw new Error(`You are talking with the person on ${talkingOn}. Turn the mode off before you move to a different board.`);
+    }
+    // M3 adds: fail when the board's releasedFrom is this pid.
+    clients.checkWrite(client, boardId);
+    clients.commitClaim(client, boardId);
+    if (clients.authorOf(boardId) !== client.pid) throw new Error(`board not found: ${boardId}`);
+    const talking = clients.talkingOn(boardId);
+    if (talking && talking !== client) throw new Error(`internal: ${clients.labelOf(talking.pid)} already talks on ${boardId}`);
+    client.mode = "inkwire";
+    clients.noticeByBoard.delete(boardId);
+    client.blocks = 0;
+    clients.notify();
+    record(clients, "session_mode", "on · permission mode is auto, flag on. Stop hook armed.", { mode: "inkwire", hook: "Stop" }, boardId);
     return { mode: "inkwire", hook: "Stop", instruction: MODE_ON_INSTRUCTION };
   }
-  const released = modeOff(sessions, null, { status: "mode_off", note: MODE_OFF_NOTE }, "session_mode", (r) =>
+  const released = modeOff(clients, client, null, { status: "mode_off", note: MODE_OFF_NOTE }, "session_mode", (r) =>
     r ? "off · the pending session_send returned mode_off; terminal focus requested." : "off · replies go to the terminal; terminal focus requested.",
   );
-  (deps.focusTerminal ?? focusTerminal)();
+  (deps.focusTerminal ?? focusTerminal)(terminalProgram(client));
   return { mode: "pty", hook: "released", ...(released ? { pending_send: { status: "mode_off" } } : {}) };
 }
 
-/** Every way out of inkwire mode: flag, notice, block count, the stranded
- * send, and one call row on the board the exchange was on. */
+/**
+ * Every way out of inkwire mode: flag, notice, block count, the stranded send,
+ * and one call row on the board the Client authors (or the pending board). A
+ * Client that authors no board writes no row (Readers never appear in the Thread).
+ */
 function modeOff(
-  sessions: Sessions,
+  clients: Clients,
+  client: Client,
   notice: string | null,
   result: SendResult,
   rowName: string,
   rowText: (released: boolean) => string,
 ): boolean {
-  const boardId = sessions.pending?.boardId ?? sessions.currentBoardId;
-  sessions.mode = "pty";
-  sessions.notice = notice;
-  sessions.blocks = 0;
-  sessions.boundSession = null;
-  const released = sessions.resolvePending(result);
-  sessions.notify();
-  record(sessions, rowName, rowText(released), { mode: "pty", pending_send: released ? { status: result.status } : null }, boardId);
+  const boardId = client.pending?.boardId ?? clients.authoredBy(client);
+  client.mode = "pty";
+  client.blocks = 0;
+  if (boardId) {
+    if (notice) clients.noticeByBoard.set(boardId, notice);
+    else clients.noticeByBoard.delete(boardId);
+  }
+  const released = clients.resolvePending(client, result);
+  clients.notify();
+  if (boardId) record(clients, rowName, rowText(released), { mode: "pty", pending_send: released ? { status: result.status } : null }, boardId);
   return released;
+}
+
+/** The Client stops being the Author of boardId: a talking Client leaves inkwire mode first. */
+export function releaseAuthorship(clients: Clients, client: Client, boardId: string, reason: ReleaseReason): void {
+  if (clients.talkingOn(boardId) !== client) return;
+  modeOff(clients, client, null, { status: "mode_off", note: MODE_OFF_NOTE }, "session_mode", (r) =>
+    `off · authorship released (${reason})${r ? "; the pending session_send returned mode_off" : ""}`,
+  );
 }
 
 export interface SendArgs {
@@ -101,15 +133,21 @@ export interface SendArgs {
 /** Append the agent's message, light the highlight, then block until the
  * human replies, the mode flips off, or the timeout fires. */
 export function sessionSend(
-  sessions: Sessions,
+  clients: Clients,
+  client: Client,
   session: BoardSession,
   args: SendArgs,
   signal?: AbortSignal,
 ): Promise<SendResult & { warnings?: string[] }> {
-  if (sessions.mode !== "inkwire") {
+  if (client.mode !== "inkwire") {
     return Promise.resolve({ status: "mode_off", note: MODE_OFF_NOTE });
   }
-  if (sessions.pending) throw new Error("a session_send is already pending; one turn at a time");
+  // Only the board this Client authors and talks on. Checked before any row, highlight, trace, draft or notebook.
+  if (clients.talkingOn(session.boardId) !== client) {
+    const own = clients.authoredBy(client);
+    throw new Error(`session_send must go to the board you talk on${own ? ` (${own})` : ""}, not ${session.boardId}`);
+  }
+  if (client.pending) throw new Error("a session_send is already pending; one turn at a time");
 
   const warnings: string[] = [];
   let highlight: Highlight | undefined;
@@ -173,15 +211,15 @@ export function sessionSend(
   if (path) openTrace(session, path.path_id, { t: args.path!.hop, running: args.path!.hop === undefined });
   if (draft) session.setActiveDraft(draft, "ai");
   if (notebook) session.setActiveNotebook(notebook, "ai");
-  sessions.blocks = 0;
+  client.blocks = 0;
 
   return new Promise<SendResult & { warnings?: string[] }>((resolve) => {
     const timer = setTimeout(() => {
       // Idle: nobody answered. Back to the terminal so the Stop hook lets the turn end.
-      modeOff(sessions, IDLE_NOTICE, { status: "idle" }, "session_send", () => "timed out waiting for a reply · mode pty");
-    }, sessions.sendTimeoutMs);
+      modeOff(clients, client, IDLE_NOTICE, { status: "idle" }, "session_send", () => "timed out waiting for a reply · mode pty");
+    }, clients.sessions.sendTimeoutMs);
     timer.unref?.();
-    sessions.pending = {
+    client.pending = {
       boardId: session.boardId,
       resolve: (r) => resolve(warnings.length ? { ...r, warnings } : r),
       timer,
@@ -190,18 +228,19 @@ export function sessionSend(
       "abort",
       () => {
         // Cancelled from the terminal: the human is there, so the mode follows.
-        if (sessions.pending?.timer !== timer) return;
-        modeOff(sessions, "session_send cancelled from the terminal · mode pty", { status: "idle" }, "session_send", () => "cancelled from the terminal · mode pty");
+        if (client.pending?.timer !== timer) return;
+        modeOff(clients, client, "session_send cancelled from the terminal · mode pty", { status: "idle" }, "session_send", () => "cancelled from the terminal · mode pty");
       },
       { once: true },
     );
-    sessions.notify();
+    clients.notify();
   });
 }
 
-/** The human's reply from the composer: chips from ids, then release the send. */
+/** The human's reply from the composer: chips from ids, then release the send
+ * of the Client that talks on this board. No other Client gets it. */
 export function sessionReply(
-  sessions: Sessions,
+  clients: Clients,
   session: BoardSession,
   args: {
     text: string;
@@ -212,11 +251,10 @@ export function sessionReply(
     notebook?: string | null;
   },
 ): void {
-  if (sessions.mode !== "inkwire") throw new Error("pty mode: replies go to the terminal");
-  if (!sessions.pending) throw new Error("no session_send is pending; claude code is still working");
-  if (sessions.pending.boardId !== session.boardId) {
-    throw new Error(`the pending session_send is on board ${sessions.pending.boardId}, not this one`);
-  }
+  const talker = clients.talkingOn(session.boardId);
+  if (!talker) throw new Error("pty mode: no Claude Code session talks on this board; replies go to the terminal");
+  // talkingOn(board) is the board's Author, and sessionSend accepts only that board, so a pending send is always on this board.
+  if (!talker.pending) throw new Error("no session_send is pending; claude code is still working");
   const c = session.collections();
   const ctx: { label: string; title: string }[] = [];
   const layer = args.focus ? session.layers.find((l) => l.id === args.focus) : undefined;
@@ -256,7 +294,7 @@ export function sessionReply(
   }
   ctx.push({ label: `rev ${session.graphRevision}`, title: "graph.revision the message was written against" });
   session.addThread({ type: "you", text: args.text, ctx });
-  sessions.resolvePending({
+  clients.resolvePending(talker, {
     status: "reply",
     reply: args.text,
     ctx: {
@@ -276,46 +314,55 @@ export interface HookInput {
   session_id?: string;
   source?: string;
   stop_hook_active?: boolean;
+  /** The Claude Code pid that hooks/forward.sh found (the ?pid= query); null when it found none. */
+  claude_pid?: number | null;
 }
 
-/** One endpoint for every Claude Code hook event. Returns what the shell
- * forwarder should do: block the stop with a reason, add context, or nothing. */
+/**
+ * One endpoint for every Claude Code hook event. The event goes to the Client
+ * of its Claude Code pid (created when it is new), else to the Client with its
+ * session id, else nowhere. Returns what the shell forwarder should do: block
+ * the stop with a reason, add context, or nothing.
+ */
 export function hookEvent(
-  sessions: Sessions,
+  clients: Clients,
   input: HookInput,
   autoBackground: string,
 ): { block?: string; context?: string } {
-  // While the mode is on, only the Claude Code session that turned it on is
-  // ours; another session's hooks (a second launch on this machine) pass through.
-  if (sessions.mode === "inkwire" && sessions.boundSession && input.session_id !== sessions.boundSession) return {};
-  sessions.hook = {
+  const client =
+    typeof input.claude_pid === "number"
+      ? clients.ensure(input.claude_pid, { sessionId: input.session_id ?? null })
+      : clients.bySessionId(input.session_id);
+  if (!client) return {};
+  client.hook = {
     permissionMode: input.permission_mode ?? "unknown",
     autoBackground,
     sessionId: input.session_id ?? null,
-    at: sessions.now(),
+    at: clients.now(),
   };
   switch (input.hook_event_name) {
     case "Stop": {
-      if (sessions.mode !== "inkwire") return {};
-      sessions.blocks++;
-      if (sessions.blocks > BLOCK_CEILING) {
-        modeOff(sessions, "claude code kept replying to the terminal · mode pty", { status: "idle" }, "session_mode", () => `off · ${BLOCK_CEILING} stops in a row without a session_send`);
+      if (client.mode !== "inkwire") return {};
+      client.blocks++;
+      if (client.blocks > BLOCK_CEILING) {
+        modeOff(clients, client, "claude code kept replying to the terminal · mode pty", { status: "idle" }, "session_mode", () => `off · ${BLOCK_CEILING} stops in a row without a session_send`);
         return {};
       }
       return { block: STOP_REASON };
     }
     case "SessionStart":
-      return sessions.mode === "inkwire" && input.source === "compact" ? { context: MODE_ON_INSTRUCTION } : {};
+      // /clear and /resume give a new session id inside the same Claude Code process.
+      if ((input.source === "clear" || input.source === "resume") && input.session_id) clients.rekey(client.pid, input.session_id);
+      return client.mode === "inkwire" && input.source === "compact" ? { context: MODE_ON_INSTRUCTION } : {};
     default:
       return {};
   }
 }
 
-/** A call entry on the given board, else the current one, if there is one. */
-function record(sessions: Sessions, name: string, text: string, json: unknown, boardId: string | null = sessions.currentBoardId): void {
-  if (!boardId) return;
+/** A call entry on the given board. */
+function record(clients: Clients, name: string, text: string, json: unknown, boardId: string): void {
   try {
-    sessions.open(boardId).addThread({ type: "call", name, text, json: JSON.stringify(json) });
+    clients.sessions.open(boardId).addThread({ type: "call", name, text, json: JSON.stringify(json) });
   } catch {
     // board deleted under us — nothing to record on
   }
@@ -334,10 +381,15 @@ const TERMINAL_APPS: Record<string, string> = {
   Alacritty: "Alacritty",
 };
 
+/** The TERM_PROGRAM of the Client's terminal; the daemon's own only when the Client has none. */
+export function terminalProgram(client: Client | null, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return client?.termProgram ?? env.TERM_PROGRAM;
+}
+
 /** Best effort: bring the terminal Claude Code runs in to the front. No-op off macOS. */
-export function focusTerminal(env: NodeJS.ProcessEnv = process.env): void {
+export function focusTerminal(termProgram: string | undefined): void {
   if (process.platform !== "darwin") return;
-  const app = TERMINAL_APPS[env.TERM_PROGRAM ?? ""];
+  const app = TERMINAL_APPS[termProgram ?? ""];
   if (!app) return;
   execFile("osascript", ["-e", `tell application "${app}" to activate`], () => {});
 }

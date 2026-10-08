@@ -10,6 +10,7 @@ import { createHttpServer } from "../../src/server/http.js";
 import { PanelHub } from "../../src/server/ws.js";
 import { Screenshots } from "../../src/server/screenshot.js";
 import { Sessions } from "../../src/server/session.js";
+import { Clients } from "../../src/server/clients.js";
 import { Store } from "../../src/server/store.js";
 import * as mutations from "../../src/server/mutations.js";
 import type { ServerMessage } from "../../src/shared/protocol.js";
@@ -18,6 +19,7 @@ let dataDir: string;
 let rootDir: string;
 let store: Store;
 let sessions: Sessions;
+let clients: Clients;
 let hub: PanelHub;
 let screenshots: Screenshots;
 let port: number;
@@ -90,8 +92,9 @@ beforeAll(async () => {
   rootDir = mkdtempSync(path.join(tmpdir(), "inkwire-int-root-"));
   store = new Store(dataDir);
   sessions = new Sessions(store, { debounceMs: 60 });
-  http.server = createHttpServer({ store, sessions, screenshots: () => screenshots });
-  hub = new PanelHub(http.server, sessions, { focusTerminal: () => {} });
+  clients = new Clients(sessions);
+  http.server = createHttpServer({ store, sessions, clients, screenshots: () => screenshots });
+  hub = new PanelHub(http.server, sessions, clients, { focusTerminal: () => {} });
   screenshots = new Screenshots(hub, store.imagesDir);
   await new Promise<void>((r) => http.server!.listen(0, "127.0.0.1", () => r()));
   port = (http.server!.address() as AddressInfo).port;
@@ -509,13 +512,16 @@ describe("session over WS", () => {
     const { hookEvent, sessionSend } = await import("../../src/server/session-mode.js");
     const session = sessions.open(boardId);
     const n = mutations.addNode(session, "ai", { label: "hot path", kind: "service", at: [0, 0] }).ids[0]!;
-    hookEvent(sessions, { hook_event_name: "PreToolUse", permission_mode: "auto" }, "0");
-    sessions.mode = "inkwire";
+    const me = clients.ensure(101);
+    clients.attach(101, "test");
+    hookEvent(clients, { hook_event_name: "PreToolUse", permission_mode: "auto", claude_pid: 101 }, "0");
+    clients.commitClaim(me, boardId);
+    me.mode = "inkwire";
 
     const c1 = await connect(boardId);
     const c2 = await connect(boardId);
 
-    const pending = sessionSend(sessions, session, { text: "see this", highlight: { label: "here", nodes: [n], edges: [] } });
+    const pending = sessionSend(clients, me, session, { text: "see this", highlight: { label: "here", nodes: [n], edges: [] } });
     let s = await until(c2, (m) => m.session.pending);
     expect(s.session.mode).toBe("inkwire");
     expect(s.session.highlight).toMatchObject({ label: "here", nodes: [n] });
@@ -539,5 +545,69 @@ describe("session over WS", () => {
     expect(c1.messages.filter((m) => m.type === "error")).toEqual([]);
     await c1.close();
     await c2.close();
+  });
+
+  it("a panel reply reaches only the Client that talks on the board; /api/hook routes by ?pid=", async () => {
+    const { sessionSend } = await import("../../src/server/session-mode.js");
+    // The hook route: ?pid= makes or finds the Client of that Claude Code pid.
+    const res = await fetch(`http://127.0.0.1:${port}/api/hook?bg=0&pid=303`, {
+      method: "POST",
+      body: JSON.stringify({ hook_event_name: "PreToolUse", permission_mode: "auto", session_id: "s303" }),
+    });
+    expect(await res.text()).toBe("ok");
+    expect(clients.get(303)?.hook).toMatchObject({ permissionMode: "auto", autoBackground: "0", sessionId: "s303" });
+    // A bad or missing ?pid= becomes null: the event falls back to the Client with that session_id, and makes no new Client.
+    const count = clients.all().length;
+    for (const [i, q] of ["&pid=abc", "&pid=0", "&pid=-5", ""].entries()) {
+      const mode = `fallback-${i}`;
+      const r = await fetch(`http://127.0.0.1:${port}/api/hook?bg=0${q}`, {
+        method: "POST",
+        body: JSON.stringify({ hook_event_name: "PreToolUse", permission_mode: mode, session_id: "s303" }),
+      });
+      expect(await r.text()).toBe("ok");
+      expect(clients.get(303)?.hook?.permissionMode).toBe(mode);
+      expect(clients.all()).toHaveLength(count);
+    }
+
+    const x = sessions.create("talk A", rootDir);
+    const y = sessions.create("talk B", rootDir);
+    const [a, b] = [clients.ensure(401), clients.ensure(402)];
+    clients.attach(401, "a");
+    clients.attach(402, "b");
+    clients.commitClaim(a, x.boardId);
+    clients.commitClaim(b, y.boardId);
+    a.mode = "inkwire";
+    b.mode = "inkwire";
+    const pa = sessionSend(clients, a, x, { text: "A asks" });
+    const pb = sessionSend(clients, b, y, { text: "B asks" });
+
+    const panel = await connect(x.boardId);
+    let s = await until(panel, (m) => m.session.pending);
+    expect(s.session).toMatchObject({ mode: "inkwire", pending_board: x.boardId });
+    panel.send({ type: "session_reply", text: "for A", focus: null, selection: null });
+    expect(await pa).toMatchObject({ status: "reply", reply: "for A" });
+    expect(b.pending).not.toBeNull();
+    expect(y.thread.some((m) => m.type === "you")).toBe(false);
+
+    // The panel mode-off turns off only the Client that talks on this board.
+    panel.send({ type: "session_mode_off" });
+    s = await until(panel, (m) => m.session.mode === "pty");
+    expect(a.mode).toBe("pty");
+    expect(b.mode).toBe("inkwire");
+
+    // A board nobody talks on rejects a reply.
+    panel.send({ type: "session_reply", text: "nobody", focus: null, selection: null });
+    for (;;) {
+      const m = await panel.next();
+      if (m.type === "error") {
+        expect(m.text).toContain("no Claude Code session talks on this board");
+        break;
+      }
+    }
+    expect(b.pending).not.toBeNull();
+    clients.resolvePending(b, { status: "idle" });
+    expect(await pb).toEqual({ status: "idle" });
+    b.mode = "pty";
+    await panel.close();
   });
 });
