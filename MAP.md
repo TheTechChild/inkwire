@@ -25,16 +25,16 @@ connects the MCP server to stdio. The port may already be taken by a sibling ser
 
 ```
 src/server/index.ts:14     main
-src/server/index.ts:72     probeHealth
-src/server/config.ts:13    loadConfig
-src/server/http.ts:33      createHttpServer
-src/server/http.ts:43      handle
-src/server/http.ts:187     serveFile
+src/server/index.ts:69     probeHealth
+src/server/config.ts:11    loadConfig
+src/server/http.ts:34      createHttpServer
+src/server/http.ts:44      handle
+src/server/http.ts:193     serveFile
 src/server/ws.ts:16        PanelHub
-src/server/mcp.ts:38       buildMcpServer
+src/server/mcp.ts:40       buildMcpServer
 ```
 
-Env: `INKWIRE_PORT`, `INKWIRE_DATA_DIR`, `INKWIRE_PROJECT_ROOT`. HTTP serves the panel from
+Env: `INKWIRE_PORT`, `INKWIRE_DATA_DIR`. There is no project-root env (see Project root). HTTP serves the panel from
 `dist/ui/` and the routes `/api/boards`, `/api/boards/:id/export`, `/api/boards/import`,
 `/api/capture/:id`, `/api/hook`.
 
@@ -51,15 +51,15 @@ appends to history, refolds, bumps revisions, schedules a 500 ms persist, and no
 MCP handlers pass author `"ai"`, WS handlers pass `"human"`. Authorship is never a tool argument.
 
 ```
-src/server/session.ts:70     class BoardSession
-src/server/session.ts:59     MutationSpec
-src/server/session.ts:166    mutate
-src/server/session.ts:150    refold
-src/server/session.ts:390    schedulePersist
-src/server/session.ts:396    persistNow
-src/server/session.ts:381    onChange
-src/server/session.ts:445    class Sessions
-src/server/session.ts:491    open
+src/server/session.ts:71     class BoardSession
+src/server/session.ts:60     MutationSpec
+src/server/session.ts:167    mutate
+src/server/session.ts:151    refold
+src/server/session.ts:403    schedulePersist
+src/server/session.ts:409    persistNow
+src/server/session.ts:394    onChange
+src/server/session.ts:458    class Sessions
+src/server/session.ts:504    open
 src/server/mutations.ts:49   addNode
 src/server/mutations.ts:125  addEdge
 src/server/mutations.ts:202  deleteElement
@@ -72,7 +72,8 @@ server-wide session mode.
 
 Beware: revisions are derived, per session. `refold` fingerprints the fold's graph and layout
 sections and bumps each counter only on content change. A move must never touch `graph.revision`.
-`boards.open` resets both counters.
+Revisions reset only when the server loads the board for the first time; `boards_open` on a board
+that is already open keeps its history and counters.
 
 Beware: `mutate` reports edges the fold pruned (from `canvas_delete`) in `ids`, and discards steps
 ahead of head when you edit behind it (`truncated`).
@@ -92,7 +93,7 @@ src/core/fold.ts:96       applyStep
 src/core/state.ts:80      buildCanvasState
 src/core/state.ts:36      historySummary
 src/core/state.ts:63      strokeSummaries
-src/server/session.ts:349 state
+src/server/session.ts:362 state
 ```
 
 A step whose op missed (add over an existing id, set or del of an absent id) is flagged conflict.
@@ -118,8 +119,8 @@ src/core/history.ts:117   undo
 src/core/history.ts:129   redo
 src/core/diff.ts:39       diffCollections
 src/core/diff.ts:49       isEmptyOps
-src/server/session.ts:202 historyOp
-src/server/session.ts:367 historyRows
+src/server/session.ts:203 historyOp
+src/server/session.ts:380 historyRows
 ```
 
 Beware: coalescing re-diffs from the tip step's original `before` snapshot. Never concatenate op
@@ -159,25 +160,25 @@ name into an underscore name, takes the input shape from `toolArgs`, turns throw
 `bindcode.ts`, `board-file.ts`.
 
 ```
-src/server/mcp.ts:38    buildMcpServer
-src/server/mcp.ts:101   register
-src/server/mcp.ts:142   register("boards.list"
-src/server/mcp.ts:199   get_state
-src/server/mcp.ts:222   screenshot
-src/server/mcp.ts:241   infer_structure
-src/server/mcp.ts:249   register("canvas.add_node"
-src/server/mcp.ts:305   bind_code
-src/server/mcp.ts:368   lint
-src/server/mcp.ts:384   history.get
-src/server/mcp.ts:396   layers.list
-src/server/mcp.ts:459   paths.create
-src/server/mcp.ts:514   drafts.create
-src/server/mcp.ts:560   notebooks.create
+src/server/mcp.ts:40    buildMcpServer
+src/server/mcp.ts:104   register
+src/server/mcp.ts:145   register("boards.list"
+src/server/mcp.ts:241   get_state
+src/server/mcp.ts:268   screenshot
+src/server/mcp.ts:287   infer_structure
+src/server/mcp.ts:295   register("canvas.add_node"
+src/server/mcp.ts:351   bind_code
+src/server/mcp.ts:414   lint
+src/server/mcp.ts:431   history.get
+src/server/mcp.ts:443   layers.list
+src/server/mcp.ts:514   paths.create
+src/server/mcp.ts:578   drafts.create
+src/server/mcp.ts:624   notebooks.create
 ```
 
-Families, in file order: `session_*` (102, 109), `boards_*` (142-172), `canvas_*` (199-368),
-`history_get` (384), `layers_*` (396-442), `paths_*` (459-499), `drafts_*` (514-550),
-`notebooks_*` (560-602).
+Families, in file order: `session_*` (105, 112), `boards_*` (145-212: list, open, delete, update,
+create, clone, import), `canvas_*` (241-414), `history_get` (431), `layers_*` (443-489), `paths_*`
+(514-563), `drafts_*` (578-614), `notebooks_*` (624-666).
 
 Beware: tool names use underscores (`canvas_add_node`) because the tool-name charset forbids dots.
 The spec's dotted names appear in descriptions only. The `toolArgs` keys are still dotted.
@@ -232,8 +233,8 @@ src/shared/schemas.ts:26      nodeSchema
 src/shared/schemas.ts:36      edgeSchema
 src/shared/schemas.ts:95      layerSchema
 src/shared/schemas.ts:151     canvasStateSchema
-src/shared/schemas.ts:190     toolArgs
-src/shared/schemas.ts:363     ToolName
+src/shared/schemas.ts:194     toolArgs
+src/shared/schemas.ts:369     ToolName
 src/shared/types.ts:10        NODE_KINDS
 src/scripts/gen-schemas.ts:11 toJSONSchema
 ```
@@ -262,13 +263,13 @@ src/ui/canvas.ts:57         setupCanvas
 src/ui/canvas.ts:628        renderWorld
 src/ui/canvas.ts:565        hitNode
 src/ui/canvas.ts:619        deleteSelection
-src/ui/panel.ts:171         setupPanel
-src/ui/panel.ts:329         renderPanel
+src/ui/panel.ts:173         setupPanel
+src/ui/panel.ts:344         renderPanel
 src/ui/panel.ts:356         renderInspector
-src/ui/panel.ts:599         renderAsideStrip
-src/ui/panel.ts:617         renderLayers
-src/ui/panel.ts:493         renderHistory
-src/ui/panel.ts:103         loadPanelPrefs
+src/ui/panel.ts:614         renderAsideStrip
+src/ui/panel.ts:632         renderLayers
+src/ui/panel.ts:508         renderHistory
+src/ui/panel.ts:105         loadPanelPrefs
 ```
 
 Styles are in `src/ui/styles.css`; `src/ui/index.html` is the shell. `yarn build` bundles the UI to
@@ -322,7 +323,7 @@ src/server/session-mode.ts:283   hookEvent
 src/server/session-mode.ts:23    BLOCK_CEILING
 src/server/session-mode.ts:24    AUTO_MODES
 src/server/session-mode.ts:338   focusTerminal
-src/server/session.ts:435        HookReport
+src/server/session.ts:448        HookReport
 src/server/http.ts:55            /api/hook
 src/ui/session.ts:22             setupSession
 src/ui/session.ts:117            renderSession
@@ -358,9 +359,9 @@ src/core/layers.ts:28      downstream
 src/server/layers.ts:36    createLayer
 src/server/layers.ts:58    updateLayer
 src/server/layers.ts:82    deleteLayer
-src/server/session.ts:234  updateLayers
-src/server/session.ts:245  setFocus
-src/ui/panel.ts:617        renderLayers
+src/server/session.ts:247  updateLayers
+src/server/session.ts:258  setFocus
+src/ui/panel.ts:632        renderLayers
 ```
 
 Beware: layer members are never pruned when a node is deleted; `liveMembers` filters at read time.
@@ -384,8 +385,8 @@ src/core/layers.ts:244    traceT
 src/server/layers.ts:108  createPath
 src/server/layers.ts:196  getPath
 src/server/layers.ts:227  openTrace
-src/server/session.ts:326 setTrace
-src/server/session.ts:333 updateTrace
+src/server/session.ts:339 setTrace
+src/server/session.ts:346 updateTrace
 src/ui/canvas.ts:928      effectiveTrace
 src/ui/canvas.ts:1093     renderTrace
 src/ui/canvas.ts:1172     renderWalk
@@ -409,9 +410,9 @@ src/core/drafts.ts:30      goneMarks
 src/server/drafts.ts:23    createDraft
 src/server/drafts.ts:42    updateDraft
 src/server/drafts.ts:101   markElement
-src/server/session.ts:258  updateDrafts
-src/server/session.ts:266  setActiveDraft
-src/ui/panel.ts:745        renderDrafts
+src/server/session.ts:271  updateDrafts
+src/server/session.ts:279  setActiveDraft
+src/ui/panel.ts:760        renderDrafts
 ```
 
 Beware: `active_draft` is never persisted. The error hue is shared between draft roles and lint. Draft
@@ -434,7 +435,7 @@ src/core/notebooks.ts:142    resolveNotebookRefs
 src/server/notebooks.ts:16   createNotebook
 src/server/notebooks.ts:69   appendToNotebook
 src/server/notebooks.ts:112  migrateNotes
-src/server/session.ts:275    updateNotebooks
+src/server/session.ts:288    updateNotebooks
 src/ui/notebook.ts:41        setupNotebook
 src/ui/notebook.ts:136       renderNotebook
 src/ui/notebook.ts:338       buildChip
@@ -448,24 +449,26 @@ Tests: `tests/core/notebooks.test.ts`.
 
 ## Code binding and lint
 
-`canvas_bind_code` attaches a `file:symbol` ref to a node. `validateRef` checks it against
-`INKWIRE_PROJECT_ROOT`. `lintBoard` reports findings for `canvas_lint`.
+`canvas_bind_code` attaches a `file:symbol` ref to a node. `validateRef` checks it against the
+board's `project_root` (see Project root). `lintBoard` reports findings for `canvas_lint`.
 
 ```
 src/server/bindcode.ts:16   splitRef
-src/server/bindcode.ts:38   validateRef
-src/server/bindcode.ts:54   stampRef
-src/server/bindcode.ts:63   refStatus
+src/server/bindcode.ts:40   validateRef
+src/server/bindcode.ts:56   stampRef
+src/server/bindcode.ts:65   refStatus
 src/core/symbols.ts:19      findSymbol
 src/core/symbols.ts:66      blockText
 src/server/lint.ts:11       LintFinding
-src/server/lint.ts:33       lintPath
-src/server/lint.ts:66       lintBoard
+src/server/lint.ts:34       lintPath
+src/server/lint.ts:67       lintBoard
 ```
 
 Checks include `note_node`, `ref_missing`, `symbol_missing`, `unbound`, `path_broken`, `path_ref_changed`, `path_ref_unverified`, `path_hop_unbound`, `draft_mark_gone` and `notebook_ref_gone`. Add a check inside `lintBoard`; the path checks live in `lintPath`, which `paths_play` also calls.
 
 `findSymbol` (pure) finds the declaration line and an indentation-plus-bracket-depth block end; `validateRef` returns `line` and `end`; `stampRef` returns the `blockText` hash for a ref (null when the symbol is gone). `refStatus` is the one step check (`ok`, `ref_missing`, `symbol_missing`, `changed`, `unverified`) shared by lint, `paths_get` and `paths_play`.
+
+Beware: every ref operation takes its root from the board: `writeRoot` for `bind_code` with a ref, path stamps, `verify` and `canvas_lint` (these fail on an unset or gone root, and refuse the main-checkout fallback); `readRoot` for `paths_get` and `paths_play` (these stay readable, with `ref_status: null` and a warning). `resolveRef` throws on a `''` root as a backstop. `lintPath` takes a null root and then skips the ref checks.
 
 Beware: a path step's `ref_hash` is written by the server, never a tool argument. An unchanged step (same edge, caption and ref) keeps its old stamp on `paths_update`; a new or changed step is stamped fresh. `verify: [hop]` is the only way to restamp without a change. A ref whose symbol is not found gets no stamp.
 
@@ -477,9 +480,9 @@ Mermaid export is a pure function.
 ```
 src/shared/board-file.ts:19   BOARD_FILE_VERSION
 src/shared/board-file.ts:21   boardFileSchema
-src/server/board-file.ts:20   exportBoard
-src/server/board-file.ts:57   importBoard
-src/server/board-file.ts:18   ImportError
+src/server/board-file.ts:21   exportBoard
+src/server/board-file.ts:80   importBoard
+src/server/board-file.ts:19   ImportError
 src/core/mermaid.ts:22        exportMermaid
 ```
 
@@ -487,16 +490,63 @@ Beware: raise `BOARD_FILE_VERSION` when the board shape changes, and keep old ve
 
 Tests: `tests/core/mermaid.test.ts`, `tests/integration/server.test.ts`.
 
+## Project root
+
+Each board stores its own `project_root` (ADR 0003); every code ref on the board resolves against
+it, for every caller and for the panel. `''` means unset: only a migrated row holds it. Each board
+also stores `main_root`, the main checkout when the root is inside a linked git worktree (`''`
+otherwise, and on any git failure). When the root is gone and `main_root` exists, reads fall back to
+it with a warning; ref writes and lint refuse until `boards_update` sets a new root.
+
+```
+src/server/project-root.ts:20   checkRootArg
+src/server/project-root.ts:32   mainRootOf
+src/server/project-root.ts:63   boardRoot
+src/server/project-root.ts:76   writeRoot
+src/server/project-root.ts:83   readRoot
+src/server/project-root.ts:93   rootOverlaps
+src/server/project-root.ts:106  listBoards
+src/server/session.ts:516       create
+src/server/session.ts:534       uniqueName
+src/server/session.ts:550       clone
+src/server/session.ts:235       updateMeta
+src/server/mcp.ts:145           register("boards.list"
+src/server/mcp.ts:172           register("boards.update"
+src/server/mcp.ts:187           register("boards.create"
+src/server/mcp.ts:198           register("boards.clone"
+src/server/mcp.ts:212           register("boards.import"
+src/server/board-file.ts:60     importRoot
+```
+
+The five board tools: `boards_list` (overlap filter: the root equals, contains, or is inside the
+caller's cwd; unset and gone roots always show, marked `root: "unset"`; `all: true` shows every
+board), `boards_create` (requires `project_root`), `boards_clone` (root defaults to the source's;
+content only, at step 0), `boards_update` (name or root; not a history step), and `boards_import`
+(explicit root, else the file's root when it exists here, else an error). Create, clone and import
+share `uniqueName`: an exact name that exists on any board gets the lowest free ` (N)`, and the
+result says `name_check: "OK"` or gives a `warning`. `GET /api/boards` lists every board (the panel
+has no cwd); `POST /api/boards/import?project_root=` gives a 400 that the panel answers with a prompt
+for the root, then retries.
+
+Migration: `Store` adds the `project_root` and `main_root` columns (`NOT NULL DEFAULT ''`) with the
+same try/catch `ALTER TABLE` style as the older columns.
+
+Beware: the root argument rule is one message, `project_root must be an existing absolute directory:
+<p>`. `checkRootArg` returns `path.resolve(p)`, not the real path.
+
+Tests: `tests/tools/project-root.test.ts`, `tests/integration/store.test.ts`,
+`tests/tools/contract.test.ts` ("project root (ADR 0003)"), `tests/integration/server.test.ts`.
+
 ## Persistence
 
 SQLite (`store.ts`) stores board content and bitmaps. `BoardSession` saves with a 500 ms debounce.
 History is not stored.
 
 ```
-src/server/store.ts:31    class Store
-src/server/store.ts:91    load
-src/server/store.ts:142   save
-src/server/store.ts:173   saveImage
+src/server/store.ts:35    class Store
+src/server/store.ts:110   load
+src/server/store.ts:164   save
+src/server/store.ts:198   saveImage
 ```
 
 Default data dir is `~/.inkwire` (`INKWIRE_DATA_DIR`).

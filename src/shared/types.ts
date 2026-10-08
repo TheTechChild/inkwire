@@ -151,6 +151,10 @@ export interface BoardMeta {
   name: string;
   created_at: number;
   updated_at: number;
+  /** The checkout every code ref on the board resolves against (ADR 0003). '' means unset. */
+  project_root: string;
+  /** The main checkout when project_root is inside a linked git worktree; '' means none. Reads fall back to it. */
+  main_root: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,7 +258,7 @@ export interface ScopeInfo {
 }
 
 export interface CanvasState {
-  board: { id: string; name: string };
+  board: { id: string; name: string; project_root: string };
   graph: {
     revision: number;
     nodes: NodeEl[];

@@ -21,7 +21,6 @@ beforeAll(async () => {
       ...process.env,
       INKWIRE_DATA_DIR: mkdtempSync(path.join(tmpdir(), "inkwire-smoke-")),
       INKWIRE_PORT: String(20000 + Math.floor(Math.random() * 20000)),
-      INKWIRE_PROJECT_ROOT: root,
     },
     stderr: "ignore",
   });
@@ -47,7 +46,7 @@ describe("stdio transport", () => {
   it("creates a board and reads clean state (no stdout pollution)", async () => {
     const created = (await client.callTool({
       name: "boards_create",
-      arguments: { name: "smoke board" },
+      arguments: { name: "smoke board", project_root: root },
     })) as { content: { type: string; text?: string }[] };
     const body = JSON.parse(created.content[0]!.text!);
     expect(body.board_id).toBeTruthy();

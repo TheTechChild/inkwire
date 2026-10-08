@@ -39,15 +39,12 @@ async function main(): Promise<void> {
     });
     http.listen(config.port, "127.0.0.1", () => resolve());
   });
-  console.error(
-    `inkwire panel on http://127.0.0.1:${config.port}/  (data: ${config.dataDir}, project root: ${config.projectRoot})`,
-  );
+  console.error(`inkwire panel on http://127.0.0.1:${config.port}/  (data: ${config.dataDir})`);
 
   const mcp = buildMcpServer({
     sessions,
     store,
     screenshots: () => screenshots,
-    projectRoot: config.projectRoot,
     pluginRoot,
     panelUrl: (boardId) => `http://127.0.0.1:${config.port}/?board=${boardId}`,
   });

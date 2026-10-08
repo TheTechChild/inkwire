@@ -2,12 +2,14 @@
 name: use-inkwire
 description: Move the conversation into the inkwire Session tab. Replies go to the panel through session_send until /back-to-claude-code.
 disable-model-invocation: true
-allowed-tools: mcp__plugin_inkwire_inkwire__session_mode mcp__plugin_inkwire_inkwire__session_send mcp__plugin_inkwire_inkwire__boards_list mcp__plugin_inkwire_inkwire__boards_open
+allowed-tools: mcp__plugin_inkwire_inkwire__session_mode mcp__plugin_inkwire_inkwire__session_send mcp__plugin_inkwire_inkwire__boards_list mcp__plugin_inkwire_inkwire__boards_open mcp__plugin_inkwire_inkwire__boards_create
 ---
 
 The human is about to leave the terminal for the inkwire panel in the browser.
 
 1. If no board is open, call `boards_list`, then `boards_open` on the board the human means (ask in the terminal if it is not obvious). Print the panel URL from the result.
+   - `boards_list` shows the boards whose `project_root` overlaps this cwd (the root is the cwd, contains it, or is inside it), plus the boards with `root: unset`. If the board that the human names is not there, call `boards_list` with `all: true`.
+   - If no board fits, `boards_create` needs a name and a `project_root`: the absolute path of the checkout that the board is a drawing of. Ask the human for the root. Do not assume the cwd.
 2. Call `session_mode` with `on: true`.
    - If it fails, print the error message as it is. It says how to relaunch. Stop.
    - If it succeeds, inkwire mode is on. Follow the `instruction` in the result for the rest of the session.

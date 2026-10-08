@@ -44,11 +44,13 @@ const SCOPE_NOTES: Record<Scope, string> = {
 const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
   ["session.mode", "Flip the mode flag the server holds. On: fails unless permission mode is auto; arms the Stop hook that redirects replies into session_send. Off: releases any pending session_send with mode_off.", "(on: boolean) → { mode, hook }", (app) => switchTab(app, "session")],
   ["session.send", "Deliver a reply to the Session tab, optionally pointing at elements, at a path (or a hop on it), at a draft, or at a notebook. Blocks until the human replies (20 min timeout) and returns their message with focus, selection, scrubber position, active draft and revision as ids.", "(text, highlight?: { nodes, edges, label }, path?: { layer_id, path_id, hop? }, draft?: string, notebook?: string) → { reply, ctx } | { status: mode_off | idle }", (app) => switchTab(app, "session")],
-  ["boards.list", "Board ids, names, element counts, last touched.", "() → { boards }", null as never],
-  ["boards.open", "Make a board current and return its state.", "(board_id) → CanvasState", null as never],
-  ["boards.create", "New empty board.", "(name) → { board_id }", null as never],
+  ["boards.list", "Boards whose project root overlaps the caller's cwd, plus boards with root: unset. all: true lists every board.", "(all?) → { boards }", null as never],
+  ["boards.open", "Return the state of a board. If you are not the author of a board, the board also becomes your current board. If you are the author of a board, your current board does not change. Opening never claims or releases authorship. A board that is already open keeps its history and revision counters.", "(board_id) → CanvasState", null as never],
+  ["boards.create", "New empty board. project_root is the checkout that every code ref on the board resolves against.", "(name, project_root) → { board_id, name_check | warning }", null as never],
+  ["boards.clone", "Copy a board into a new board at step 0. The root is the source's root unless you give one.", "(board_id, name?, project_root?) → { board_id, name_check | warning }", null as never],
   ["boards.delete", "Delete a board permanently.", "(board_id) → { deleted }", null as never],
-  ["boards.import", "Load a downloaded board file from disk into a new board.", "(path) → { board_id }", null as never],
+  ["boards.update", "Rename a board or set its project root. Not a history step.", "(board_id, name?, project_root?) → { board_id, name, project_root }", null as never],
+  ["boards.import", "Load a downloaded board file from disk into a new board. The root is project_root, else the file's root when it exists here.", "(path, project_root?) → { board_id, name_check | warning }", null as never],
   ["canvas.get_state", "What the human is looking at right now — only the focused layer, with its seams and what it omitted.", "(include_ink_geometry?, include_layout?) → CanvasState", (app) => { app.stateView = "scoped"; switchTab(app, "state"); }],
   ["canvas.get_board", "The whole board regardless of focus, plus layers[] and focus.", "(include_layout?) → CanvasState", (app) => { app.stateView = "board"; switchTab(app, "state"); }],
   ["canvas.screenshot", "Pixels of the current viewport, for reading handwriting and layout.", "(viewport?, fit?) → image", (app) => downloadScreenshot(app)],
@@ -59,11 +61,11 @@ const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
   ["canvas.update_edge", "Change an edge's label, schema, kind, or condition.", "(edge_id, …fields)", null as never],
   ["canvas.delete", "Remove an element; a node takes its edges with it.", "(id)", null as never],
   ["canvas.move", "Set layout for an element. Bumps layout.revision only.", "(id, at, size?)", null as never],
-  ["canvas.bind_code", "Attach a file/function or endpoint to a node — validated against the project root.", "(node_id, ref | endpoint)", null as never],
+  ["canvas.bind_code", "Attach a file/function or endpoint to a node — validated against the board's project root.", "(node_id, ref | endpoint)", null as never],
   ["canvas.annotate", "Write a comment about an element — a missing case, an unhandled error path. It lands in the board's notes notebook as a paragraph refbacked to the element, not on the canvas.", "(target_id, text) → { notebook_id, target_id }", null as never],
   ["canvas.set_viewport", "Pan and zoom so the human sees what you mean.", "(x, y, zoom)", null as never],
   ["canvas.export_mermaid", "Serialise the graph as text for the transcript.", "() → string", null as never],
-  ["canvas.lint", "Static checks against the project root: missing refs, unbound nodes, edge shape.", "() → findings", null as never],
+  ["canvas.lint", "Static checks against the board's project root: missing refs, unbound nodes, edge shape.", "() → findings", null as never],
   ["history.get", "Read the timeline: steps, authors, conflicts. Read-only.", "(limit?) → { head, steps }", null as never],
   ["layers.list", "Every layer with its letter, title, member count — and which one the human is looking at.", "() → { focus, layers }", (app) => switchTab(app, "layers")],
   ["layers.create", "Cut a named subset out of the board. downstream: true also adds everything reachable along edges.", "(node_ids, title?, note?, downstream?) → { layer_id, letter, members }", null as never],
@@ -274,14 +276,27 @@ export function setupPanel(app: App): void {
 async function importBoardFile(file: File | undefined): Promise<void> {
   if (!file) return;
   try {
-    const res = await fetch("/api/boards/import", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: await file.text(),
-    });
-    const body = (await res.json()) as { board_id?: string; name?: string; error?: string };
-    if (!res.ok || !body.board_id) throw new Error(body.error ?? `server returned ${res.status}`);
-    toast(`imported "${body.name}" — opening it`);
+    const text = await file.text();
+    let root: string | null = null;
+    let body: { board_id?: string; name?: string; error?: string; warning?: string };
+    for (;;) {
+      const query = root === null ? "" : `?project_root=${encodeURIComponent(root)}`;
+      const res = await fetch(`/api/boards/import${query}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: text,
+      });
+      body = (await res.json()) as typeof body;
+      if (res.ok && body.board_id) break;
+      // No usable root (an old file, or a root that is not on this machine): ask the person where the checkout is, then retry.
+      if (res.status === 400 && /project.root/.test(body.error ?? "")) {
+        root = window.prompt(`${body.error}\n\nType the absolute path of that checkout on this machine:`, root ?? "");
+        if (root === null) return;
+        continue;
+      }
+      throw new Error(body.error ?? `server returned ${res.status}`);
+    }
+    toast(body.warning ?? `imported "${body.name}" — opening it`);
     location.href = `/?board=${encodeURIComponent(body.board_id)}`;
   } catch (err) {
     toast(`import failed: ${err instanceof Error ? err.message : String(err)}`, true);

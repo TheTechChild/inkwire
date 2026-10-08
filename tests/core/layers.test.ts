@@ -40,7 +40,7 @@ function fixture(): Collections {
 function whole(c: Collections, layers: Layer[], focus: string | null): CanvasState {
   const sim = new Sim(c);
   return buildCanvasState({
-    board: { id: "b", name: "b" },
+    board: { id: "b", name: "b", project_root: "/tmp" },
     foldResult: sim.fold(),
     history: sim.history,
     graphRevision: 7,

@@ -1,6 +1,6 @@
 // TESTS.md § 5 — integration against a real HTTP+WS server on an ephemeral
 // port, with `ws` as the fake browser panel.
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
@@ -15,6 +15,7 @@ import * as mutations from "../../src/server/mutations.js";
 import type { ServerMessage } from "../../src/shared/protocol.js";
 
 let dataDir: string;
+let rootDir: string;
 let store: Store;
 let sessions: Sessions;
 let hub: PanelHub;
@@ -86,6 +87,7 @@ class PanelClient {
 
 beforeAll(async () => {
   dataDir = mkdtempSync(path.join(tmpdir(), "inkwire-int-"));
+  rootDir = mkdtempSync(path.join(tmpdir(), "inkwire-int-root-"));
   store = new Store(dataDir);
   sessions = new Sessions(store, { debounceMs: 60 });
   http.server = createHttpServer({ store, sessions, screenshots: () => screenshots });
@@ -93,7 +95,7 @@ beforeAll(async () => {
   screenshots = new Screenshots(hub, store.imagesDir);
   await new Promise<void>((r) => http.server!.listen(0, "127.0.0.1", () => r()));
   port = (http.server!.address() as AddressInfo).port;
-  const session = sessions.create("integration board");
+  const session = sessions.create("integration board", rootDir);
   boardId = session.boardId;
 });
 
@@ -154,7 +156,7 @@ describe("integration", () => {
   });
 
   it("DELETE /api/boards/:id drops the row and closes the board's sockets", async () => {
-    const doomed = sessions.create("doomed");
+    const doomed = sessions.create("doomed", rootDir);
     const client = await connect(doomed.boardId);
     await client.nextState();
     const closed = new Promise<number>((r) => client.socket.on("close", (code) => r(code)));
@@ -201,7 +203,7 @@ describe("integration", () => {
   });
 
   it("board file: path steps with no ref_hash import and export", async () => {
-    const src = sessions.create("No stamps");
+    const src = sessions.create("No stamps", rootDir);
     const a = mutations.addNode(src, "human", { label: "a", kind: "entry", at: [0, 0] }).ids[0]!;
     const b = mutations.addNode(src, "human", { label: "b", kind: "service", at: [300, 0] }).ids[0]!;
     const e = mutations.addEdge(src, "human", { from: a, to: b }).ids[0]!;
@@ -221,7 +223,7 @@ describe("integration", () => {
   });
 
   it("board file: export embeds bitmaps, import creates an equal board", async () => {
-    const src = sessions.create("Export me");
+    const src = sessions.create("Export me", rootDir);
     const a = mutations.addNode(src, "human", { label: "gateway", kind: "entry", at: [10, 20] }).ids[0]!;
     const b = mutations.addNode(src, "ai", { label: "auth", kind: "service", at: [300, 20], ref: "auth.ts#verify" }).ids[0]!;
     const e = mutations.addEdge(src, "ai", { from: a, to: b, kind: "async", label: "token" }).ids[0]!;
@@ -252,7 +254,8 @@ describe("integration", () => {
     expect(exp.headers.get("content-disposition")).toBe('attachment; filename="export-me.inkwire.json"');
     const file = await exp.json();
     expect(file.format).toBe("inkwire-board");
-    expect(file.version).toBe(4);
+    expect(file.version).toBe(5);
+    expect(file.project_root).toBe(rootDir);
     expect(file.nodes).toHaveLength(2);
     expect(file.layers[0].paths).toHaveLength(1);
     expect(file.drafts).toEqual(src.drafts);
@@ -267,7 +270,9 @@ describe("integration", () => {
     expect(imp.status).toBe(200);
     const created = await imp.json();
     expect(created.board_id).not.toBe(src.boardId);
-    expect(created).toMatchObject({ name: "Export me", nodes: 2, edges: 1, strokes: 1, images: 1 });
+    // The source still exists, so the one name rule gives the import " (2)".
+    expect(created).toMatchObject({ name: "Export me (2)", nodes: 2, edges: 1, strokes: 1, images: 1, project_root: rootDir });
+    expect(created.warning).toBe("a board named Export me exists; this board is named Export me (2)");
 
     const dst = sessions.open(created.board_id);
     expect(dst.collections()).toEqual(src.collections());
@@ -292,19 +297,21 @@ describe("integration", () => {
 
     // A version 1 file predates paths: its layers import with paths: [].
     const { paths: _paths, ...v1Layer } = file.layers[0];
-    const v1 = await fetch(`http://127.0.0.1:${port}/api/boards/import`, {
+    const { project_root: _root, ...noRoot } = file;
+    const withRoot = `http://127.0.0.1:${port}/api/boards/import?project_root=${encodeURIComponent(rootDir)}`;
+    const v1 = await fetch(withRoot, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...file, version: 1, layers: [v1Layer] }),
+      body: JSON.stringify({ ...noRoot, version: 1, layers: [v1Layer] }),
     });
     expect(v1.status).toBe(200);
     expect(sessions.open((await v1.json()).board_id).layers[0]!.paths).toEqual([]);
 
     // A version 2 file predates drafts: it imports with drafts: [].
-    const v2 = await fetch(`http://127.0.0.1:${port}/api/boards/import`, {
+    const v2 = await fetch(withRoot, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...file, version: 2, drafts: undefined }),
+      body: JSON.stringify({ ...noRoot, version: 2, drafts: undefined }),
     });
     expect(v2.status).toBe(200);
     expect(sessions.open((await v2.json()).board_id).drafts).toEqual([]);
@@ -319,10 +326,10 @@ describe("integration", () => {
     expect((await dupDraft.json()).error).toContain("duplicate draft id: D1");
 
     // A version 3 file predates notebooks: it imports with notebooks: [].
-    const v3 = await fetch(`http://127.0.0.1:${port}/api/boards/import`, {
+    const v3 = await fetch(withRoot, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...file, version: 3, notebooks: undefined }),
+      body: JSON.stringify({ ...noRoot, version: 3, notebooks: undefined }),
     });
     expect(v3.status).toBe(200);
     expect(sessions.open((await v3.json()).board_id).notebooks).toEqual([]);
@@ -345,6 +352,59 @@ describe("integration", () => {
     });
     expect(broken.status).toBe(400);
     expect((await broken.json()).error).toContain(`path ${walk.id} on layer A: hop 2`);
+  });
+
+  it("board file v5: the root travels with the file; import asks for one when it cannot use it", async () => {
+    const importAt = (body: unknown, root?: string) =>
+      fetch(`http://127.0.0.1:${port}/api/boards/import${root === undefined ? "" : `?project_root=${encodeURIComponent(root)}`}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const src = sessions.create("Rooted", rootDir);
+    mutations.addNode(src, "human", { label: "a", kind: "entry", at: [0, 0] });
+    const file = await (await fetch(`http://127.0.0.1:${port}/api/boards/${src.boardId}/export`)).json();
+    expect(file).toMatchObject({ version: 5, project_root: rootDir });
+
+    // An unset board (a migrated row) exports with no root.
+    const unset = sessions.create("Unset", "");
+    expect(unset.meta.project_root).toBe("");
+    const unsetFile = await (await fetch(`http://127.0.0.1:${port}/api/boards/${unset.boardId}/export`)).json();
+    expect(unsetFile).not.toHaveProperty("project_root");
+
+    // The file's root exists here: it imports with that root.
+    const ok = await importAt(file);
+    expect(ok.status).toBe(200);
+    expect(sessions.open((await ok.json()).board_id).meta.project_root).toBe(rootDir);
+
+    // The file's root does not exist here: 400, naming it.
+    const gone = await importAt({ ...file, project_root: "/no/such/checkout" });
+    expect(gone.status).toBe(400);
+    expect((await gone.json()).error).toBe("the file names project root /no/such/checkout, which does not exist here — pass project_root");
+
+    // The explicit root wins over the file's root.
+    const other = mkdtempSync(path.join(tmpdir(), "inkwire-int-other-"));
+    const explicit = await importAt(file, other);
+    expect(explicit.status).toBe(200);
+    expect(sessions.open((await explicit.json()).board_id).meta.project_root).toBe(other);
+
+    // A bad explicit root fails even when the file's root exists: it never falls through.
+    const bad = await importAt(file, "relative/dir");
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toBe("project_root must be an existing absolute directory: relative/dir");
+
+    // A v4 file has no root: with no argument it gives 400.
+    const { project_root: _r, ...v4 } = file;
+    const old = await importAt({ ...v4, version: 4 });
+    expect(old.status).toBe(400);
+    expect((await old.json()).error).toBe("the file has no project root — pass project_root");
+
+    // The panel's list has every board, each with project_root, and the unset mark.
+    const { boards } = await (await fetch(`http://127.0.0.1:${port}/api/boards`)).json();
+    for (const b of boards) expect(b).toHaveProperty("project_root");
+    expect(boards.find((b: { id: string }) => b.id === unset.boardId)).toMatchObject({ project_root: "", root: "unset" });
+    expect(boards.find((b: { id: string }) => b.id === src.boardId)).not.toHaveProperty("root");
+    rmSync(other, { recursive: true, force: true });
   });
 
   it("screenshot with a client attached returns the client's PNG", async () => {

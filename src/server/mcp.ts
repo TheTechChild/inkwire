@@ -21,12 +21,14 @@ import { createDraft, deleteDraft, getDraft, updateDraft } from "./drafts.js";
 import { appendToNotebook, createNotebook, deleteNotebook, findNotebook, findOrCreateNotesNotebook, updateNotebook } from "./notebooks.js";
 import { sessionMode, sessionSend } from "./session-mode.js";
 import type { Store } from "./store.js";
+import { checkRootArg, listBoards, mainRootOf, readRoot, writeRoot } from "./project-root.js";
 
 export interface McpDeps {
   sessions: Sessions;
   store: Store;
   screenshots: () => Screenshots;
-  projectRoot: string;
+  /** The caller's cwd: the boards_list overlap filter and relative import paths. Default process.cwd(). */
+  cwd?: () => string;
   panelUrl: (boardId: string) => string;
   /** Repo root, for the plugin relaunch hint. */
   pluginRoot?: string;
@@ -38,6 +40,7 @@ const AUTHOR = "ai" as const;
 export function buildMcpServer(deps: McpDeps): McpServer {
   const server = new McpServer({ name: "inkwire", version: "0.1.0" });
   const { sessions } = deps;
+  const cwd = deps.cwd ?? (() => process.cwd());
 
   const text = (value: unknown) => ({
     content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
@@ -139,13 +142,14 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     },
   );
 
-  register("boards.list", "List boards on this server: id, name, node and edge counts, last touched. Call this first in a session.", () =>
-    text({ boards: deps.store.list() }),
+  register("boards.list",
+    "Boards for this checkout (the root equals, contains, or is inside your cwd), plus boards with root: unset. all: true lists every board. Each entry has id, name, node and edge counts, last touched, project_root and main_root. Call this first in a session.",
+    (args: { all?: boolean }) => text({ boards: listBoards(deps.store.list(), cwd(), args.all ?? false) }),
   );
 
   register(
     "boards.open",
-    "Make a board current for this session and return its state. Starts a fresh in-memory history with the stored board as step 0, and resets the revision counters — do not cache revisions across opens. The result names the local panel URL for the human.",
+    "Return the state of a board. If you are not the author of a board, the board also becomes your current board. If you are the author of a board, your current board does not change (it is always the board you author). Opening never claims or releases authorship. If the board is already open in the daemon, its in-memory history and revision counters stay. A board that is not open yet starts at step 0. The result names the panel URL.",
     (args: { board_id: string }) => {
       const session = sessions.open(args.board_id);
       sessions.currentBoardId = session.boardId;
@@ -162,24 +166,60 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     },
   );
 
-  register("boards.create", "Create an empty board and make it current.", (args: { name: string }) => {
-    const session = sessions.create(args.name);
-    sessions.currentBoardId = session.boardId;
-    return text({ board_id: session.boardId, panel_url: deps.panelUrl(session.boardId) });
-  });
+  // The board a boards_* write acts on. M3 adds the Author gate here.
+  const writable = (boardId: string) => sessions.resolve(boardId);
 
-  register(
-    "boards.import",
-    `Load a downloaded inkwire board file (…​.inkwire.json) from disk into a new board and make it current. path is resolved against the project root (${deps.projectRoot}) when relative, or given absolute. The result names the local panel URL for the human to open in the browser.`,
-    (args: { path: string }) => {
-      const file = path.isAbsolute(args.path) ? args.path : path.join(deps.projectRoot, args.path);
+  register("boards.update",
+    "Rename a board or set its project_root (an existing absolute directory; every code ref on the board resolves against it). Give one field or both. This is not a history step, so it cannot be undone from the timeline.",
+    (args: { board_id: string; name?: string; project_root?: string }) => {
+      if (args.name === undefined && args.project_root === undefined) throw new Error("give name or project_root");
+      const root = args.project_root !== undefined ? checkRootArg(args.project_root) : undefined;
+      const session = writable(args.board_id);
+      session.updateMeta(AUTHOR, {
+        ...(args.name !== undefined ? { name: args.name } : {}),
+        ...(root !== undefined ? { project_root: root, main_root: mainRootOf(root) } : {}),
+      });
+      session.persistNow();
+      return text({ board_id: session.boardId, name: session.meta.name, project_root: session.meta.project_root, main_root: session.meta.main_root });
+    },
+  );
+
+  register("boards.create",
+    "Create an empty board and make it current. project_root is the checkout the board is a drawing of: an existing absolute directory. Every code ref on the board resolves against it. Ask the person for it; do not assume your cwd. A name that exists gets the lowest free \" (N)\".",
+    (args: { name: string; project_root: string }) => {
+      const root = checkRootArg(args.project_root);
+      const { name, ...check } = sessions.uniqueName(args.name);
+      const session = sessions.create(name, root);
+      sessions.currentBoardId = session.boardId;
+      return text({ board_id: session.boardId, name, project_root: root, panel_url: deps.panelUrl(session.boardId), ...check });
+    },
+  );
+
+  register("boards.clone",
+    "Copy a board into a new board and make it current: content, layers (with paths and their ref stamps), drafts and notebooks. History is not copied: the clone starts at step 0. project_root defaults to the source's root, so a board for a worktree is one call. The default name is \"<source name> · <basename of new root>\", or \"<source name> copy\" for the same root; a name that exists gets the lowest free \" (N)\".",
+    (args: { board_id: string; name?: string; project_root?: string }) => {
+      const src = sessions.open(args.board_id);
+      const root = checkRootArg(args.project_root ?? src.meta.project_root);
+      const base =
+        args.name ?? (root === src.meta.project_root ? `${src.meta.name} copy` : `${src.meta.name} · ${path.basename(root)}`);
+      const { name, ...check } = sessions.uniqueName(base);
+      const session = sessions.clone(src.boardId, name, root);
+      sessions.currentBoardId = session.boardId;
+      return text({ board_id: session.boardId, name, project_root: root, source: src.boardId, panel_url: deps.panelUrl(session.boardId), ...check });
+    },
+  );
+
+  register("boards.import",
+    "Load a downloaded inkwire board file (….inkwire.json) from disk into a new board and make it current. path is resolved against your cwd when relative, or given absolute. The board's root is project_root when given (an existing absolute directory), else the file's root when that directory exists on this machine; else the call fails and asks for project_root. A name that exists gets the lowest free \" (N)\". The result names the local panel URL for the human to open in the browser.",
+    (args: { path: string; project_root?: string }) => {
+      const file = path.isAbsolute(args.path) ? args.path : path.resolve(cwd(), args.path);
       let raw: unknown;
       try {
         raw = JSON.parse(readFileSync(file, "utf8"));
       } catch (err) {
         throw new Error(`cannot read board file at ${file}: ${err instanceof Error ? err.message : String(err)}`);
       }
-      const session = importBoard(sessions, deps.store, raw);
+      const { session, ...check } = importBoard(sessions, deps.store, raw, { projectRoot: args.project_root });
       session.persistNow();
       sessions.currentBoardId = session.boardId;
       const c = session.collections();
@@ -191,6 +231,8 @@ export function buildMcpServer(deps: McpDeps): McpServer {
         edges: c.edges.length,
         strokes: c.strokes.length,
         images: c.images.length,
+        project_root: session.meta.project_root,
+        ...check,
       });
     },
   );
@@ -214,7 +256,11 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "The whole board regardless of focus, plus layers[] and focus so you know what the human is looking at. Use when a scoped read is not enough.",
     (args: { board_id?: string; include_layout?: boolean }) => {
       const session = sessions.resolve(args.board_id);
-      return text(session.state({ includeLayout: args.include_layout }));
+      const result = text(session.state({ includeLayout: args.include_layout }));
+      // A gone worktree: ref reads fall back to the main checkout, and say so beside the state.
+      const { root, warnings } = readRoot(session);
+      if (root !== null && warnings.length) result.content.push({ type: "text" as const, text: `warning: ${warnings.join("; ")}` });
+      return result;
     },
   );
 
@@ -303,12 +349,12 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "canvas.bind_code",
-    `Attach a source location or endpoint to a node. Refs are resolved against the project root (${deps.projectRoot}); write them relative to it as path/to/file.ts, path/to/file.ts:symbol, or path/to/file.ts#symbol. The call fails if the file does not exist; a missing symbol is a warning, not a failure.`,
+    "Attach a source location or endpoint to a node. Refs are resolved against the board's project_root; write them relative to it as path/to/file.ts, path/to/file.ts:symbol, or path/to/file.ts#symbol. The call fails if the file does not exist, or if the board's root is unset or gone (fix it with boards_update); a missing symbol is a warning, not a failure.",
     (args: { board_id?: string; node_id: string; ref?: string; endpoint?: string }) => {
       const session = sessions.resolve(args.board_id);
       let bind = { resolved_path: null as string | null, symbol_found: null as boolean | null, line: null as number | null, end: null as number | null };
       if (args.ref) {
-        const r = validateRef(deps.projectRoot, args.ref);
+        const r = validateRef(writeRoot(session), args.ref);
         bind = { resolved_path: r.resolved_path, symbol_found: r.symbol_found, line: r.line, end: r.end };
       }
       const result = mutations.updateNode(session, AUTHOR, {
@@ -316,7 +362,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
         ...(args.ref !== undefined ? { ref: args.ref } : {}),
         ...(args.endpoint !== undefined ? { endpoint: args.endpoint } : {}),
       });
-      return text({ ...result, ...bind, project_root: deps.projectRoot });
+      return text({ ...result, ...bind, project_root: session.meta.project_root });
     },
   );
 
@@ -366,13 +412,14 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "canvas.lint",
-    `Static checks against the project root (${deps.projectRoot}), no model: refs to missing files (error), refs whose symbol is gone (warn), nodes with neither ref nor endpoint (warn), error edges with no condition (warn), conditions on a node with a single outgoing edge (warn), paths with a broken hop or a hop ref that no longer resolves, path_ref_changed (warn: the hop's symbol block changed since it was verified), path_ref_unverified (warn: the hop was never verified), path_hop_unbound (warn: a hop with no ref on it or on either node), drafts marking an element that no longer exists (warn), a surviving note node (error — run the notes migration), a notebook ref that no longer resolves (warn). Run after a refactor to find board rot. For a semantic audit — does the edge really call what it says — read get_state and check the code yourself.`,
+    `Static checks resolved against the board's project_root, no model (fails when the root is unset or gone — fix it with boards_update): refs to missing files (error), refs whose symbol is gone (warn), nodes with neither ref nor endpoint (warn), error edges with no condition (warn), conditions on a node with a single outgoing edge (warn), paths with a broken hop or a hop ref that no longer resolves, path_ref_changed (warn: the hop's symbol block changed since it was verified), path_ref_unverified (warn: the hop was never verified), path_hop_unbound (warn: a hop with no ref on it or on either node), drafts marking an element that no longer exists (warn), a surviving note node (error — run the notes migration), a notebook ref that no longer resolves (warn). Run after a refactor to find board rot. For a semantic audit — does the edge really call what it says — read get_state and check the code yourself.`,
     (args: { board_id?: string }) => {
       const session = sessions.resolve(args.board_id);
       const c = session.collections();
-      const findings = lintBoard(deps.projectRoot, c.nodes, c.edges, session.layers, session.drafts, session.notebooks);
+      const root = writeRoot(session);
+      const findings = lintBoard(root, c.nodes, c.edges, session.layers, session.drafts, session.notebooks);
       return text({
-        project_root: deps.projectRoot,
+        project_root: root,
         errors: findings.filter((f) => f.level === "error").length,
         warnings: findings.filter((f) => f.level === "warn").length,
         findings,
@@ -447,12 +494,20 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     },
   );
 
-  // Step refs are validated like bind_code: a missing file fails, a missing symbol warns.
-  const refWarnings = (steps: { ref?: string | null }[] | undefined): string[] =>
-    (steps ?? []).flatMap((s, i) =>
-      s.ref && validateRef(deps.projectRoot, s.ref).symbol_found === false ? [`hop ${i + 1}: symbol not found in ${s.ref}`] : [],
-    );
-  const stamp = (ref: string) => stampRef(deps.projectRoot, ref);
+  // Step refs are validated like bind_code: a missing file fails, a missing symbol warns. The root is
+  // the board's, looked up only when a step has a ref or verify is given, so refless paths still write.
+  const refTools = (session: ReturnType<typeof sessions.resolve>) => {
+    let root: string | undefined;
+    const rootFor = () => (root ??= writeRoot(session));
+    return {
+      rootFor,
+      refWarnings: (steps: { ref?: string | null }[] | undefined): string[] =>
+        (steps ?? []).flatMap((s, i) =>
+          s.ref && validateRef(rootFor(), s.ref).symbol_found === false ? [`hop ${i + 1}: symbol not found in ${s.ref}`] : [],
+        ),
+      stamp: (ref: string) => stampRef(rootFor(), ref),
+    };
+  };
   const withWarnings = <T extends object>(result: T, warnings: string[]) => text(warnings.length ? { ...result, warnings } : result);
 
   register(
@@ -460,6 +515,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "Write an ordered walk on a layer: one hop per edge, each hop's `to` is the next hop's `from`, every edge inside the layer. Pass nodes and the server resolves the edges, naming both when a pair is joined twice. A caption per hop is what the human reads while it plays; a ref per hop is its citation. Fails naming the first hop that breaks the chain. The server stamps each hop's ref with a hash of the symbol block, and canvas_lint reports path_ref_changed when the code moves on.",
     (args: Parameters<typeof createPath>[2] & { board_id?: string }) => {
       const session = sessions.resolve(args.board_id);
+      const { refWarnings, stamp } = refTools(session);
       const warnings = refWarnings(args.steps ?? args.refs?.map((ref) => ({ ref })));
       return withWarnings(createPath(session, AUTHOR, args, stamp), warnings);
     },
@@ -470,6 +526,8 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "Retitle, or replace the steps whole. Steps are set as a list, never patched by index. Pass verify: [hop…] after you re-read the code and the caption is still true — an unchanged step keeps its old stamp otherwise.",
     (args: Parameters<typeof updatePath>[2] & { board_id?: string }) => {
       const session = sessions.resolve(args.board_id);
+      const { refWarnings, stamp, rootFor } = refTools(session);
+      if (args.verify?.length) rootFor();
       const warnings = refWarnings(args.steps);
       return withWarnings(updatePath(session, AUTHOR, args, stamp), warnings);
     },
@@ -486,13 +544,18 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     (args: { board_id?: string; path_id: string }) => {
       const session = sessions.resolve(args.board_id);
       const got = getPath(session, args);
-      return text({
-        ...got,
-        hops: got.hops.map((h) => {
-          const r = refStatus(deps.projectRoot, h);
-          return { ...h, line: r?.line ?? null, end: r?.end ?? null, ref_status: r?.status ?? null };
-        }),
-      });
+      // An unset or gone root keeps the path readable: ref_status null and a warning that names boards_update.
+      const { root, warnings } = readRoot(session);
+      return withWarnings(
+        {
+          ...got,
+          hops: got.hops.map((h) => {
+            const r = root === null ? null : refStatus(root, h);
+            return { ...h, line: r?.line ?? null, end: r?.end ?? null, ref_status: r?.status ?? null };
+          }),
+        },
+        warnings,
+      );
     },
   );
 
@@ -505,7 +568,8 @@ export function buildMcpServer(deps: McpDeps): McpServer {
       session.addLog(AUTHOR, `paths_play · ${args.path_id}`);
       const c = session.collections();
       const { layer, path } = findPath(session, args.path_id);
-      const warnings = lintPath(deps.projectRoot, layer, path, c.nodes, c.edges).map((f) => f.message);
+      const { root, warnings: rootWarnings } = readRoot(session);
+      const warnings = [...rootWarnings, ...lintPath(root, layer, path, c.nodes, c.edges).map((f) => f.message)];
       return withWarnings({ ok: true }, warnings);
     },
   );

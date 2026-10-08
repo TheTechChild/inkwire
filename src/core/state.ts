@@ -15,7 +15,7 @@ import type {
 } from "../shared/types.js";
 
 export interface StateInput {
-  board: { id: string; name: string };
+  board: { id: string; name: string; project_root: string };
   foldResult: FoldResult;
   history: History;
   graphRevision: number;

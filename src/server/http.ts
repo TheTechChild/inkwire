@@ -10,6 +10,7 @@ import type { Sessions } from "./session.js";
 import * as mutations from "./mutations.js";
 import { ImportError, exportBoard, exportFilename, importBoard } from "./board-file.js";
 import { hookEvent } from "./session-mode.js";
+import { listBoards } from "./project-root.js";
 
 const uiDir = fileURLToPath(new URL("../../dist/ui/", import.meta.url));
 
@@ -68,7 +69,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HttpDeps)
 
   if (req.method === "GET" && p === "/api/boards") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ boards: deps.store.list() }));
+    // The panel has no cwd, so it gets every board, each with its project_root and the unset mark.
+    res.end(JSON.stringify({ boards: listBoards(deps.store.list(), "/", true) }));
     return;
   }
 
@@ -99,7 +101,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HttpDeps)
     return;
   }
 
-  // Board file import: validate, create a new board with the content.
+  // Board file import: validate, create a new board with the content. ?project_root= wins over
+  // the file's root; with neither (or a root missing here) the 400 asks for one.
   if (req.method === "POST" && p === "/api/boards/import") {
     const body = await readBody(req);
     let raw: unknown;
@@ -111,7 +114,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HttpDeps)
       return;
     }
     try {
-      const session = importBoard(deps.sessions, deps.store, raw);
+      const projectRoot = url.searchParams.get("project_root") ?? undefined;
+      const { session, ...check } = importBoard(deps.sessions, deps.store, raw, { projectRoot });
       session.persistNow();
       const c = session.collections();
       res.writeHead(200, { "content-type": "application/json" });
@@ -123,6 +127,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HttpDeps)
           edges: c.edges.length,
           strokes: c.strokes.length,
           images: c.images.length,
+          project_root: session.meta.project_root,
+          ...check,
         }),
       );
     } catch (err) {

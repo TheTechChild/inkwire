@@ -24,6 +24,10 @@ export interface BoardListing {
   edges: number;
   ink: number;
   updated_at: number;
+  /** '' means unset (a migrated row). */
+  project_root: string;
+  /** The main checkout when project_root is in a linked git worktree; '' means none. */
+  main_root: string;
 }
 
 const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
@@ -50,7 +54,9 @@ export class Store {
       viewport    TEXT NOT NULL,
       layers      TEXT NOT NULL DEFAULT '[]',
       drafts      TEXT NOT NULL DEFAULT '[]',
-      notebooks   TEXT NOT NULL DEFAULT '[]'
+      notebooks   TEXT NOT NULL DEFAULT '[]',
+      project_root TEXT NOT NULL DEFAULT '',
+      main_root   TEXT NOT NULL DEFAULT ''
     )`);
     // Migration for rows created before layers/drafts/notebooks existed; "duplicate column" is the steady state.
     try {
@@ -68,12 +74,23 @@ export class Store {
     } catch {
       /* column already exists */
     }
+    // ADR 0003: '' means unset; only a migrated row holds it.
+    try {
+      this.db.exec("ALTER TABLE boards ADD COLUMN project_root TEXT NOT NULL DEFAULT ''");
+    } catch {
+      /* column already exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE boards ADD COLUMN main_root TEXT NOT NULL DEFAULT ''");
+    } catch {
+      /* column already exists */
+    }
   }
 
   list(): BoardListing[] {
     const rows = this.db
-      .prepare("SELECT id, name, updated_at, graph, ink FROM boards ORDER BY updated_at DESC")
-      .all() as { id: string; name: string; updated_at: number; graph: string; ink: string }[];
+      .prepare("SELECT id, name, updated_at, graph, ink, project_root, main_root FROM boards ORDER BY updated_at DESC")
+      .all() as { id: string; name: string; updated_at: number; graph: string; ink: string; project_root: string; main_root: string }[];
     return rows.map((r) => {
       const graph = JSON.parse(r.graph) as { nodes: unknown[]; edges: unknown[] };
       const ink = JSON.parse(r.ink) as unknown[];
@@ -84,6 +101,8 @@ export class Store {
         edges: graph.edges.length,
         ink: ink.length,
         updated_at: r.updated_at,
+        project_root: r.project_root,
+        main_root: r.main_root,
       };
     });
   }
@@ -101,6 +120,8 @@ export class Store {
         name: row.name as string,
         created_at: row.created_at as number,
         updated_at: row.updated_at as number,
+        project_root: (row.project_root as string | undefined) ?? "",
+        main_root: (row.main_root as string | undefined) ?? "",
       },
       collections: {
         nodes: graph.nodes,
@@ -124,11 +145,12 @@ export class Store {
   create(
     id: string,
     name: string,
+    roots: { project_root: string; main_root?: string },
     now: number,
     content?: { collections: Collections; viewport: Viewport; layers?: Layer[]; drafts?: Draft[]; notebooks?: Notebook[] },
   ): StoredBoard {
     const board: StoredBoard = {
-      meta: { id, name, created_at: now, updated_at: now },
+      meta: { id, name, created_at: now, updated_at: now, project_root: roots.project_root, main_root: roots.main_root ?? "" },
       collections: content?.collections ?? emptyCollections(),
       viewport: content?.viewport ?? DEFAULT_VIEWPORT,
       layers: content?.layers ?? [],
@@ -142,11 +164,12 @@ export class Store {
   save(board: StoredBoard, now: number): void {
     this.db
       .prepare(
-        `INSERT INTO boards (id, name, created_at, updated_at, graph, layout, ink, images, viewport, layers, drafts, notebooks)
-         VALUES (@id, @name, @created_at, @updated_at, @graph, @layout, @ink, @images, @viewport, @layers, @drafts, @notebooks)
+        `INSERT INTO boards (id, name, created_at, updated_at, graph, layout, ink, images, viewport, layers, drafts, notebooks, project_root, main_root)
+         VALUES (@id, @name, @created_at, @updated_at, @graph, @layout, @ink, @images, @viewport, @layers, @drafts, @notebooks, @project_root, @main_root)
          ON CONFLICT(id) DO UPDATE SET
            name = @name, updated_at = @updated_at, graph = @graph, layout = @layout,
-           ink = @ink, images = @images, viewport = @viewport, layers = @layers, drafts = @drafts, notebooks = @notebooks`,
+           ink = @ink, images = @images, viewport = @viewport, layers = @layers, drafts = @drafts, notebooks = @notebooks,
+           project_root = @project_root, main_root = @main_root`,
       )
       .run({
         id: board.meta.id,
@@ -161,6 +184,8 @@ export class Store {
         layers: JSON.stringify(board.layers),
         drafts: JSON.stringify(board.drafts),
         notebooks: JSON.stringify(board.notebooks),
+        project_root: board.meta.project_root,
+        main_root: board.meta.main_root,
       });
   }
 

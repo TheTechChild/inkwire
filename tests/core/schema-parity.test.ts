@@ -26,7 +26,7 @@ function sampleState(layers: Layer[] = [], focus: string | null = null): CanvasS
   sim.addEdge(a, b, "ai");
   sim.addStroke("human", [[620, 400], [810, 478]]);
   return buildCanvasState({
-    board: { id: "b_test", name: "sample" },
+    board: { id: "b_test", name: "sample", project_root: "/tmp" },
     foldResult: sim.fold(),
     history: sim.history,
     graphRevision: 3,
@@ -74,7 +74,7 @@ describe("schema parity", () => {
     const sim = new Sim();
     sim.addStroke("human", [[0, 0], [10, 10], [20, 5]]);
     const state = buildCanvasState({
-      board: { id: "b", name: "s" },
+      board: { id: "b", name: "s", project_root: "/tmp" },
       foldResult: sim.fold(),
       history: sim.history,
       graphRevision: 0,

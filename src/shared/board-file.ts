@@ -16,13 +16,15 @@ import {
 } from "./schemas.js";
 
 export const BOARD_FILE_FORMAT = "inkwire-board";
-export const BOARD_FILE_VERSION = 4;
+export const BOARD_FILE_VERSION = 5;
 
 export const boardFileSchema = z.object({
   format: z.literal(BOARD_FILE_FORMAT),
-  /** 1: before layers carried paths; 2: before drafts; 3: before notebooks. All default to [], so older files import unchanged. */
-  version: z.literal([1, 2, 3, BOARD_FILE_VERSION]),
+  /** 1: before layers carried paths; 2: before drafts; 3: before notebooks; 4: before project_root. All default, so older files import unchanged (an old file needs an explicit project_root). */
+  version: z.literal([1, 2, 3, 4, BOARD_FILE_VERSION]),
   name: z.string().min(1),
+  /** The checkout the board's refs resolve against on the machine that exported it. Omitted when unset. */
+  project_root: z.string().optional(),
   exported_at: z.number().optional(),
   viewport: viewportSchema.optional(),
   nodes: z.array(nodeSchema),

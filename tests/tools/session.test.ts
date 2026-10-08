@@ -40,7 +40,6 @@ beforeAll(async () => {
     sessions,
     store,
     screenshots: () => screenshots,
-    projectRoot: tmpdir(),
     pluginRoot: "/repo",
     focusTerminal: () => focused.push("focus"),
     panelUrl: (id) => `http://127.0.0.1:4691/?board=${id}`,
@@ -49,7 +48,7 @@ beforeAll(async () => {
   client = new Client({ name: "test", version: "0.0.0" });
   await mcp.connect(st);
   await client.connect(ct);
-  boardId = (await call("boards_create", { name: "session board" })).json().board_id;
+  boardId = (await call("boards_create", { name: "session board", project_root: tmpdir() })).json().board_id;
   a = (await call("canvas_add_node", { label: "auth", kind: "service" })).json().ids[0];
   b = (await call("canvas_add_node", { label: "db", kind: "store" })).json().ids[0];
 });
@@ -60,9 +59,9 @@ afterAll(async () => {
 });
 
 describe("session_mode", () => {
-  it("lists 43 tools with the two session tools registered", async () => {
+  it("lists 45 tools with the two session tools registered", async () => {
     const names = (await client.listTools()).tools.map((t) => t.name);
-    expect(names).toHaveLength(43);
+    expect(names).toHaveLength(45);
     expect(names).toContain("session_mode");
     expect(names).toContain("session_send");
   });
@@ -338,14 +337,14 @@ describe("review fixes", () => {
   it("a reply from another board is rejected; deleting the board releases the send", async () => {
     armed();
     await call("session_mode", { on: true });
-    const other = sessions.create("other");
+    const other = sessions.create("other", tmpdir());
     const pending = call("session_send", { text: "x" });
     await new Promise((r) => setTimeout(r, 10));
     expect(() => sessionReply(sessions, other, { text: "y", focus: null, selection: null })).toThrow(/on board/);
     expect(sessions.delete(boardId)).toBe(true);
     expect((await pending).json()).toEqual({ status: "idle" });
     expect(sessions.mode).toBe("pty");
-    boardId = (await call("boards_create", { name: "session board 2" })).json().board_id;
+    boardId = (await call("boards_create", { name: "session board 2", project_root: tmpdir() })).json().board_id;
     a = (await call("canvas_add_node", { label: "auth", kind: "service" })).json().ids[0];
   });
 

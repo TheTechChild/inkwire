@@ -149,7 +149,7 @@ export const scopeSchema = z.strictObject({
 });
 
 export const canvasStateSchema = z.strictObject({
-  board: z.strictObject({ id: z.string(), name: z.string() }),
+  board: z.strictObject({ id: z.string(), name: z.string(), project_root: z.string() }),
   graph: z.strictObject({
     revision: z.int().min(0),
     nodes: z.array(nodeSchema),
@@ -180,6 +180,10 @@ export const canvasStateSchema = z.strictObject({
 // the session-scoped current board applies when omitted.
 
 const boardScoped = { board_id: z.string().optional() };
+/** ADR 0003: an existing absolute directory. The handler checks the disk; the schema carries the rule text. */
+const projectRootArg = z
+  .string({ error: "project_root must be an existing absolute directory" })
+  .min(1, { error: "project_root must be an existing absolute directory" });
 const markArg = z.object({ id: z.string(), role: draftRoleSchema });
 const pathStepArg = z.object({
   edge: z.string(),
@@ -188,11 +192,13 @@ const pathStepArg = z.object({
 });
 
 export const toolArgs = {
-  "boards.list": z.object({}),
+  "boards.list": z.object({ all: z.boolean().optional() }),
   "boards.open": z.object({ board_id: z.string() }),
-  "boards.create": z.object({ name: z.string().min(1) }),
-  "boards.import": z.object({ path: z.string().min(1) }),
+  "boards.create": z.object({ name: z.string().min(1), project_root: projectRootArg }),
+  "boards.clone": z.object({ board_id: z.string(), name: z.string().min(1).optional(), project_root: projectRootArg.optional() }),
+  "boards.import": z.object({ path: z.string().min(1), project_root: projectRootArg.optional() }),
   "boards.delete": z.object({ board_id: z.string() }),
+  "boards.update": z.object({ board_id: z.string(), name: z.string().min(1).optional(), project_root: projectRootArg.optional() }),
   "canvas.get_state": z.object({
     ...boardScoped,
     include_ink_geometry: z.boolean().optional(),

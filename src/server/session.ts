@@ -37,6 +37,7 @@ import type {
 } from "../shared/types.js";
 import type { HistoryRow } from "../shared/protocol.js";
 import type { Store, StoredBoard } from "./store.js";
+import { mainRootOf } from "./project-root.js";
 
 export interface SessionDeps {
   store: Store;
@@ -230,6 +231,18 @@ export class BoardSession {
     this.notify();
   }
 
+  /** Rename or re-root the board. Not a history step, so not undoable. Persist and notify only. */
+  updateMeta(author: Author, patch: { name?: string; project_root?: string; main_root?: string }): void {
+    this.meta = { ...this.meta, ...patch };
+    const parts = [
+      ...(patch.name !== undefined ? [`rename · ${patch.name}`] : []),
+      ...(patch.project_root !== undefined ? [`project root · ${patch.project_root}`] : []),
+    ];
+    this.addLog(author, parts.join(" · ") || "board update");
+    this.schedulePersist();
+    this.notify();
+  }
+
   /** Layers are a view, not history: no step, no revision bump. Persist and notify only. */
   updateLayers(author: Author, label: string, fn: (layers: Layer[]) => Layer[]): void {
     this.layers = fn(this.layers);
@@ -348,7 +361,7 @@ export class BoardSession {
 
   state(opts: { includeInkGeometry?: boolean; includeLayout?: boolean } = {}): CanvasState {
     return buildCanvasState({
-      board: { id: this.meta.id, name: this.meta.name },
+      board: { id: this.meta.id, name: this.meta.name, project_root: this.meta.project_root },
       foldResult: this.foldCache,
       history: this.history,
       graphRevision: this.graphRevision,
@@ -498,16 +511,53 @@ export class Sessions {
     return session;
   }
 
-  /** New board; with `content`, it starts with that content as step 0 (import). */
+  /** New board; with `content`, it starts with that content as step 0 (import, clone).
+   * The caller checks the root (checkRootArg); main_root comes from git. */
   create(
     name: string,
+    projectRoot: string,
     content?: { collections: Collections; viewport: Viewport; layers?: Layer[]; drafts?: Draft[]; notebooks?: Notebook[] },
   ): BoardSession {
     const now = this.deps.now?.() ?? Date.now();
     const id = `b_${randomBytes(3).toString("hex")}`;
-    const stored = this.store.create(id, name, now, content);
+    const roots = { project_root: projectRoot, main_root: projectRoot ? mainRootOf(projectRoot) : "" };
+    const stored = this.store.create(id, name, roots, now, content);
     const session = new BoardSession(stored, { store: this.store, ...this.deps });
     this.sessions.set(id, session);
+    return session;
+  }
+
+  /**
+   * One name rule for every new board (create, import, clone): an exact name
+   * that exists on any board, under any root, gets the lowest free " (N)".
+   */
+  uniqueName(name: string): { name: string; name_check: "OK" } | { name: string; warning: string } {
+    const taken = new Set(this.store.list().map((b) => b.name));
+    for (const s of this.sessions.values()) if (!s.closed) taken.add(s.meta.name);
+    if (!taken.has(name)) return { name, name_check: "OK" };
+    let n = 2;
+    while (taken.has(`${name} (${n})`)) n++;
+    const unique = `${name} (${n})`;
+    return { name: unique, warning: `a board named ${name} exists; this board is named ${unique}` };
+  }
+
+  /**
+   * Copy a board's content into a new board at step 0 (ADR 0003). The source
+   * is read through open(), so unsaved edits are in the copy. History, thread,
+   * focus, active draft and notebook, trace, highlight and authorship stay behind.
+   * The caller checks the root.
+   */
+  clone(sourceId: string, name: string, projectRoot: string): BoardSession {
+    const src = this.open(sourceId);
+    const content = structuredClone({
+      collections: src.collections(),
+      viewport: src.viewport,
+      layers: src.layers,
+      drafts: src.drafts,
+      notebooks: src.notebooks,
+    });
+    const session = this.create(name, projectRoot, content);
+    session.persistNow();
     return session;
   }
 

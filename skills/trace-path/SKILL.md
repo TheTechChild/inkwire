@@ -1,7 +1,7 @@
 ---
 name: trace-path
 description: Explain an order of execution on the inkwire board — "walk me through", "what happens when", "how does X reach Y", "show me the code path". Traces the code, writes the walk as a path on a layer, and plays it in the panel with a caption per hop.
-allowed-tools: mcp__plugin_inkwire_inkwire__layers_list mcp__plugin_inkwire_inkwire__layers_create mcp__plugin_inkwire_inkwire__layers_update mcp__plugin_inkwire_inkwire__canvas_get_board mcp__plugin_inkwire_inkwire__canvas_get_state mcp__plugin_inkwire_inkwire__paths_create mcp__plugin_inkwire_inkwire__paths_update mcp__plugin_inkwire_inkwire__paths_get mcp__plugin_inkwire_inkwire__paths_play mcp__plugin_inkwire_inkwire__canvas_lint mcp__plugin_inkwire_inkwire__session_send mcp__plugin_inkwire_inkwire__canvas_bind_code mcp__plugin_inkwire_inkwire__drafts_create mcp__plugin_inkwire_inkwire__drafts_update mcp__plugin_inkwire_inkwire__drafts_delete mcp__plugin_inkwire_inkwire__drafts_get mcp__plugin_inkwire_inkwire__drafts_activate Read Grep Glob
+allowed-tools: mcp__plugin_inkwire_inkwire__layers_list mcp__plugin_inkwire_inkwire__layers_create mcp__plugin_inkwire_inkwire__layers_update mcp__plugin_inkwire_inkwire__canvas_get_board mcp__plugin_inkwire_inkwire__canvas_get_state mcp__plugin_inkwire_inkwire__paths_create mcp__plugin_inkwire_inkwire__paths_update mcp__plugin_inkwire_inkwire__paths_get mcp__plugin_inkwire_inkwire__paths_play mcp__plugin_inkwire_inkwire__canvas_lint mcp__plugin_inkwire_inkwire__session_send mcp__plugin_inkwire_inkwire__canvas_bind_code mcp__plugin_inkwire_inkwire__boards_update mcp__plugin_inkwire_inkwire__drafts_create mcp__plugin_inkwire_inkwire__drafts_update mcp__plugin_inkwire_inkwire__drafts_delete mcp__plugin_inkwire_inkwire__drafts_get mcp__plugin_inkwire_inkwire__drafts_activate Read Grep Glob
 ---
 
 The human asked about an order: what runs first, what calls what, where a request goes. Answer with a **path**, not a paragraph.
@@ -18,6 +18,8 @@ Four pointers, four jobs. Do not mix them up:
 1. **Find the layer.** `layers_list`. If the question is about an existing layer, use it. If not, `layers_create` with the nodes the walk will touch and a title that names the question ("second admin hit", not "path 1").
 
 2. **Trace in the code, not on the board.** The board is an index; the repo is the truth. Read each node's `ref` (`canvas_get_board` carries them), follow the calls with Read/Grep, and note the file and symbol where one hop hands off to the next. If a node has no `ref`, bind one first with `canvas_bind_code` — a hop between two unbound nodes is a guess.
+
+   Refs are relative to the board's `project_root` (from `boards_list` or `canvas_get_board`), not to the cwd of this session. Read the files under that root. If `canvas_bind_code` or `canvas_lint` fails because the root is unset or no longer exists, the error names `boards_update`: ask the human for the root, then call `boards_update(board_id, project_root)`.
 
 3. **Write the walk.** One hop per call boundary. Prefer `nodes: [...]` over `steps` — the server resolves the edges and fails naming both candidates when a pair is joined twice, so you can pick. Rules the server enforces:
    - every hop's `to` is the next hop's `from` (revisits are fine; a retry loop is `a→b, b→a, a→b`)

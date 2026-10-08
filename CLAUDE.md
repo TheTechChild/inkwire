@@ -23,7 +23,7 @@ Use **yarn** only. Do not use npm or npx.
 - `yarn map-anchors` — check every MAP.md anchor.
 - `yarn gen:schemas` — regenerate `schema/*.generated.json` from the zod contract.
 
-Env: `INKWIRE_PORT` (default 4691), `INKWIRE_DATA_DIR` (default `~/.inkwire`), `INKWIRE_PROJECT_ROOT` (root for `bind_code` refs). To use from Claude Code, the repo is a plugin and its own one-plugin marketplace (build first): `claude plugin marketplace add <repo>` then `claude plugin install inkwire@inkwire`; `claude --plugin-dir <repo>` for a one-off. The plugin pieces live at the root: `.claude-plugin/plugin.json` (manifest + the MCP server entry) and `marketplace.json`, `hooks/hooks.json` + `hooks/forward.sh`, `skills/use-inkwire`, `skills/back-to-claude-code`, `skills/trace-path` (model-invocable). The Session tab's two requirements (`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0`, permission mode `auto`) live in `.claude/settings.json` here and in the README for other projects. `.claude/skills/ship` is a dev-only skill, not part of the plugin.
+Env: `INKWIRE_PORT` (default 4691), `INKWIRE_DATA_DIR` (default `~/.inkwire`). There is no project-root env: each board stores its own `project_root` (ADR 0003, `src/server/project-root.ts`), and every code ref on the board resolves against it. To use from Claude Code, the repo is a plugin and its own one-plugin marketplace (build first): `claude plugin marketplace add <repo>` then `claude plugin install inkwire@inkwire`; `claude --plugin-dir <repo>` for a one-off. The plugin pieces live at the root: `.claude-plugin/plugin.json` (manifest + the MCP server entry) and `marketplace.json`, `hooks/hooks.json` + `hooks/forward.sh`, `skills/use-inkwire`, `skills/back-to-claude-code`, `skills/trace-path` (model-invocable). The Session tab's two requirements (`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0`, permission mode `auto`) live in `.claude/settings.json` here and in the README for other projects. `.claude/skills/ship` is a dev-only skill, not part of the plugin.
 
 ## Architecture
 
@@ -36,7 +36,7 @@ Three layers, enforced by `tests/core/purity.test.ts`:
 Load-bearing rules that are easy to break:
 
 - **Coalescing re-diffs from the tip step's original `before` snapshot.** Never concatenate op lists — a skipped coalesced step must revert the whole gesture. Gestures commit once, on pointer release.
-- **Revisions are derived, per session.** The session fingerprints the fold's graph and layout sections and bumps each counter on content change. A move must never touch `graph.revision`. `boards.open` resets both.
+- **Revisions are derived, per session.** The session fingerprints the fold's graph and layout sections and bumps each counter on content change. A move must never touch `graph.revision`. Revisions reset only when the daemon loads the board for the first time.
 - **History is in-memory only.** SQLite (`store.ts`) persists board content; a reopened board starts at step 0.
 - **stdout is the MCP transport.** Log to stderr only. The spawned-stdio smoke test (`tests/tools/stdio-smoke.test.ts`) guards this; in-process tests cannot.
 - **MCP tool names use underscores** (`canvas_add_node`) because the tool-name charset forbids dots; the spec's dotted names appear in descriptions only.
