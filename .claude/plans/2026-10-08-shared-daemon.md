@@ -220,7 +220,7 @@ M1 and M2 do not touch the same code paths much. Two people can do them at the s
 - `sessionSend(clients, client, args)`: do not resolve the board with `sessions.resolve(args.board_id)` alone (`mcp.ts:122`). In M3, resolve it through `writable()` (M3.2). In both milestones, the board must be the board that the Client authors and talks on (`talkingOn(board) === client`). Reject any other `board_id` before the handler writes a Thread row or calls `setHighlight`, `openTrace`, `setActiveDraft` or `setActiveNotebook`.
 - `src/server/ws.ts:25-27` (onChange push loop), `:145-150` (`session_reply`, `session_mode_off`), `:203-213` (`push`): read mode, pending and notice from `talkingOn(boardId)` and `noticeByBoard`. Keep the old `SessionPush` fields (`src/shared/protocol.ts:173`) with these values. The panel `session_mode_off` intent turns off `talkingOn(boardId)` and is a no-op when that is null.
 - `src/server/mcp.ts:25` `McpDeps`: add `clients` and `client`. `current()` (`:51`), `resolve` (`src/server/session.ts:514`) and the `currentBoardId =` writes (`mcp.ts:151,167,184`) use `client.currentBoardId`.
-- `focusTerminal` (`src/server/session-mode.ts:338`): take the app name from `clients.talkingOn(board)?.termProgram` (the Client that talks on the board, Open question 3). Fall back to `process.env.TERM_PROGRAM` of the daemon only when that value is null.
+- `focusTerminal`: take the app name from the `termProgram` of the Client that leaves `inkwire` mode (decided 2026-10-08; only that Client can be in the mode on its board, so this is the talking Client). Fall back to `process.env.TERM_PROGRAM`.
 - Interim wiring in `src/server/index.ts:17,46-55`: make one Client from `process.ppid`, `CLAUDE_CODE_SESSION_ID`, `process.cwd()` and `TERM_PROGRAM`. Pass it to `buildMcpServer`. Hooks from that pid route to it.
 
 ### Tests
@@ -232,7 +232,7 @@ M1 and M2 do not touch the same code paths much. Two people can do them at the s
 
 ### Done when
 
-- Tests pass. One Claude Code session with the plugin works the same as before (manual: `/use-inkwire`, a panel reply, `/back-to-claude-code`, `/clear` while in `inkwire` mode).
+- Tests pass. The manual Claude Code check (`/use-inkwire`, a panel reply, `/back-to-claude-code`, `/clear` while in `inkwire` mode) moves to M7, against the final build (decided 2026-10-08: the auto-mode classifier stops the agent from starting Claude Code sessions, so Clayton runs it once).
 - MAP.md: the "Session mode and hooks" anchors (`session-mode.ts`, `session.ts:435`) are current. A new entry "Clients and authorship" names `src/server/clients.ts`. The write-path text (`MAP.md:69-71`) says `Sessions` holds open boards only.
 
 ### Risks
@@ -314,7 +314,7 @@ M1 and M2 do not touch the same code paths much. Two people can do them at the s
 
 ### Done when
 
-- Tests pass. Manual: one Claude Code session works as before (it is the only Client, so it claims on first write).
+- Tests pass. The manual Claude Code check is in M7.
 - MAP.md "MCP tools" says that call rows are written only for the Author, and names `writable()`, `WRITE_TOOLS` and `READ_TOOLS`. The "Clients and authorship" entry has the claim and release rules.
 - CLAUDE.md: "Every MCP call lands in the current board's thread" becomes "Only the Author's MCP calls go into the board's Thread. Readers' calls are not recorded." Add: "Every MCP write handler resolves the board through `writable()`. Add each new write tool to `WRITE_TOOLS`." Add: "The authorship and restart rules are enforced on the MCP surface only. Agents must not call the HTTP API, the panel WebSocket, `/api/hook` or `yarn daemon:restart`."
 
@@ -574,6 +574,7 @@ M1 and M2 do not touch the same code paths much. Two people can do them at the s
 ### Tests
 
 - `tests/tools/stdio-smoke.test.ts` (rewritten). Full `yarn test`.
+- Manual (Clayton), one session: `/use-inkwire`, a panel reply, `/back-to-claude-code`, and `/clear` while in `inkwire` mode (moved here from M2 and M3).
 - Manual: two Claude Code sessions in different repos both list tools and create boards. The second session no longer fails with EADDRINUSE. Session A writes a board. Session B opens it, reads it, and a write from B fails and names A. The panel shows A as Author and 1 reader. Release in the panel lets B claim the board. `/clear` in A keeps its Client (same pid). Close both sessions: the daemon exits after 30 s.
 - Manual: `yarn dev`, then `yarn dev:claude`. `/healthz` on 4692 answers. Boards go to `~/.inkwire-dev/inkwire.db`, not `~/.inkwire`.
 - Manual: rebuild with a change, start a new session, see the stale notice, Restart in the panel. Both sessions keep their current board and keep working; each one's next write claims its board again.
@@ -636,7 +637,7 @@ Each question has the default that this plan uses. Change the plan if the answer
 
 1. **Does `session_mode(on)` on a board with no Author claim it?** ANSWERED 2026-10-08: yes. Mode on counts as a claim. On a board with no Author it claims the board. It fails when another Client is the Author, or when the board's `releasedFrom` is this pid.
 2. **After the person releases a board, what can the old Author do?** ANSWERED 2026-10-08: strict, plus the person can allow it again. The released Client cannot claim that board while the board's `releasedFrom` is its pid. `releasedFrom` is cleared when another Client claims the board, when the released Client disconnects, or when the person clicks **Allow pid N** in the panel. See M3 and M5.
-3. **Can the hello carry an optional `term_program`?** ANSWERED 2026-10-08: yes. The relay sends its `TERM_PROGRAM`. The Client stores it. `focusTerminal` uses the value of the Client that talks on the board. ADR 0001 lists the field.
+3. **Can the hello carry an optional `term_program`?** ANSWERED 2026-10-08: yes. The relay sends its `TERM_PROGRAM`. The Client stores it. `focusTerminal` uses the value of the Client that leaves `inkwire` mode (the talking Client). ADR 0001 lists the field.
 4. **Is the root of `b_8946f6` `/Users/clayton.noyes/angel-studios/content-collections`?** ANSWERED 2026-10-08: no. The root is `/Users/clayton.noyes/angel-studios`, because all 8 refs start with `content-collections/` and all 8 files exist there. The refs do not change.
 5. **Panel import of a file whose root does not exist on this machine.** ANSWERED 2026-10-08: the panel asks for the root. It names the root in the file and asks where that checkout is on this machine, then retries with `?project_root=`. The server validates it as for an agent (an absolute directory that exists).
 6. **`paths_get` and `paths_play` on an unset-root board.** ANSWERED 2026-10-08: the daemon stores each board's main checkout (`main_root`) from git. When the root is gone, reads fall back to `main_root` with a warning; ref writes and lint fail until `boards_update` makes the move permanent. The `teardown-worktree` skill re-roots the boards of a merged worktree and asks for an unmerged one. See M1.8 and M6.
