@@ -233,8 +233,8 @@ src/shared/schemas.ts:26      nodeSchema
 src/shared/schemas.ts:36      edgeSchema
 src/shared/schemas.ts:95      layerSchema
 src/shared/schemas.ts:151     canvasStateSchema
-src/shared/schemas.ts:194     toolArgs
-src/shared/schemas.ts:369     ToolName
+src/shared/schemas.ts:193     toolArgs
+src/shared/schemas.ts:368     ToolName
 src/shared/types.ts:10        NODE_KINDS
 src/scripts/gen-schemas.ts:11 toJSONSchema
 ```
@@ -263,13 +263,13 @@ src/ui/canvas.ts:57         setupCanvas
 src/ui/canvas.ts:628        renderWorld
 src/ui/canvas.ts:565        hitNode
 src/ui/canvas.ts:619        deleteSelection
-src/ui/panel.ts:173         setupPanel
-src/ui/panel.ts:344         renderPanel
-src/ui/panel.ts:356         renderInspector
-src/ui/panel.ts:614         renderAsideStrip
-src/ui/panel.ts:632         renderLayers
-src/ui/panel.ts:508         renderHistory
-src/ui/panel.ts:105         loadPanelPrefs
+src/ui/panel.ts:174         setupPanel
+src/ui/panel.ts:345         renderPanel
+src/ui/panel.ts:357         renderInspector
+src/ui/panel.ts:615         renderAsideStrip
+src/ui/panel.ts:633         renderLayers
+src/ui/panel.ts:509         renderHistory
+src/ui/panel.ts:106         loadPanelPrefs
 ```
 
 Styles are in `src/ui/styles.css`; `src/ui/index.html` is the shell. `yarn build` bundles the UI to
@@ -361,7 +361,7 @@ src/server/layers.ts:58    updateLayer
 src/server/layers.ts:82    deleteLayer
 src/server/session.ts:247  updateLayers
 src/server/session.ts:258  setFocus
-src/ui/panel.ts:632        renderLayers
+src/ui/panel.ts:633        renderLayers
 ```
 
 Beware: layer members are never pruned when a node is deleted; `liveMembers` filters at read time.
@@ -412,7 +412,7 @@ src/server/drafts.ts:42    updateDraft
 src/server/drafts.ts:101   markElement
 src/server/session.ts:271  updateDrafts
 src/server/session.ts:279  setActiveDraft
-src/ui/panel.ts:760        renderDrafts
+src/ui/panel.ts:761        renderDrafts
 ```
 
 Beware: `active_draft` is never persisted. The error hue is shared between draft roles and lint. Draft
@@ -454,9 +454,9 @@ board's `project_root` (see Project root). `lintBoard` reports findings for `can
 
 ```
 src/server/bindcode.ts:16   splitRef
-src/server/bindcode.ts:40   validateRef
-src/server/bindcode.ts:56   stampRef
-src/server/bindcode.ts:65   refStatus
+src/server/bindcode.ts:42   validateRef
+src/server/bindcode.ts:58   stampRef
+src/server/bindcode.ts:67   refStatus
 src/core/symbols.ts:19      findSymbol
 src/core/symbols.ts:66      blockText
 src/server/lint.ts:11       LintFinding
@@ -501,11 +501,13 @@ it with a warning; ref writes and lint refuse until `boards_update` sets a new r
 ```
 src/server/project-root.ts:20   checkRootArg
 src/server/project-root.ts:32   mainRootOf
-src/server/project-root.ts:63   boardRoot
-src/server/project-root.ts:76   writeRoot
-src/server/project-root.ts:83   readRoot
-src/server/project-root.ts:93   rootOverlaps
-src/server/project-root.ts:106  listBoards
+src/server/project-root.ts:71   boardRoot
+src/server/project-root.ts:84   writeRoot
+src/server/project-root.ts:91   readRoot
+src/server/project-root.ts:109  canonicalPath
+src/server/project-root.ts:118  rootOverlaps
+src/server/project-root.ts:130  listBoards
+src/shared/import-root.ts:9     importNeedsRoot
 src/server/session.ts:516       create
 src/server/session.ts:534       uniqueName
 src/server/session.ts:550       clone
@@ -526,13 +528,21 @@ content only, at step 0), `boards_update` (name or root; not a history step), an
 share `uniqueName`: an exact name that exists on any board gets the lowest free ` (N)`, and the
 result says `name_check: "OK"` or gives a `warning`. `GET /api/boards` lists every board (the panel
 has no cwd); `POST /api/boards/import?project_root=` gives a 400 that the panel answers with a prompt
-for the root, then retries.
+for the root, then retries. Only the root errors prompt (`importNeedsRoot` in
+`src/shared/import-root.ts`): a file that is not valid fails without a prompt.
+
+Reads: `paths_get` and `paths_play` give a `warnings` entry for an unset, gone or fallback root.
+`canvas_get_board` gives the fallback warning as a second text content block (`warning: …`) after
+the state JSON, only when a root resolved (fallback); it gives no warning for an unset or gone root.
 
 Migration: `Store` adds the `project_root` and `main_root` columns (`NOT NULL DEFAULT ''`) with the
 same try/catch `ALTER TABLE` style as the older columns.
 
 Beware: the root argument rule is one message, `project_root must be an existing absolute directory:
-<p>`. `checkRootArg` returns `path.resolve(p)`, not the real path.
+<p>`. `checkRootArg` returns `path.resolve(p)`, not the real path; zod rejects only a missing
+key. Compare roots through `canonicalPath` (the real path and, on macOS, the real case), as
+`rootOverlaps` and the `boards_clone` default name do, because `process.cwd()` is a real path.
+`mainRootOf` gives `''` for a bare repo cloned into `.git`.
 
 Tests: `tests/tools/project-root.test.ts`, `tests/integration/store.test.ts`,
 `tests/tools/contract.test.ts` ("project root (ADR 0003)"), `tests/integration/server.test.ts`.

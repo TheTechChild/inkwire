@@ -40,6 +40,14 @@ export function mainRootOf(root: string): string {
     const commonDir = git("--git-common-dir");
     const top = git("--show-toplevel");
     if (path.basename(commonDir) !== ".git") return "";
+    // A bare repo cloned into .git (`git clone --bare url .git`): its parent only holds the
+    // worktree folders and has no checked-out files, so it is not a main checkout.
+    const bare = execFileSync("git", ["--git-dir", commonDir, "rev-parse", "--is-bare-repository"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
+    }).trim();
+    if (bare !== "false") return "";
     const main = path.dirname(commonDir);
     if (main === top) return ""; // the main checkout itself, not a linked worktree
     const rel = path.relative(top, realpathSync(root));
@@ -89,12 +97,28 @@ export function readRoot(board: RootHolder): { root: string | null; warnings: st
   }
 }
 
-/** True when root equals cwd, contains it, or lies inside it. /a/foo does not overlap /a/foobar. */
+/** True when rel (from path.relative) stays inside its base: not "..", not "../…", not absolute. "..foo" is inside. */
+export const relInside = (rel: string): boolean =>
+  rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel);
+
+/**
+ * The real path (symlinks resolved, and on macOS the real letter case) when p
+ * exists, else path.resolve(p). A stored root keeps the text the caller typed
+ * (checkRootArg); compare roots through this, because process.cwd() is a real path.
+ */
+export function canonicalPath(p: string): string {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+/** True when root equals cwd, contains it, or lies inside it, after symlinks. /a/foo does not overlap /a/foobar. */
 export function rootOverlaps(root: string, cwd: string): boolean {
-  const inside = (rel: string) => rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-  const a = path.resolve(root);
-  const b = path.resolve(cwd);
-  return inside(path.relative(a, b)) || inside(path.relative(b, a));
+  const a = canonicalPath(root);
+  const b = canonicalPath(cwd);
+  return relInside(path.relative(a, b)) || relInside(path.relative(b, a));
 }
 
 export type BoardListEntry = BoardListing & { root?: "unset" };

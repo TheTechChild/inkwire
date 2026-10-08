@@ -29,8 +29,7 @@
         "minLength": 1
       },
       "project_root": {
-        "type": "string",
-        "minLength": 1
+        "type": "string"
       }
     },
     "required": [
@@ -50,8 +49,7 @@
         "minLength": 1
       },
       "project_root": {
-        "type": "string",
-        "minLength": 1
+        "type": "string"
       }
     },
     "required": [
@@ -67,8 +65,7 @@
         "minLength": 1
       },
       "project_root": {
-        "type": "string",
-        "minLength": 1
+        "type": "string"
       }
     },
     "required": [
@@ -99,8 +96,7 @@
         "minLength": 1
       },
       "project_root": {
-        "type": "string",
-        "minLength": 1
+        "type": "string"
       }
     },
     "required": [

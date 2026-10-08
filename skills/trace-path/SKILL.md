@@ -19,7 +19,7 @@ Four pointers, four jobs. Do not mix them up:
 
 2. **Trace in the code, not on the board.** The board is an index; the repo is the truth. Read each node's `ref` (`canvas_get_board` carries them), follow the calls with Read/Grep, and note the file and symbol where one hop hands off to the next. If a node has no `ref`, bind one first with `canvas_bind_code` — a hop between two unbound nodes is a guess.
 
-   Refs are relative to the board's `project_root` (from `boards_list` or `canvas_get_board`), not to the cwd of this session. Read the files under that root. If `canvas_bind_code` or `canvas_lint` fails because the root is unset or no longer exists, the error names `boards_update`: ask the human for the root, then call `boards_update(board_id, project_root)`.
+   Refs are relative to the board's `project_root` (from `canvas_get_board`), not to the cwd of this session. Read the files under that root. If a read warns that it resolved against the main checkout, read the files under the `main_root` that the warning names. If `canvas_bind_code`, `canvas_lint`, `paths_create` or `paths_update` fails because the root is unset, no longer exists, or resolves only against the main checkout, the error names `boards_update`: ask the human for the root, then call `boards_update(board_id, project_root)`.
 
 3. **Write the walk.** One hop per call boundary. Prefer `nodes: [...]` over `steps` — the server resolves the edges and fails naming both candidates when a pair is joined twice, so you can pick. Rules the server enforces:
    - every hop's `to` is the next hop's `from` (revisits are fine; a retry loop is `a→b, b→a, a→b`)

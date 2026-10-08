@@ -58,7 +58,7 @@ yarn test       # full vitest suite
 yarn typecheck
 ```
 
-Configuration (env vars): `INKWIRE_PORT` (default 4691), `INKWIRE_DATA_DIR` (default `~/.inkwire` — SQLite plus an images/ directory), `INKWIRE_PROJECT_ROOT` (the root that `canvas_bind_code` refs resolve against).
+Configuration (env vars): `INKWIRE_PORT` (default 4691), `INKWIRE_DATA_DIR` (default `~/.inkwire` — SQLite plus an images/ directory). There is no project-root env var: each board stores its own `project_root` (set it with `boards_create`, `boards_clone`, `boards_import` or `boards_update`), and every code ref on the board resolves against it.
 
 The design handoff that specifies this project lives in `design_handoff_inkwire/`. See `CLAUDE.md` for architecture notes.
 

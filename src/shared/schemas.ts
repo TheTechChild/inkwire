@@ -180,10 +180,9 @@ export const canvasStateSchema = z.strictObject({
 // the session-scoped current board applies when omitted.
 
 const boardScoped = { board_id: z.string().optional() };
-/** ADR 0003: an existing absolute directory. The handler checks the disk; the schema carries the rule text. */
-const projectRootArg = z
-  .string({ error: "project_root must be an existing absolute directory" })
-  .min(1, { error: "project_root must be an existing absolute directory" });
+/** ADR 0003: an existing absolute directory. The handler (checkRootArg) checks it, '' too, so a bad value gets
+ * the one rule message with the value; the schema rejects only a missing or non-string value. */
+const projectRootArg = z.string({ error: "project_root must be an existing absolute directory" });
 const markArg = z.object({ id: z.string(), role: draftRoleSchema });
 const pathStepArg = z.object({
   edge: z.string(),

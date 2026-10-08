@@ -21,7 +21,7 @@ import { createDraft, deleteDraft, getDraft, updateDraft } from "./drafts.js";
 import { appendToNotebook, createNotebook, deleteNotebook, findNotebook, findOrCreateNotesNotebook, updateNotebook } from "./notebooks.js";
 import { sessionMode, sessionSend } from "./session-mode.js";
 import type { Store } from "./store.js";
-import { checkRootArg, listBoards, mainRootOf, readRoot, writeRoot } from "./project-root.js";
+import { canonicalPath, checkRootArg, listBoards, mainRootOf, readRoot, writeRoot } from "./project-root.js";
 
 export interface McpDeps {
   sessions: Sessions;
@@ -149,7 +149,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "boards.open",
-    "Return the state of a board. If you are not the author of a board, the board also becomes your current board. If you are the author of a board, your current board does not change (it is always the board you author). Opening never claims or releases authorship. If the board is already open in the daemon, its in-memory history and revision counters stay. A board that is not open yet starts at step 0. The result names the panel URL.",
+    "Return the state of a board and make it your current board. If the board is already open, its in-memory history and revision counters stay. A board that is not open yet starts at step 0. The result names the panel URL.",
     (args: { board_id: string }) => {
       const session = sessions.open(args.board_id);
       sessions.currentBoardId = session.boardId;
@@ -201,7 +201,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
       const src = sessions.open(args.board_id);
       const root = checkRootArg(args.project_root ?? src.meta.project_root);
       const base =
-        args.name ?? (root === src.meta.project_root ? `${src.meta.name} copy` : `${src.meta.name} · ${path.basename(root)}`);
+        args.name ?? (canonicalPath(root) === canonicalPath(src.meta.project_root) ? `${src.meta.name} copy` : `${src.meta.name} · ${path.basename(root)}`);
       const { name, ...check } = sessions.uniqueName(base);
       const session = sessions.clone(src.boardId, name, root);
       sessions.currentBoardId = session.boardId;

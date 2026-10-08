@@ -8,6 +8,7 @@ import { markCounts } from "../core/drafts.js";
 import { NODE_KINDS, EDGE_KINDS, DRAFT_ROLES } from "../shared/types.js";
 import type { DraftRole, NodeKind } from "../shared/types.js";
 import { renderSession } from "./session.js";
+import { importNeedsRoot } from "../shared/import-root.js";
 
 const TOOLS: [Tool, string, string][] = [
   ["select", "select", "V"],
@@ -45,7 +46,7 @@ const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
   ["session.mode", "Flip the mode flag the server holds. On: fails unless permission mode is auto; arms the Stop hook that redirects replies into session_send. Off: releases any pending session_send with mode_off.", "(on: boolean) → { mode, hook }", (app) => switchTab(app, "session")],
   ["session.send", "Deliver a reply to the Session tab, optionally pointing at elements, at a path (or a hop on it), at a draft, or at a notebook. Blocks until the human replies (20 min timeout) and returns their message with focus, selection, scrubber position, active draft and revision as ids.", "(text, highlight?: { nodes, edges, label }, path?: { layer_id, path_id, hop? }, draft?: string, notebook?: string) → { reply, ctx } | { status: mode_off | idle }", (app) => switchTab(app, "session")],
   ["boards.list", "Boards whose project root overlaps the caller's cwd, plus boards with root: unset. all: true lists every board.", "(all?) → { boards }", null as never],
-  ["boards.open", "Return the state of a board. If you are not the author of a board, the board also becomes your current board. If you are the author of a board, your current board does not change. Opening never claims or releases authorship. A board that is already open keeps its history and revision counters.", "(board_id) → CanvasState", null as never],
+  ["boards.open", "Return the state of a board and make it your current board. If the board is already open, its in-memory history and revision counters stay. A board that is not open yet starts at step 0. The result names the panel URL.", "(board_id) → CanvasState", null as never],
   ["boards.create", "New empty board. project_root is the checkout that every code ref on the board resolves against.", "(name, project_root) → { board_id, name_check | warning }", null as never],
   ["boards.clone", "Copy a board into a new board at step 0. The root is the source's root unless you give one.", "(board_id, name?, project_root?) → { board_id, name_check | warning }", null as never],
   ["boards.delete", "Delete a board permanently.", "(board_id) → { deleted }", null as never],
@@ -289,7 +290,7 @@ async function importBoardFile(file: File | undefined): Promise<void> {
       body = (await res.json()) as typeof body;
       if (res.ok && body.board_id) break;
       // No usable root (an old file, or a root that is not on this machine): ask the person where the checkout is, then retry.
-      if (res.status === 400 && /project.root/.test(body.error ?? "")) {
+      if (importNeedsRoot(res.status, body.error)) {
         root = window.prompt(`${body.error}\n\nType the absolute path of that checkout on this machine:`, root ?? "");
         if (root === null) return;
         continue;
