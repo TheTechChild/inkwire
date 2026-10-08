@@ -34,8 +34,9 @@ export interface ModeDeps {
 
 /**
  * Flip the Client's flag. On requires proof from the hook that Claude Code can
- * run unattended, and a current board that has no other Author; on a board
- * with no Author, mode on claims it.
+ * run unattended, and a current board that has no other Author and that the
+ * person did not release this Client from; on a board with no Author, mode on
+ * claims it.
  */
 export function sessionMode(
   clients: Clients,
@@ -64,11 +65,8 @@ export function sessionMode(
     const boardId = client.currentBoardId;
     if (!boardId) throw new Error("no board is open — call boards_open first, then turn the mode on");
     // ADR 0002: in inkwire mode, nothing the Client does can claim another board.
-    const talkingOn = clients.authoredBy(client);
-    if (client.mode === "inkwire" && talkingOn !== null && talkingOn !== boardId) {
-      throw new Error(`You are talking with the person on ${talkingOn}. Turn the mode off before you move to a different board.`);
-    }
-    // M3 adds: fail when the board's releasedFrom is this pid.
+    clients.checkSwitch(client, boardId);
+    // Another Author, or the person released this pid from the board.
     clients.checkWrite(client, boardId);
     clients.commitClaim(client, boardId);
     if (clients.authorOf(boardId) !== client.pid) throw new Error(`board not found: ${boardId}`);
@@ -353,7 +351,9 @@ export function hookEvent(
     case "SessionStart":
       // /clear and /resume give a new session id inside the same Claude Code process.
       if ((input.source === "clear" || input.source === "resume") && input.session_id) clients.rekey(client.pid, input.session_id);
-      return client.mode === "inkwire" && input.source === "compact" ? { context: MODE_ON_INSTRUCTION } : {};
+      // After compaction the agent gets its board back (M3.5), and the instruction when it talks in the panel.
+      if (input.source !== "compact") return {};
+      return { context: client.mode === "inkwire" ? `${clients.contextLine(client)}\n${MODE_ON_INSTRUCTION}` : clients.contextLine(client) };
     default:
       return {};
   }

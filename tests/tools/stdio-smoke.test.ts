@@ -48,7 +48,9 @@ describe("stdio transport", () => {
       name: "boards_create",
       arguments: { name: "smoke board", project_root: root },
     })) as { content: { type: string; text?: string }[] };
-    const body = JSON.parse(created.content[0]!.text!);
+    // The board context line comes first (M3.5), then the body.
+    expect(created.content[0]!.text).toMatch(/^board b_\w+ "smoke board" · you: author · mode: pty/);
+    const body = JSON.parse(created.content[1]!.text!);
     expect(body.board_id).toBeTruthy();
     expect(body.panel_url).toContain("http://127.0.0.1:");
 
@@ -56,7 +58,7 @@ describe("stdio transport", () => {
       name: "canvas_get_state",
       arguments: {},
     })) as { content: { type: string; text?: string }[] };
-    const parsed = JSON.parse(state.content[0]!.text!);
+    const parsed = JSON.parse(state.content[1]!.text!);
     expect(parsed.graph.nodes).toEqual([]);
     expect(parsed.history.steps).toBe(0);
   });

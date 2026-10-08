@@ -15,6 +15,8 @@ Four pointers, four jobs. Do not mix them up:
 
 ## Steps
 
+Only one Claude Code session at a time is the author of a board. The first line of each tool result tells you the current board and if you are its author or a reader. If a write fails because another session is the author, stop and tell the human. Do not work around it: do not clone the board and do not write to a different board unless the human tells you to.
+
 1. **Find the layer.** `layers_list`. If the question is about an existing layer, use it. If not, `layers_create` with the nodes the walk will touch and a title that names the question ("second admin hit", not "path 1").
 
 2. **Trace in the code, not on the board.** The board is an index; the repo is the truth. Read each node's `ref` (`canvas_get_board` carries them), follow the calls with Read/Grep, and note the file and symbol where one hop hands off to the next. If a node has no `ref`, bind one first with `canvas_bind_code` — a hop between two unbound nodes is a guess.
@@ -42,3 +44,4 @@ Four pointers, four jobs. Do not mix them up:
 - Don't write a path for a set with no order. That is a highlight.
 - Don't `paths_play` twice in a turn. It moves someone else's screen.
 - Don't put more than ~12 hops in one path. Split at the boundary where the story changes.
+- Don't call the inkwire HTTP API, the panel WebSocket, `/api/hook` or `yarn daemon:restart`. Only the human uses them. Use only the MCP tools.

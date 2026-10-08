@@ -1,8 +1,11 @@
 // Clients: the daemon's record of each connected Claude Code session (CONTEXT.md
 // "Client"), keyed by the Claude Code pid (ADR 0001). Each Client holds its own
 // current board, session mode, hook report, pending session_send and Stop block
-// count. Clients also holds the Author of each board (ADR 0002) and the panel
-// notice of each board. No I/O here: the clock comes from Sessions.now.
+// count. Clients also holds the Author of each board (ADR 0002), the pid the
+// person released from each board, the panel notice of each board, and the
+// one-time notices of each Client (M3.5). No direct I/O here: Clients reaches
+// boards only through Sessions (which can load a board from the store and push
+// Thread rows to panels), and the clock comes from Sessions.now.
 import type { SessionMode } from "../shared/types.js";
 import type { SendResult, Sessions } from "./session.js";
 import { releaseAuthorship } from "./session-mode.js";
@@ -72,6 +75,14 @@ export class Clients {
   readonly authors = new Map<string, number>();
   /** boardId → the panel strip notice: a mode-on failure, the idle timeout, a board delete. */
   readonly noticeByBoard = new Map<string, string>();
+  /**
+   * boardId → the pid of the Author that the person released (ADR 0002). That
+   * pid cannot write the board until another Client claims it, the pid
+   * disconnects, or the person allows it again (allowAgain).
+   */
+  readonly releasedFrom = new Map<string, number>();
+  /** pid → the notices for the next tool result of that Client (M3.5). Each is shown once. */
+  private notices = new Map<number, string[]>();
   private listeners = new Set<() => void>();
 
   constructor(
@@ -187,6 +198,8 @@ export class Clients {
     const c = this.byPid.get(pid);
     if (!c) return null;
     for (const [boardId, author] of [...this.authors]) if (author === pid) this.release(boardId, "disconnect");
+    for (const [boardId, released] of [...this.releasedFrom]) if (released === pid) this.releasedFrom.delete(boardId);
+    this.notices.delete(pid);
     this.byPid.delete(pid);
     this.links.delete(pid);
     this.hookOnlySince.delete(pid);
@@ -217,9 +230,13 @@ export class Clients {
         this.resolvePending(c, { status: "idle" });
         this.noticeByBoard.set(boardId, "board deleted · mode pty");
       }
-      if (c.currentBoardId === boardId) c.currentBoardId = null;
+      if (c.currentBoardId === boardId) {
+        c.currentBoardId = null;
+        this.addNotice(c, `Board ${boardId} was deleted. You have no current board.`);
+      }
     }
     this.release(boardId, "deleted");
+    this.releasedFrom.delete(boardId);
     this.notify();
     // The panels have been told. The board is gone, so its notice has no later reader.
     this.noticeByBoard.delete(boardId);
@@ -267,9 +284,17 @@ export class Clients {
     return c?.cwd ? `${c.label} · pid ${pid}` : `pid ${pid}`;
   }
 
-  /** Throw when another Client is the Author of boardId. */
+  /**
+   * Throw when another Client is the Author of boardId, or when the person
+   * released c from boardId and has not allowed it again.
+   */
   checkWrite(c: Client, boardId: string): void {
     const author = this.authorOf(boardId);
+    if (author === null && this.releasedFrom.get(boardId) === c.pid) {
+      throw new Error(
+        `you are no longer the author of ${boardId}; the person released it. Ask the person to allow you again in the panel`,
+      );
+    }
     if (author === null || author === c.pid) return;
     throw new Error(
       `board ${boardId} has another author: ${this.labelOf(author)}. You can read this board but not write it. Ask the person to release it in the panel`,
@@ -277,19 +302,102 @@ export class Clients {
   }
 
   /**
-   * c claims boardId. One board per Client: the claim releases the board c
-   * authored before (reason switch). It does nothing when the board is no
-   * longer open or stored. It checks the Author again, and throws with no
-   * change when another pid claimed the board after checkWrite.
+   * Throw when c talks with the person (inkwire mode) on one board and the
+   * call would claim another board (boardId null: a new board). ADR 0002: the
+   * conversation never ends without a decision.
+   */
+  checkSwitch(c: Client, boardId: string | null): void {
+    if (c.mode !== "inkwire") return;
+    const own = this.authoredBy(c);
+    if (own === null || own === boardId) return;
+    throw new Error(`You are talking with the person on ${own}. Turn the mode off before you move to a different board.`);
+  }
+
+  /**
+   * c claims boardId and the board becomes c's current board. One board per
+   * Client: the claim releases the board c authored before (reason switch),
+   * and both Threads and c's next result tell of it (switch and claim notices). It does nothing when the
+   * board is no longer open or stored. It checks the Author again, and throws
+   * with no change when another pid claimed the board after checkWrite.
    */
   commitClaim(c: Client, boardId: string): void {
     if (!this.sessions.exists(boardId)) return;
+    this.checkSwitch(c, boardId);
     this.checkWrite(c, boardId);
-    if (this.authorOf(boardId) === c.pid) return;
+    if (this.authorOf(boardId) === c.pid) {
+      c.currentBoardId = boardId;
+      return;
+    }
     const earlier = this.authoredBy(c);
     if (earlier !== null) this.release(earlier, "switch");
     this.authors.set(boardId, c.pid);
+    this.releasedFrom.delete(boardId);
+    c.currentBoardId = boardId;
+    if (earlier !== null) {
+      this.addNotice(
+        c,
+        `Current board is now ${boardId} "${this.nameOf(boardId)}". All later edits with no board_id go to it. You released ${earlier}.`,
+      );
+      // The person sees the move on both boards (M5 renders the rows).
+      this.threadRow(earlier, `claude moved to ${boardId}`);
+      this.threadRow(boardId, "claude is now the author");
+    }
+    // A switch is also a claim (M3.5 lists both events), so it gives both notices.
+    this.addNotice(c, `You are now the author of ${boardId}.`);
     this.notify();
+  }
+
+  /** The person allows the released pid to claim boardId again. False when pid was not released from it. */
+  allowAgain(boardId: string, pid: number): boolean {
+    if (this.releasedFrom.get(boardId) !== pid) return false;
+    this.releasedFrom.delete(boardId);
+    this.notify();
+    return true;
+  }
+
+  /** Queue a notice for c's next tool result (M3.5). */
+  addNotice(c: Client, text: string): void {
+    const list = this.notices.get(c.pid) ?? [];
+    list.push(text);
+    this.notices.set(c.pid, list);
+  }
+
+  /** The queued notices of c, removed: each is shown once. */
+  takeNotices(c: Client): string[] {
+    const list = this.notices.get(c.pid) ?? [];
+    this.notices.delete(c.pid);
+    return list;
+  }
+
+  /**
+   * The line that starts every tool result (M3.5):
+   * `board <id> "<name>" · you: author|reader · mode: pty|inkwire`, or
+   * `board: none · mode: pty` when c has no current board.
+   */
+  contextLine(c: Client): string {
+    const id = c.currentBoardId;
+    const name = id === null ? null : this.nameOf(id);
+    if (id === null || name === null) return `board: none · mode: ${c.mode}`;
+    const role = this.authorOf(id) === c.pid ? "author" : "reader";
+    return `board ${id} "${name}" · you: ${role} · mode: ${c.mode}`;
+  }
+
+  private nameOf(boardId: string): string | null {
+    try {
+      const s = this.sessions.open(boardId);
+      return s.closed ? null : s.meta.name;
+    } catch {
+      return null;
+    }
+  }
+
+  private threadRow(boardId: string, text: string): void {
+    try {
+      const s = this.sessions.open(boardId);
+      if (!s.closed) s.addThread({ type: "call", name: "author", text });
+    } catch {
+      // board deleted under us: nothing to record on
+    }
   }
 
   /**
@@ -304,6 +412,10 @@ export class Clients {
     const c = this.byPid.get(pid) ?? null;
     if (c) releaseAuthorship(this, c, boardId, reason);
     this.authors.delete(boardId);
+    if (reason === "person") {
+      this.releasedFrom.set(boardId, pid);
+      if (c) this.addNotice(c, `The person released ${boardId}. You can still read it.`);
+    }
     if (reason !== "deleted") this.noticeByBoard.delete(boardId);
     this.notify();
     return c;

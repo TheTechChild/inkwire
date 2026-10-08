@@ -143,6 +143,24 @@ describe("integration", () => {
     await client.close();
   });
 
+  it("authorship (ADR 0002): a human WS add_node on a board that a Client authors still succeeds", async () => {
+    const author = clients.ensure(4242, { cwd: "/work/author" });
+    clients.attach(4242, "int-link");
+    clients.commitClaim(author, boardId);
+    expect(clients.authorOf(boardId)).toBe(4242);
+    const panel = await connect(boardId);
+    await panel.nextState();
+    panel.send({ type: "add_node", label: "human node", kind: "service", at: [600, 600] });
+    let state = await panel.nextState();
+    for (let i = 0; i < 5 && !state.state.graph.nodes.some((n) => n.label === "human node"); i++) state = await panel.nextState();
+    const node = state.state.graph.nodes.find((n) => n.label === "human node");
+    expect(node?.author).toBe("human");
+    expect(clients.authorOf(boardId)).toBe(4242);
+    await panel.close();
+    clients.detach(4242, "int-link");
+    expect(clients.authorOf(boardId)).toBeNull();
+  });
+
   it("client reconnect: fresh socket receives the server's current board", async () => {
     const session = sessions.open(boardId);
     const first = await connect(boardId);

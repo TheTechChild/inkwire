@@ -12,6 +12,7 @@ import { hookEvent, sessionMode, sessionReply } from "../../src/server/session-m
 import { Sessions } from "../../src/server/session.js";
 import { Clients, type Client as InkwireClient } from "../../src/server/clients.js";
 import { Store } from "../../src/server/store.js";
+import { toolBody } from "../helpers.js";
 
 let client: Client;
 let store: Store;
@@ -25,12 +26,15 @@ let b: string;
 const focused: (string | undefined)[] = [];
 
 async function call(name: string, args: Record<string, unknown> = {}) {
-  const res = (await client.callTool({ name, arguments: args })) as {
+  const raw = (await client.callTool({ name, arguments: args })) as {
     content: { type: string; text?: string }[];
     isError?: boolean;
   };
+  // The board context line and the notices come first (M3.5); res holds the body only.
+  const head = raw.content[0]?.text ?? "";
+  const res = { ...raw, content: toolBody(raw.content) };
   const text = res.content.find((c) => c.type === "text")?.text ?? "";
-  return { res, text, json: () => JSON.parse(text) };
+  return { res, raw, head, text, json: () => JSON.parse(text) };
 }
 
 const armed = (permission_mode = "auto", bg = "0") =>
@@ -68,9 +72,9 @@ afterAll(async () => {
 });
 
 describe("session_mode", () => {
-  it("lists 45 tools with the two session tools registered", async () => {
+  it("lists 46 tools with the two session tools registered", async () => {
     const names = (await client.listTools()).tools.map((t) => t.name);
-    expect(names).toHaveLength(45);
+    expect(names).toHaveLength(46);
     expect(names).toContain("session_mode");
     expect(names).toContain("session_send");
   });
@@ -286,11 +290,14 @@ describe("hook endpoint", () => {
     expect(me.mode).toBe("pty");
   });
 
-  it("SessionStart compact re-injects the instruction only while the mode is on", async () => {
-    expect(hookEvent(clients, { hook_event_name: "SessionStart", source: "compact", session_id: "s1" }, "0")).toEqual({});
+  it("SessionStart compact returns the board context line, and the instruction only while the mode is on", async () => {
+    const line = `board ${boardId} "session board" · you: author · mode: pty`;
+    expect(hookEvent(clients, { hook_event_name: "SessionStart", source: "compact", session_id: "s1" }, "0")).toEqual({ context: line });
     armed();
     await call("session_mode", { on: true });
-    expect(hookEvent(clients, { hook_event_name: "SessionStart", source: "compact", session_id: "s1" }, "0").context).toContain("session_send");
+    const on = hookEvent(clients, { hook_event_name: "SessionStart", source: "compact", session_id: "s1" }, "0").context!;
+    expect(on.split("\n")[0]).toBe(`board ${boardId} "session board" · you: author · mode: inkwire`);
+    expect(on).toContain("session_send");
     expect(hookEvent(clients, { hook_event_name: "SessionStart", source: "startup", session_id: "s1" }, "0")).toEqual({});
     await call("session_mode", { on: false });
   });
@@ -399,12 +406,15 @@ describe("per-client state (M2)", () => {
     return c;
   };
   const callAs = async (pid: number, name: string, args: Record<string, unknown> = {}) => {
-    const res = (await servers.get(pid)!.callTool({ name, arguments: args })) as {
+    const raw = (await servers.get(pid)!.callTool({ name, arguments: args })) as {
       content: { type: string; text?: string }[];
       isError?: boolean;
     };
+    // The board context line and the notices come first (M3.5); res holds the body only.
+    const head = raw.content[0]?.text ?? "";
+    const res = { ...raw, content: toolBody(raw.content) };
     const text = res.content.find((c) => c.type === "text")?.text ?? "";
-    return { res, text, json: () => JSON.parse(text) };
+    return { res, raw, head, text, json: () => JSON.parse(text) };
   };
   const arm = (pid: number, session_id?: string) =>
     hookEvent(cs, { hook_event_name: "PreToolUse", permission_mode: "auto", session_id, claude_pid: pid }, "0");
@@ -473,11 +483,12 @@ describe("per-client state (M2)", () => {
     expect(c101.blocks).toBe(0);
   });
 
-  it("in inkwire mode, boards_open of B keeps A current, and session_mode(on) on another board fails", async () => {
+  it("in inkwire mode, boards_open of B keeps A current, and session_mode(on) or a new board fails", async () => {
     const c101 = await connect(101);
-    const x = await newBoard(101, "m2 talk A");
     const y = await newBoard(101, "m2 other B");
-    await callAs(101, "boards_open", { board_id: x });
+    const x = await newBoard(101, "m2 talk A");
+    expect(cs.authorOf(x)).toBe(101);
+    expect(cs.authorOf(y)).toBeNull();
     arm(101);
     await callAs(101, "session_mode", { on: true });
     expect(cs.talkingOn(x)).toBe(c101);
@@ -486,7 +497,7 @@ describe("per-client state (M2)", () => {
     const opened = await callAs(101, "boards_open", { board_id: y });
     expect(opened.res.isError).toBeFalsy();
     expect(opened.res.content[1]?.text).toBe(
-      `You are talking with the person on ${x}. Your current board is still ${x}. Turn the mode off before you move to a different board.`,
+      `You are the author of ${x}. Your current board is still ${x}. You are talking with the person on ${x}. Turn the mode off before you move to a different board.`,
     );
     expect(c101.currentBoardId).toBe(x);
     const pending = callAs(101, "session_send", { text: "still on A" });
@@ -495,21 +506,22 @@ describe("per-client state (M2)", () => {
     sessionReply(cs, s2.open(x), { text: "ok", focus: null, selection: null });
     expect((await pending).json()).toMatchObject({ status: "reply", reply: "ok" });
 
-    // A current board that moved another way (boards_create): mode on there fails, and A stays authored and talking.
-    const z = await newBoard(101, "m2 new C");
-    expect(c101.currentBoardId).toBe(z);
-    const refused = await callAs(101, "session_mode", { on: true });
+    // M3.5: a new board would claim it, so boards_create fails, and A stays authored, current and talking.
+    const refused = await callAs(101, "boards_create", { name: "m2 new C", project_root: tmpdir() });
     expect(refused.res.isError).toBe(true);
     expect(refused.text).toContain(`You are talking with the person on ${x}. Turn the mode off before you move to a different board.`);
+    expect(c101.currentBoardId).toBe(x);
     expect(cs.authorOf(x)).toBe(101);
-    expect(cs.authorOf(z)).toBeNull();
     expect(cs.talkingOn(x)).toBe(c101);
     expect(s2.open(x).thread.some((m) => m.type === "call" && /authorship released/.test(m.text))).toBe(false);
 
-    // In pty mode, boards_open moves the current board as before.
+    // In pty mode, boards_open still does not move an Author; it says how to move.
     await callAs(101, "session_mode", { on: false });
-    await callAs(101, "boards_open", { board_id: y });
-    expect(c101.currentBoardId).toBe(y);
+    const again = await callAs(101, "boards_open", { board_id: y });
+    expect(again.res.content[1]?.text).toBe(
+      `You are the author of ${x}. Your current board is still ${x}. A write to ${y} moves you to ${y} and releases ${x}.`,
+    );
+    expect(c101.currentBoardId).toBe(x);
   });
 
   it("SessionStart compact re-injects the instruction only for the talking Client", async () => {
@@ -519,7 +531,8 @@ describe("per-client state (M2)", () => {
     arm(101);
     arm(202);
     await callAs(101, "session_mode", { on: true });
-    expect(hookEvent(cs, { hook_event_name: "SessionStart", source: "compact", claude_pid: 202 }, "0")).toEqual({});
+    // 202 gets its board context line only; 101 also gets the instruction.
+    expect(hookEvent(cs, { hook_event_name: "SessionStart", source: "compact", claude_pid: 202 }, "0")).toEqual({ context: "board: none · mode: pty" });
     expect(hookEvent(cs, { hook_event_name: "SessionStart", source: "compact", claude_pid: 101 }, "0").context).toContain("session_send");
   });
 
@@ -527,7 +540,6 @@ describe("per-client state (M2)", () => {
     const a1 = await connect(101);
     const b1 = await connect(202);
     const x = await newBoard(101, "m2 board A");
-    const y = await newBoard(202, "m2 board B");
     arm(101);
     arm(202);
     await callAs(101, "session_mode", { on: true });
@@ -545,7 +557,7 @@ describe("per-client state (M2)", () => {
     expect(cs.talkingOn(x)).toBe(a1);
 
     // B on its own board: on, then off. A's send is still pending.
-    await callAs(202, "boards_open", { board_id: y });
+    await newBoard(202, "m2 board B");
     expect((await callAs(202, "session_mode", { on: true })).json().mode).toBe("inkwire");
     await callAs(202, "session_mode", { on: false });
     expect(b1.mode).toBe("pty");

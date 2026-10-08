@@ -32,7 +32,7 @@ src/server/http.ts:36      createHttpServer
 src/server/http.ts:46      handle
 src/server/http.ts:198     serveFile
 src/server/ws.ts:17        PanelHub
-src/server/mcp.ts:44       buildMcpServer
+src/server/mcp.ts:82       buildMcpServer
 ```
 
 Env: `INKWIRE_PORT`, `INKWIRE_DATA_DIR`. There is no project-root env (see Project root). HTTP serves the panel from
@@ -155,31 +155,72 @@ Tests: `tests/core/infer.test.ts`, `tests/core/geometry.test.ts`, `tests/fixture
 ## MCP tools
 
 All tools register through one untyped `register` wrapper in `buildMcpServer`. It turns the dotted
-name into an underscore name, takes the input shape from `toolArgs`, turns thrown errors into
-`isError` results, and records a `call` row in the current board's thread. The handlers call into
+name into an underscore name, takes the input shape from `toolArgs`, and runs the handler inside a
+per-call slot (`callCtx`, an `AsyncLocalStorage`). After the handler it claims the written board
+(`commitClaim`), turns thrown errors into `isError` results, records a `call` row, and puts the
+board context line and the Client's notices first in the result (M3.5). The handlers call into
 `mutations.ts`, `layers.ts`, `drafts.ts`, `notebooks.ts`, `session-mode.ts`, `lint.ts`,
 `bindcode.ts`, `board-file.ts`.
 
 ```
-src/server/mcp.ts:44    buildMcpServer
-src/server/mcp.ts:110   register
-src/server/mcp.ts:151   register("boards.list"
-src/server/mcp.ts:257   get_state
-src/server/mcp.ts:285   screenshot
-src/server/mcp.ts:304   infer_structure
-src/server/mcp.ts:312   register("canvas.add_node"
-src/server/mcp.ts:368   bind_code
-src/server/mcp.ts:431   lint
-src/server/mcp.ts:448   history.get
-src/server/mcp.ts:460   layers.list
-src/server/mcp.ts:531   paths.create
-src/server/mcp.ts:595   drafts.create
-src/server/mcp.ts:641   notebooks.create
+src/server/mcp.ts:82    buildMcpServer
+src/server/mcp.ts:50    WRITE_TOOLS
+src/server/mcp.ts:61    READ_TOOLS
+src/server/mcp.ts:71    OWN_RULE_TOOLS
+src/server/mcp.ts:80    callCtx
+src/server/mcp.ts:87    resolve
+src/server/mcp.ts:105   writable
+src/server/mcp.ts:121   created
+src/server/mcp.ts:141   recordCall
+src/server/mcp.ts:172   register
+src/server/mcp.ts:249   register("boards.list"
+src/server/mcp.ts:255   boards.open
+src/server/mcp.ts:289   register("boards.release"
+src/server/mcp.ts:373   get_state
+src/server/mcp.ts:401   screenshot
+src/server/mcp.ts:420   infer_structure
+src/server/mcp.ts:428   register("canvas.add_node"
+src/server/mcp.ts:484   bind_code
+src/server/mcp.ts:547   lint
+src/server/mcp.ts:564   history.get
+src/server/mcp.ts:576   layers.list
+src/server/mcp.ts:647   paths.create
+src/server/mcp.ts:696   paths.play
+src/server/mcp.ts:717   drafts.create
+src/server/mcp.ts:763   notebooks.create
 ```
 
-Families, in file order: `session_*` (105, 112), `boards_*` (145-212: list, open, delete, update,
-create, clone, import), `canvas_*` (241-414), `history_get` (431), `layers_*` (443-489), `paths_*`
-(514-563), `drafts_*` (578-614), `notebooks_*` (624-666).
+Families, in file order: `session_*` (205, 212), `boards_*` (246-367: list, open, delete, release,
+update, create, clone, import), `canvas_*` (369-556), `history_get` (560), `layers_*` (572-625),
+`paths_*` (643-707), `drafts_*` (713-755), `notebooks_*` (759-807).
+
+Beware: every write handler resolves its board with `writable()`, not `resolve()`. `writable()`
+fails when another Client is the Author, when the person released this Client from the board, or
+(a claiming write) when the Client talks in `inkwire` mode on another board. The wrapper claims
+the board only after the handler returns with no error, so a failed write never claims and never
+releases. From `writable()` to its last mutation a handler must be synchronous: do awaited work
+first. The wrapper runs a synchronous handler and its claim in one turn of the event loop, which
+makes the claim atomic. `boards_delete` uses `writable(id, { claim: false })`: delete is a write,
+not a claim. `boards_create`, `boards_clone` and `boards_import` call `checkSwitch(client, null)`
+first and `created()` after: the new board is claimed and becomes current.
+
+Beware: a new tool goes into exactly one of `WRITE_TOOLS`, `READ_TOOLS` or `OWN_RULE_TOOLS`.
+`tests/tools/authorship.test.ts` fails when the three sets differ from `listTools()`, and runs
+every write tool as a reader (it must fail and change nothing) and as the Author.
+
+Beware: only the Author's calls go into a board's Thread. `recordCall` writes the row on the
+board the call wrote, else the board it read (`resolve()` fills the slot), else the current board,
+and only when `clients.authorOf(board) === client.pid`. Readers' calls are not recorded.
+
+Beware: every result starts with one text block: the context line
+(`board <id> "<name>" · you: author|reader · mode: pty|inkwire`, or `board: none · mode: pty`), then
+one line for each queued notice. The body follows. An argument error that the SDK makes before the
+handler runs has no context line. Tests read the body with `toolBody` (`tests/helpers.ts`).
+
+Beware: `boards_open` does not move an Author. The Author of A that opens B gets B's state, its
+current board stays A, and a second text block says so. A Client that authors no board gets B as
+its current board. So `session_mode(on)` after `boards_open(B)` by the Author of A acts on A: the
+`use-inkwire` skill releases A (`boards_release`) and opens B again before it turns the mode on.
 
 Beware: tool names use underscores (`canvas_add_node`) because the tool-name charset forbids dots.
 The spec's dotted names appear in descriptions only. The `toolArgs` keys are still dotted.
@@ -187,12 +228,14 @@ The spec's dotted names appear in descriptions only. The `toolArgs` keys are sti
 Beware: `SELF_RECORDING` (session send and mode) write their own thread rows; `BIG_RESULTS` drop the
 result body from the call row. Add a new big-result tool to that set.
 
-Beware: adding a tool means a zod shape in `toolArgs`, a `register` call, a regenerated schema
-(`yarn gen:schemas`), and an edit to the hand-written fixture in `tests/fixtures/contract/` if a
-`get_state` read changes.
+Beware: adding a tool means a zod shape in `toolArgs`, a `register` call, a place in one of the
+three tool sets, a regenerated schema (`yarn gen:schemas`), a row in the panel's `MCP_TOOLS`, and an
+edit to the hand-written fixture in `tests/fixtures/contract/` if a `get_state` read changes.
 
-Tests: `tests/tools/contract.test.ts` (real `McpServer` over `InMemoryTransport`),
-`tests/tools/session.test.ts`.
+Tests: `tests/tools/contract.test.ts` (real `McpServer` over `InMemoryTransport`; the M3.5
+context line and notices), `tests/tools/authorship.test.ts` (two Clients: the gate, claims,
+release), `tests/tools/session.test.ts`. `tests/tools/harness.ts` builds many Clients over one
+`Sessions` + `Clients`.
 
 ## WebSocket protocol
 
@@ -235,7 +278,7 @@ src/shared/schemas.ts:36      edgeSchema
 src/shared/schemas.ts:95      layerSchema
 src/shared/schemas.ts:151     canvasStateSchema
 src/shared/schemas.ts:193     toolArgs
-src/shared/schemas.ts:368     ToolName
+src/shared/schemas.ts:369     ToolName
 src/shared/types.ts:10        NODE_KINDS
 src/scripts/gen-schemas.ts:11 toJSONSchema
 ```
@@ -264,13 +307,13 @@ src/ui/canvas.ts:57         setupCanvas
 src/ui/canvas.ts:628        renderWorld
 src/ui/canvas.ts:565        hitNode
 src/ui/canvas.ts:619        deleteSelection
-src/ui/panel.ts:174         setupPanel
-src/ui/panel.ts:345         renderPanel
-src/ui/panel.ts:357         renderInspector
-src/ui/panel.ts:615         renderAsideStrip
-src/ui/panel.ts:633         renderLayers
-src/ui/panel.ts:509         renderHistory
-src/ui/panel.ts:106         loadPanelPrefs
+src/ui/panel.ts:175         setupPanel
+src/ui/panel.ts:346         renderPanel
+src/ui/panel.ts:358         renderInspector
+src/ui/panel.ts:616         renderAsideStrip
+src/ui/panel.ts:634         renderLayers
+src/ui/panel.ts:510         renderHistory
+src/ui/panel.ts:107         loadPanelPrefs
 ```
 
 Styles are in `src/ui/styles.css`; `src/ui/index.html` is the shell. `yarn build` bundles the UI to
@@ -317,16 +360,16 @@ blocks until the human answers. The plugin's hook script forwards Claude Code ev
 which blocks `Stop` while that Client's mode is on. Every function takes `(clients, client, …)`.
 
 ```
-src/server/session-mode.ts:40    sessionMode
-src/server/session-mode.ts:135   sessionSend
-src/server/session-mode.ts:242   sessionReply
-src/server/session-mode.ts:327   hookEvent
+src/server/session-mode.ts:41    sessionMode
+src/server/session-mode.ts:133   sessionSend
+src/server/session-mode.ts:240   sessionReply
+src/server/session-mode.ts:325   hookEvent
 src/server/session-mode.ts:24    BLOCK_CEILING
 src/server/session-mode.ts:25    AUTO_MODES
-src/server/session-mode.ts:118   releaseAuthorship
+src/server/session-mode.ts:116   releaseAuthorship
 src/server/session-mode.ts:385   terminalProgram
 src/server/session-mode.ts:390   focusTerminal
-src/server/clients.ts:11         HookReport
+src/server/clients.ts:14         HookReport
 src/server/http.ts:58            /api/hook
 src/ui/session.ts:22             setupSession
 src/ui/session.ts:117            renderSession
@@ -347,15 +390,19 @@ and the pending send of `clients.talkingOn(board)` and the board's notice from `
 panel on another board does not see a mode change. The thread and the active highlight are per
 board, shared by every panel, and never persisted. The mode is not persisted either.
 
-Beware: `session_mode(on)` needs a current board. It fails when another Client is the Author, and
-on a board with no Author it claims the board. In `inkwire` mode it fails for any board but the
-one the Client talks on, and `boards_open` does not move that Client's current board. Only the Author writes a `session_mode` row. A panel
+Beware: `session_mode(on)` needs a current board. It fails when another Client is the Author or
+the person released this Client from the board (`checkWrite`), and on a board with no Author it
+claims the board. In `inkwire` mode it fails for any board but the one the Client talks on
+(`checkSwitch`), and `boards_open` does not move an Author's current board. Only the Author writes a `session_mode` row. A panel
 reply (`sessionReply`) goes only to the Client that talks on that board. `session_send` must go to
 the board that the Client authors and talks on.
 
 Beware: `session_mode(on)` fails unless a hook event was seen, the permission mode is `auto` or
 `bypassPermissions`, and `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` is `0`. `session_send` times out after
 20 min, returns `idle`, and turns the mode off. The server gives up blocking `Stop` after 3 in a row.
+
+Beware: `SessionStart` `compact` returns the Client's board context line (`contextLine`), plus
+the mode instruction while the mode is on, so the agent knows its board after compaction.
 
 Beware: there is no `/use-inkwire` button in the panel. The user types it in the terminal.
 
@@ -365,26 +412,34 @@ Tests: `tests/tools/session.test.ts`, `tests/tools/forward-hook.test.ts`.
 
 `Clients` (`src/server/clients.ts`, no I/O, clock from `Sessions.now`) keeps one `Client` for each
 Claude Code pid (ADR 0001): `sessionId`, `cwd`, `label`, `termProgram`, `currentBoardId`, `mode`,
-`hook`, `pending`, `blocks`. It also keeps the Author of each board (`authors`, ADR 0002) and the
-panel notice of each board (`noticeByBoard`). Until the daemon (M4), the stdio server
+`hook`, `pending`, `blocks`. It also keeps the Author of each board (`authors`, ADR 0002), the
+pid the person released from each board (`releasedFrom`), the panel notice of each board
+(`noticeByBoard`), and the one-time notices of each Client (M3.5). Until the daemon (M4), the stdio server
 (`index.ts`) makes exactly one Client from `process.ppid` and passes it to `buildMcpServer`.
 
 ```
-src/server/clients.ts:31         Client
-src/server/clients.ts:65         class Clients
-src/server/clients.ts:103        ensure
-src/server/clients.ts:136        attach
-src/server/clients.ts:150        detach
-src/server/clients.ts:186        remove
-src/server/clients.ts:198        sweep
-src/server/clients.ts:211        boardDeleted
-src/server/clients.ts:258        talkingOn
-src/server/clients.ts:271        checkWrite
-src/server/clients.ts:285        commitClaim
-src/server/clients.ts:301        release
+src/server/clients.ts:34         Client
+src/server/clients.ts:68         class Clients
+src/server/clients.ts:114        ensure
+src/server/clients.ts:147        attach
+src/server/clients.ts:161        detach
+src/server/clients.ts:197        remove
+src/server/clients.ts:211        sweep
+src/server/clients.ts:224        boardDeleted
+src/server/clients.ts:275        talkingOn
+src/server/clients.ts:291        checkWrite
+src/server/clients.ts:323        commitClaim
+src/server/clients.ts:409        release
 src/server/session.ts:476        onDelete
 src/server/session.ts:549        resolve
-src/server/mcp.ts:49             resolve
+src/server/clients.ts:83         releasedFrom
+src/server/clients.ts:309        checkSwitch
+src/server/clients.ts:351        allowAgain
+src/server/clients.ts:359        addNotice
+src/server/clients.ts:366        takeNotices
+src/server/clients.ts:377        contextLine
+src/server/mcp.ts:87             resolve
+src/server/mcp.ts:105            writable
 src/server/index.ts:22           client
 ```
 
@@ -392,16 +447,31 @@ Beware: a hook can make a Client before its link connects. With no `attach` for 
 `HOOK_ONLY_TTL_MS` (60 s), `sweep` removes it. `detach` removes the Client only when its last link
 closes, and ignores a link that the record does not hold.
 
-Beware: claims are rules, not yet a gate. M2 has `checkWrite` and `commitClaim` (one board per
-Client; a claim of B releases A with reason `switch`), but only `session_mode(on)` claims. Every
-`release` runs `releaseAuthorship`, which turns off a talking Author. `Sessions.delete` fires
-`onDelete`, and `boardDeleted` releases the board, clears it as the current board of every Client,
-and resolves a send blocked on it with `idle`.
+Beware: claims (ADR 0002). The first successful write claims an unclaimed board (the `register`
+wrapper in `mcp.ts` calls `commitClaim`); reads never claim. `boards_create`, `boards_clone`,
+`boards_import` and `session_mode(on)` claim too. `commitClaim` makes the board the Client's
+current board. One board per Client: a claim of B releases A with reason `switch`, writes "claude
+moved to B" on A's Thread and "claude is now the author" on B's, and queues the switch notice.
+`checkSwitch` refuses any claim of another board while the Client talks in `inkwire` mode.
+`commitClaim` runs `checkSwitch` and `checkWrite` again as a backstop.
+
+Beware: release. `release(board, reason)` runs `releaseAuthorship`, which turns off a talking
+Author (its pending send returns `mode_off`). Reasons: `client` (`boards_release`), `person` (the
+panel, M5), `disconnect`, `switch`, `deleted`. A `person` release sets `releasedFrom`: that pid's
+writes and `session_mode(on)` on the board fail with "no longer the author" until another Client
+claims it, the pid disconnects (`remove`), or the person calls `allowAgain(board, pid)`.
+
+Beware: notices (M3.5). `addNotice` queues a line for one Client: claim, switch, lost (person
+release) and deleted (every Client whose current board it was). The `register` wrapper takes them
+with `takeNotices` and shows each once, after `contextLine`. `Sessions.delete` fires `onDelete`,
+and `boardDeleted` releases the board, clears it as the current board of every Client, and
+resolves a send blocked on it with `idle`.
 
 Beware: `Sessions.resolve(board_id, currentBoardId)` takes the caller's current board. In
 `mcp.ts`, use the local `resolve`, which passes `client.currentBoardId`.
 
-Tests: `tests/tools/clients.test.ts`, `tests/tools/session.test.ts` (per-client state).
+Tests: `tests/tools/clients.test.ts`, `tests/tools/session.test.ts` (per-client state),
+`tests/tools/authorship.test.ts` (the gate over MCP), `tests/tools/contract.test.ts` (M3.5).
 
 ## Layers and focus
 
@@ -419,7 +489,7 @@ src/server/layers.ts:58    updateLayer
 src/server/layers.ts:82    deleteLayer
 src/server/session.ts:246  updateLayers
 src/server/session.ts:257  setFocus
-src/ui/panel.ts:633        renderLayers
+src/ui/panel.ts:634        renderLayers
 ```
 
 Beware: layer members are never pruned when a node is deleted; `liveMembers` filters at read time.
@@ -470,7 +540,7 @@ src/server/drafts.ts:42    updateDraft
 src/server/drafts.ts:101   markElement
 src/server/session.ts:270  updateDrafts
 src/server/session.ts:278  setActiveDraft
-src/ui/panel.ts:761        renderDrafts
+src/ui/panel.ts:762        renderDrafts
 ```
 
 Beware: `active_draft` is never persisted. The error hue is shared between draft roles and lint. Draft
@@ -570,11 +640,11 @@ src/server/session.ts:500       create
 src/server/session.ts:518       uniqueName
 src/server/session.ts:534       clone
 src/server/session.ts:234       updateMeta
-src/server/mcp.ts:151           register("boards.list"
-src/server/mcp.ts:188           register("boards.update"
-src/server/mcp.ts:203           register("boards.create"
-src/server/mcp.ts:214           register("boards.clone"
-src/server/mcp.ts:228           register("boards.import"
+src/server/mcp.ts:249           register("boards.list"
+src/server/mcp.ts:300           register("boards.update"
+src/server/mcp.ts:207           register("boards.create"
+src/server/mcp.ts:328           register("boards.clone"
+src/server/mcp.ts:343           register("boards.import"
 src/server/board-file.ts:60     importRoot
 ```
 

@@ -126,3 +126,12 @@ export function makeNode(id: string, author: Author = "human"): NodeEl {
 export function makeEdge(id: string, from: string, to: string, author: Author = "human"): EdgeEl {
   return { id, from, to, label: null, schema: null, kind: "sync", condition: null, from_ink: null, author };
 }
+
+/**
+ * The body of an MCP tool result: its content without the board context line
+ * and notices that the register wrapper puts first (M3.5). A result that the
+ * SDK made (a schema error) has no context line, and comes back whole.
+ */
+export function toolBody<C extends { type: string; text?: string }>(content: C[]): C[] {
+  return content[0]?.type === "text" && /^board[ :]/.test(content[0].text ?? "") ? content.slice(1) : content;
+}

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildMcpServer } from "../../src/server/mcp.js";
 import { exportBoard } from "../../src/server/board-file.js";
 import { markElement } from "../../src/server/drafts.js";
@@ -18,6 +18,9 @@ import { Screenshots } from "../../src/server/screenshot.js";
 import { Sessions } from "../../src/server/session.js";
 import { Clients } from "../../src/server/clients.js";
 import { Store } from "../../src/server/store.js";
+import { toolBody } from "../helpers.js";
+import { sessionMode } from "../../src/server/session-mode.js";
+import { Harness } from "./harness.js";
 
 const handoffSchema = JSON.parse(
   readFileSync(
@@ -39,12 +42,24 @@ let boardId: string;
 let cwdNow = "/";
 
 async function call(name: string, args: Record<string, unknown> = {}) {
-  const res = (await client.callTool({ name, arguments: args })) as {
+  const raw = (await client.callTool({ name, arguments: args })) as {
     content: { type: string; text?: string; data?: string }[];
     isError?: boolean;
   };
+  // The board context line and the notices come first (M3.5); res holds the body only.
+  const head = raw.content[0]?.text ?? "";
+  const res = { ...raw, content: toolBody(raw.content) };
   const text = res.content.find((c) => c.type === "text")?.text ?? "";
-  return { res, text, json: () => JSON.parse(text) };
+  return { res, raw, head, text, json: () => JSON.parse(text) };
+}
+
+/**
+ * Make id the current board of Client 101. Opening does not move an Author
+ * (M3.5), so release the authored board first; the next write claims id.
+ */
+async function useBoard(id: string) {
+  await call("boards_release");
+  await call("boards_open", { board_id: id });
 }
 
 async function getState() {
@@ -226,7 +241,7 @@ describe("tool contracts", () => {
     expect(out.edges_added).toBe(0);
     expect(out.strokes_consumed).toBe(0);
     // Reopen the original board as current for later tests.
-    await call("boards_open", { board_id: boardId });
+    await useBoard(boardId);
   });
 
   it("export_mermaid serializes the current graph", async () => {
@@ -275,7 +290,7 @@ describe("tool contracts", () => {
     const buf = Buffer.from(img!.data!, "base64");
     // PNG magic.
     expect(buf.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
-    const text = res.content.find((c) => c.type === "text")?.text ?? "";
+    const text = toolBody(res.content).find((c) => c.type === "text")?.text ?? "";
     expect(text).toContain("source: server");
     expect(text).toContain("zoom");
   });
@@ -319,7 +334,7 @@ describe("tool contracts", () => {
       expect((await call("canvas_get_state")).res.isError).toBe(true); // current pointer cleared
       expect((await call("boards_delete", { board_id: created.board_id })).text).toMatch(/not found/);
     } finally {
-      await call("boards_open", { board_id: boardId });
+      await useBoard(boardId);
     }
   });
 
@@ -1055,7 +1070,7 @@ describe("project root (ADR 0003)", () => {
 
   afterAll(async () => {
     cwdNow = projectRoot;
-    await call("boards_open", { board_id: boardId });
+    await useBoard(boardId);
     sessions.persistAll(); // flush pending debounce timers before the store closes
   });
 
@@ -1066,7 +1081,7 @@ describe("project root (ADR 0003)", () => {
       expect(out.res.isError).toBe(true);
       expect(out.text).toContain(RULE);
     }
-    await call("boards_open", { board_id: boardId });
+    await useBoard(boardId);
   });
 
   it("state.board.project_root is the board's root", async () => {
@@ -1076,7 +1091,7 @@ describe("project root (ADR 0003)", () => {
 
   it("an unset root: ref operations fail and name boards_update; everything else works", async () => {
     const id = unsetBoard("unset board");
-    await call("boards_open", { board_id: id });
+    await useBoard(id);
     const { a, e, layer } = await seed(id);
     const fails = async (name: string, args: Record<string, unknown>) => {
       const out = await call(name, args);
@@ -1330,7 +1345,7 @@ describe("project root (ADR 0003)", () => {
 
   it("boards_update: rename and re-root; bad roots, no fields and an unknown id fail", async () => {
     const id = unsetBoard("update me");
-    await call("boards_open", { board_id: id });
+    await useBoard(id);
     expect((await call("canvas_lint")).res.isError).toBe(true);
     const renamed = (await call("boards_update", { board_id: id, name: "updated name" })).json();
     expect(renamed.name).toBe("updated name");
@@ -1354,7 +1369,7 @@ describe("project root (ADR 0003)", () => {
   });
 
   it("boards_open keeps the in-memory history and revisions; its description does not say resets", async () => {
-    await call("boards_open", { board_id: boardId });
+    await useBoard(boardId);
     await call("canvas_add_node", { label: "open twice", kind: "service" });
     const before = (await call("boards_open", { board_id: boardId })).json().state;
     const after = (await call("boards_open", { board_id: boardId })).json().state;
@@ -1363,5 +1378,153 @@ describe("project root (ADR 0003)", () => {
     expect(after.graph.revision).toBe(before.graph.revision);
     const tool = (await client.listTools()).tools.find((t) => t.name === "boards_open")!;
     expect(tool.description).not.toContain("resets");
+  });
+});
+
+// M3.5: the agent always knows which board it works on. Two Clients (101, 202) over one daemon-like setup.
+describe("board context line and notices (M3.5)", () => {
+  let h: Harness;
+  const line = (id: string, name: string, role: "author" | "reader", mode = "pty") => `board ${id} "${name}" · you: ${role} · mode: ${mode}`;
+  /** The notices of a result: the head lines after the context line. */
+  const notices = (head: string) => head.split("\n").slice(1);
+
+  beforeEach(async () => {
+    h = new Harness();
+    await h.connect(101);
+    await h.connect(202);
+  });
+
+  afterEach(async () => {
+    for (const c of h.clients.all()) if (c.mode === "inkwire") sessionMode(h.clients, c, false, { focusTerminal: () => {} });
+    await h.close();
+  });
+
+  it("every result starts with the context line: no board, author, reader, a read, a write and an error", async () => {
+    const none = await h.call(101, "boards_list");
+    expect(none.head).toBe("board: none · mode: pty");
+    const x = await h.newBoard(101, "ctx X");
+    expect((await h.call(101, "canvas_get_state")).head).toBe(line(x, "ctx X", "author"));
+    expect((await h.call(101, "canvas_add_node", { label: "a", kind: "service" })).head).toBe(line(x, "ctx X", "author"));
+    const opened = await h.call(202, "boards_open", { board_id: x });
+    expect(opened.head).toBe(line(x, "ctx X", "reader"));
+    const refused = await h.call(202, "canvas_add_node", { label: "b", kind: "service" });
+    expect(refused.res.isError).toBe(true);
+    expect(refused.head).toBe(line(x, "ctx X", "reader"));
+    // Every tool, reads and writes: the first block is the context line. Only an argument error
+    // that the SDK makes before the handler runs (MCP error -32602) has none.
+    let checked = 0;
+    for (const tool of await h.listTools(202)) {
+      const r = await h.call(202, tool, {});
+      if (r.head.startsWith("MCP error -32602")) {
+        expect(r.res.isError, tool).toBe(true);
+        continue;
+      }
+      checked++;
+      expect(r.head.split("\n")[0], tool).toMatch(/^board (b_\w+ ".*" · you: (author|reader)|: none) · mode: (pty|inkwire)$/);
+    }
+    expect(checked).toBeGreaterThanOrEqual(10);
+  });
+
+  it("each event gives its notice exactly once: claim, switch, lost and deleted", async () => {
+    const created = await h.call(101, "boards_create", { name: "N A", project_root: h.root });
+    const a = created.json().board_id;
+    expect(notices(created.head)).toEqual([`You are now the author of ${a}.`]);
+    expect(notices((await h.call(101, "canvas_get_state")).head)).toEqual([]);
+
+    const b = h.sessions.create("N B", h.root).boardId;
+    const moved = await h.call(101, "canvas_add_node", { board_id: b, label: "x", kind: "service" });
+    expect(moved.head.split("\n")[0]).toBe(line(b, "N B", "author"));
+    expect(notices(moved.head)).toEqual([
+      `Current board is now ${b} "N B". All later edits with no board_id go to it. You released ${a}.`,
+      `You are now the author of ${b}.`,
+    ]);
+    expect(notices((await h.call(101, "canvas_get_state")).head)).toEqual([]);
+
+    h.clients.release(b, "person");
+    const lost = await h.call(101, "canvas_get_state");
+    expect(lost.head.split("\n")[0]).toBe(line(b, "N B", "reader"));
+    expect(notices(lost.head)).toEqual([`The person released ${b}. You can still read it.`]);
+    expect(notices((await h.call(101, "canvas_get_state")).head)).toEqual([]);
+
+    await h.call(202, "boards_open", { board_id: b });
+    expect(h.sessions.delete(b)).toBe(true);
+    for (const pid of [101, 202]) {
+      const gone = await h.call(pid, "boards_list");
+      expect(gone.head.split("\n")[0]).toBe("board: none · mode: pty");
+      expect(notices(gone.head)).toEqual([`Board ${b} was deleted. You have no current board.`]);
+      expect(notices((await h.call(pid, "boards_list")).head)).toEqual([]);
+    }
+  });
+
+  it("a switch in pty mode writes a row on both Threads", async () => {
+    const a = await h.newBoard(101, "T A");
+    const b = h.sessions.create("T B", h.root).boardId;
+    await h.call(101, "canvas_add_node", { board_id: b, label: "x", kind: "service" });
+    expect(h.callRows(a).filter((r) => r.name === "author")).toEqual([{ name: "author", text: `claude moved to ${b}` }]);
+    expect(h.callRows(b).filter((r) => r.name === "author")).toEqual([{ name: "author", text: "claude is now the author" }]);
+  });
+
+  it("in inkwire mode a write to B, boards_create, boards_clone and boards_import fail; A stays authored and current; a read of B works", async () => {
+    const c101 = h.clients.get(101)!;
+    const b = h.sessions.create("I B", h.root).boardId;
+    const a = await h.newBoard(101, "I A");
+    h.arm(101);
+    await h.call(101, "session_mode", { on: true });
+    const talking = `You are talking with the person on ${a}. Turn the mode off before you move to a different board.`;
+    const file = path.join(h.root, "i.inkwire.json");
+    writeFileSync(file, JSON.stringify(exportBoard(h.sessions.open(a), h.store, Date.now())));
+    const boardsBefore = h.store.list().length;
+    for (const [tool, args] of [
+      ["canvas_add_node", { board_id: b, label: "x", kind: "service" }],
+      ["boards_create", { name: "I C", project_root: h.root }],
+      ["boards_clone", { board_id: a }],
+      ["boards_import", { path: file }],
+    ] as const) {
+      const r = await h.call(101, tool, args);
+      expect(r.res.isError, tool).toBe(true);
+      expect(r.text, tool).toContain(talking);
+      expect(r.head.split("\n")[0], tool).toBe(line(a, "I A", "author", "inkwire"));
+    }
+    expect(h.store.list()).toHaveLength(boardsBefore);
+    expect(h.clients.authorOf(a)).toBe(101);
+    expect(h.clients.authorOf(b)).toBeNull();
+    expect(c101.currentBoardId).toBe(a);
+    expect(h.clients.talkingOn(a)).toBe(c101);
+    const read = await h.call(101, "canvas_get_state", { board_id: b });
+    expect(read.res.isError).toBeFalsy();
+    expect(read.json().board.name).toBe("I B");
+  });
+
+  for (const mode of ["pty", "inkwire"] as const) {
+    it(`boards_open of B by the Author of A in ${mode} mode returns B's state; A stays current and authored`, async () => {
+      const c101 = h.clients.get(101)!;
+      const b = h.sessions.create("O B", h.root).boardId;
+      const a = await h.newBoard(101, "O A");
+      if (mode === "inkwire") {
+        h.arm(101);
+        await h.call(101, "session_mode", { on: true });
+      }
+      const opened = await h.call(101, "boards_open", { board_id: b });
+      expect(opened.res.isError).toBeFalsy();
+      expect(opened.json().state.board.name).toBe("O B");
+      const next =
+        mode === "pty"
+          ? `A write to ${b} moves you to ${b} and releases ${a}.`
+          : `You are talking with the person on ${a}. Turn the mode off before you move to a different board.`;
+      expect(opened.res.content[1]?.text).toBe(`You are the author of ${a}. Your current board is still ${a}. ${next}`);
+      expect(opened.head).toBe(line(a, "O A", "author", mode === "pty" ? "pty" : "inkwire"));
+      expect(c101.currentBoardId).toBe(a);
+      expect(h.clients.authorOf(a)).toBe(101);
+      expect(h.clients.authorOf(b)).toBeNull();
+    });
+  }
+
+  it("boards_open of B by a Client that authors no board makes B current", async () => {
+    const b = h.sessions.create("O B2", h.root).boardId;
+    const opened = await h.call(202, "boards_open", { board_id: b });
+    expect(opened.res.content).toHaveLength(1);
+    expect(opened.head).toBe(line(b, "O B2", "reader"));
+    expect(h.clients.get(202)!.currentBoardId).toBe(b);
+    expect(h.clients.authorOf(b)).toBeNull();
   });
 });

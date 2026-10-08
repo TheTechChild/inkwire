@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { Clients, HOOK_ONLY_TTL_MS, type Client, type ReleaseReason } from "../../src/server/clients.js";
-import { hookEvent, sessionSend } from "../../src/server/session-mode.js";
+import { hookEvent, sessionMode, sessionSend } from "../../src/server/session-mode.js";
 import { Sessions } from "../../src/server/session.js";
 import { Store } from "../../src/server/store.js";
 
@@ -221,18 +221,37 @@ describe("a talking Author that loses its board (releaseAuthorship)", () => {
     });
   }
 
-  it("a switch claim releases the old board only: the send returns mode_off and only the old board gets the row", async () => {
+  it("a switch claim in inkwire mode throws and changes nothing (M3.5): A stays authored, current and talking", async () => {
     const c = hello(101);
     const [a, b] = [board("A"), board("B")];
     const pending = talk(c, a);
-    clients.commitClaim(c, b);
+    expect(() => clients.commitClaim(c, b)).toThrow(`You are talking with the person on ${a}. Turn the mode off before you move to a different board.`);
+    expect(clients.authorOf(a)).toBe(101);
+    expect(clients.authorOf(b)).toBeNull();
+    expect(c.currentBoardId).toBe(a);
+    expect(clients.talkingOn(a)).toBe(c);
+    expect(c.pending).not.toBeNull();
+    expect(releasedRows(a)).toEqual([]);
+    clients.release(a, "client");
     expect(await pending).toMatchObject({ status: "mode_off" });
-    expect(c.mode).toBe("pty");
-    expect(clients.talkingOn(a)).toBeNull();
+  });
+
+  it("session_mode(on) in inkwire mode for a current board other than the talked-on board fails and changes nothing (M3.5)", async () => {
+    const c = hello(101);
+    c.hook = { permissionMode: "auto", autoBackground: "0", sessionId: "s101", at: 0 };
+    const [a, b] = [board("A"), board("B")];
+    const pending = talk(c, a);
+    c.currentBoardId = b;
+    expect(() => sessionMode(clients, c, true)).toThrow(`You are talking with the person on ${a}. Turn the mode off before you move to a different board.`);
+    expect(clients.authorOf(a)).toBe(101);
+    expect(clients.authorOf(b)).toBeNull();
+    expect(clients.talkingOn(a)).toBe(c);
     expect(clients.talkingOn(b)).toBeNull();
-    expect(clients.authorOf(b)).toBe(101);
-    expect(releasedRows(a)).toEqual(["off · authorship released (switch); the pending session_send returned mode_off"]);
-    expect(releasedRows(b)).toEqual([]);
+    expect(c.mode).toBe("inkwire");
+    expect(c.pending).not.toBeNull();
+    expect(sessions.open(b).thread).toEqual([]);
+    clients.release(a, "client");
+    expect(await pending).toMatchObject({ status: "mode_off" });
   });
 });
 
@@ -273,5 +292,93 @@ describe("board notices", () => {
     sessions.delete(a);
     expect(seen).toContain("board deleted · mode pty");
     expect(clients.noticeByBoard.has(a)).toBe(false);
+  });
+});
+
+describe("context line and notices (M3.5)", () => {
+  it("contextLine names the current board, the role and the mode; none when there is no current board", () => {
+    const c = hello(101);
+    const r = hello(202);
+    expect(clients.contextLine(c)).toBe("board: none · mode: pty");
+    const x = board("ctx");
+    clients.commitClaim(c, x);
+    r.currentBoardId = x;
+    expect(clients.contextLine(c)).toBe(`board ${x} "ctx" · you: author · mode: pty`);
+    expect(clients.contextLine(r)).toBe(`board ${x} "ctx" · you: reader · mode: pty`);
+    c.mode = "inkwire";
+    expect(clients.contextLine(c)).toBe(`board ${x} "ctx" · you: author · mode: inkwire`);
+    c.mode = "pty";
+  });
+
+  it("a claim makes the board current and gives one claim notice; a switch gives one switch notice", () => {
+    const c = hello(101);
+    const [a, b] = [board("A"), board("B")];
+    clients.commitClaim(c, a);
+    expect(c.currentBoardId).toBe(a);
+    expect(clients.takeNotices(c)).toEqual([`You are now the author of ${a}.`]);
+    expect(clients.takeNotices(c)).toEqual([]);
+    clients.commitClaim(c, a);
+    expect(clients.takeNotices(c)).toEqual([]);
+    clients.commitClaim(c, b);
+    expect(c.currentBoardId).toBe(b);
+    expect(clients.takeNotices(c)).toEqual([
+      `Current board is now ${b} "B". All later edits with no board_id go to it. You released ${a}.`,
+      `You are now the author of ${b}.`,
+    ]);
+    expect(clients.takeNotices(c)).toEqual([]);
+  });
+
+  it("a person release gives one lost notice; a delete gives the deleted notice to the Author and every reader", () => {
+    const c = hello(101);
+    const r = hello(202);
+    const x = board("X");
+    clients.commitClaim(c, x);
+    clients.takeNotices(c);
+    clients.release(x, "person");
+    expect(clients.takeNotices(c)).toEqual([`The person released ${x}. You can still read it.`]);
+    expect(clients.takeNotices(c)).toEqual([]);
+    r.currentBoardId = x;
+    sessions.delete(x);
+    for (const who of [c, r]) {
+      expect(clients.takeNotices(who)).toEqual([`Board ${x} was deleted. You have no current board.`]);
+      expect(clients.takeNotices(who)).toEqual([]);
+    }
+  });
+
+  it("checkWrite refuses the released pid until allowAgain; a claim by another pid or a disconnect clears it", () => {
+    const c = hello(101);
+    const d = hello(202);
+    const x = board("X");
+    clients.commitClaim(c, x);
+    clients.release(x, "person");
+    expect(() => clients.checkWrite(c, x)).toThrow(`you are no longer the author of ${x}`);
+    expect(() => clients.checkWrite(d, x)).not.toThrow();
+    expect(clients.allowAgain(x, 202)).toBe(false);
+    expect(clients.allowAgain(x, 101)).toBe(true);
+    expect(() => clients.checkWrite(c, x)).not.toThrow();
+
+    clients.commitClaim(c, x);
+    clients.release(x, "person");
+    clients.commitClaim(d, x);
+    expect(clients.releasedFrom.has(x)).toBe(false);
+
+    const y = board("Y");
+    clients.commitClaim(c, y);
+    clients.release(y, "person");
+    clients.detach(101, "link-101");
+    expect(clients.releasedFrom.has(y)).toBe(false);
+  });
+
+  it("the compact hook returns the context line, and the instruction only in inkwire mode", () => {
+    const c = hello(101);
+    const x = board("compact");
+    clients.commitClaim(c, x);
+    const line = `board ${x} "compact" · you: author · mode: pty`;
+    expect(hookEvent(clients, { hook_event_name: "SessionStart", source: "compact", claude_pid: 101 }, "0")).toEqual({ context: line });
+    c.mode = "inkwire";
+    const on = hookEvent(clients, { hook_event_name: "SessionStart", source: "compact", claude_pid: 101 }, "0").context!;
+    expect(on.split("\n")[0]).toBe(`board ${x} "compact" · you: author · mode: inkwire`);
+    expect(on).toContain("session_send");
+    c.mode = "pty";
   });
 });
