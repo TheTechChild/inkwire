@@ -66,3 +66,16 @@ Load-bearing rules that are easy to break:
 - Property tests (`tests/core/properties.test.ts`, fast-check) assert the eight TESTS.md § 1 invariants. The drop-node regression (drop the add-B step → edge pruned, adding step flagged conflict) lives in `tests/core/fold.test.ts`.
 - Tool contract tests run the real `McpServer` over `InMemoryTransport`; every `get_state` read is validated against the design-authored JSON Schema in `tests/fixtures/contract/`, so contract drift fails tests. Hand-edit that file when the contract grows; `schema/*.generated.json` is emitted from zod.
 - A CSS gotcha that already bit once: a path like `_ds/industry-*/` inside a CSS comment terminates the comment (`*/`) and can silently swallow following rules.
+
+## Tool versions
+
+These files pin tool versions:
+
+- `mise.toml`: node 26.11.1, yarn 4.18.1.
+- `.nvmrc`: node 26.11.1.
+- `package.json` `packageManager`: yarn@4.18.1.
+- `package.json` `engines.node`: >=26.
+- `package.json` `devDependencies.@types/node`: ^26.6.4.
+- `.github/workflows/ci.yaml` reads the node version from `.nvmrc`.
+
+When you change a tool version, update all of these files in one change.
