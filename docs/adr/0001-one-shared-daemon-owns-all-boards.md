@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # One shared daemon owns all boards

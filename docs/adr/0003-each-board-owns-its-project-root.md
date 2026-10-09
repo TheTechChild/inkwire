@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Each board owns its project root
