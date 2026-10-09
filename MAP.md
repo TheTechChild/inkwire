@@ -19,31 +19,151 @@ Product rules and the test list are in `CLAUDE.md`. The authority for behaviour 
 
 ## Server bootstrap
 
-`main` loads config, opens the store, builds `Sessions` and `Clients`, makes the one Client of this
-stdio server (from `process.ppid`), starts HTTP + WebSocket on 127.0.0.1, then connects the MCP
-server to stdio. The port may already be taken by a sibling server, which
-`probeHealth` detects.
+Two entries share `openCore` (`bootstrap.ts`): it opens the store, builds `Sessions` and `Clients`,
+the panel hub and the screenshot broker, and attaches the HTTP request handler and `routeUpgrades`
+to an http server. `index.ts` `main` is the stdio entry that the plugin runs until the cut-over
+(M7): one Client from `process.ppid`, then MCP over stdio. `daemon.ts` `startDaemon` is the daemon
+entry: it binds the port first, then calls `openCore` in the listen callback, and serves one
+McpServer per relay link (see The link). `routeUpgrades` sends `/ws` to `PanelHub.handleUpgrade`
+and `/mcp` to the link endpoint, and destroys every other upgrade. The port may already be taken by
+a sibling server, which `probeHealth` (`src/link/probe.ts`) detects.
 
 ```
-src/server/index.ts:15     main
-src/server/index.ts:81     probeHealth
-src/server/config.ts:11    loadConfig
-src/server/http.ts:36      createHttpServer
-src/server/http.ts:46      handle
-src/server/http.ts:198     serveFile
-src/server/ws.ts:17        PanelHub
-src/server/mcp.ts:82       buildMcpServer
+src/server/bootstrap.ts:46   openCore
+src/server/index.ts:12       main
+src/server/daemon.ts:100     startDaemon
+src/link/probe.ts:49         probeHealth
+src/server/config.ts:18      loadConfig
+src/server/upgrade.ts:11     routeUpgrades
+src/server/http.ts:66        requestHandler
+src/server/http.ts:76        createHttpServer
+src/server/http.ts:80        handle
+src/server/http.ts:255       serveFile
+src/server/origin.ts:12      checkBrowserRequest
+src/server/ws.ts:19          PanelHub
+src/server/ws.ts:63          handleUpgrade
+src/server/mcp.ts:82         buildMcpServer
 ```
 
-Env: `INKWIRE_PORT`, `INKWIRE_DATA_DIR`. There is no project-root env (see Project root). HTTP serves the panel from
-`dist/ui/` and the routes `/api/boards`, `/api/boards/:id/export`, `/api/boards/import`,
-`/api/capture/:id`, `/api/hook`.
+Env: `INKWIRE_PORT`, `INKWIRE_DATA_DIR`, `INKWIRE_IDLE_GRACE_MS` (daemon only; default 30000, `off`
+turns the idle stop off). There is no project-root env (see Project root). HTTP serves the panel
+from `dist/ui/` and the routes `/healthz`, `/api/boards`, `/api/boards/:id/export`,
+`/api/boards/import`, `/api/capture/:id`, `/api/hook`, and on the daemon `POST /api/daemon/restart`.
 
-Beware: stdout is the MCP transport. Log to stderr only. Only the spawned-stdio smoke test catches
-a stray `console.log`.
+Beware: the Origin and Host check (`checkBrowserRequest`, M4.11). Every `POST`, `PUT`, `DELETE`
+and `PATCH`, the `/ws` upgrade (`verifyClient` in `ws.ts`) and the `/mcp` upgrade need `Host`
+`127.0.0.1:<port>` or `localhost:<port>`, and, when an `Origin` is present, the same origin over
+`http`. A request with no `Origin` passes (the hook's curl, `yarn daemon:restart`). A refusal is a
+403 and one stderr line.
+
+Beware: stdout is the MCP transport of the stdio entry and of the relay. Log to stderr only. Only
+the spawned-stdio smoke test catches a stray `console.log`. The daemon writes nothing to stdout.
 
 Tests: `tests/integration/server.test.ts`, `tests/integration/port-conflict.test.ts`,
-`tests/tools/stdio-smoke.test.ts`.
+`tests/tools/stdio-smoke.test.ts`, `tests/integration/origin.test.ts`.
+
+## The link (relay and daemon)
+
+Each Claude Code session runs the relay (`src/link/relay.ts`), which pipes MCP between stdio and the
+daemon's `/mcp` WebSocket (ADR 0001). The link is a replaceable layer: its whole contract with the
+daemon is a `Link` — an MCP SDK `Transport` (`WsTransport`, one JSON-RPC message per text frame),
+the `hello` value, and a `closed` promise. The first frame must be the hello (`helloSchema`: pid
+(the relay's `ppid`), session id, cwd, build, optional `term_program`, and `current_board` after a
+reconnect). The daemon's `createLinkHost` makes or fills the Client of the hello's pid, attaches the
+link, and connects a new McpServer to it. Reconnect lives only in `RelayCore`.
+
+```
+src/link/hello.ts:14          helloSchema
+src/link/hello.ts:7           LINK_VERSION
+src/link/ws-transport.ts:8    WsTransport
+src/link/endpoint.ts:11       Link
+src/link/endpoint.ts:34       createLinkEndpoint
+src/link/ws-client.ts:7       connectLink
+src/link/relay.ts:14          main
+src/link/relay-core.ts:63     RelayCore
+src/link/relay-core.ts:161    attach
+src/link/relay-core.ts:201    fromDown
+src/link/relay-core.ts:228    fromUp
+src/link/relay-core.ts:246    track
+src/link/relay-core.ts:255    upClosed
+src/link/relay-core.ts:297    fatal
+src/link/relay-core.ts:49     LOST_TEXT
+src/server/daemon.ts:34       createLinkHost
+src/server/clients.ts:428     restoreCurrentBoard
+```
+
+Beware: close codes. No hello in 5 s, or a first frame that is not a hello: 4400. A hello of
+another `v`: 4426 "link version mismatch: run yarn daemon:restart". A restart: 1012.
+
+Beware: the reconnect (M4.7). On an upstream close that the relay did not cause, `upClosed` answers
+every in-flight request with -32000 (`LOST_TEXT`) and reconnects with backoff (250 ms, doubling to
+5 s). `attach` sends the hello with `current_board`, then replays the cached `initialize` with the
+id `inkwire-relay-reinit-<n>`; `fromUp` drops its response, then sends `notifications/initialized`
+and the queued requests in order (at most 100; after 60 s with no daemon, requests get the error at
+once). A reconnect to another build sends `notifications/tools/list_changed` downstream. `track`
+keeps the board id from the first line of each tool result (`^board (b_…) `); `board: none` clears
+it; any other first line (an SDK argument error) keeps it. The daemon restores the current board
+only (`restoreCurrentBoard`), never authorship or `inkwire` mode, and queues the reconnect notice.
+
+Beware: no loop on a state that no retry can fix. A link closed with 4426 or 4400, or a connect
+that throws a fatal `DaemonUnavailable` (an old inkwire server or another process on the port),
+goes to `fatal`: every open request gets -32000 with the reason, the relay stops, and `relay.ts`
+exits 1. The backoff resets only when the link sends a message, so a daemon that accepts the link
+and closes it at once gets a growing delay. The first connect (`start`) tries a failure that is not
+fatal again for up to 10 s: a daemon that stops between the probe and the connect is replaced.
+
+Beware: the boundary. Nothing outside `src/link/` imports `ws` for MCP; `src/server/ws.ts` (the
+panel hub) is the one other `ws` user and must not touch `/mcp`. The relay must not import the
+store, `session.ts` or better-sqlite3. `tests/link/boundary.test.ts` enforces all three.
+
+Tests: `tests/link/boundary.test.ts`, `tests/link/endpoint.test.ts`, `tests/link/relay-core.test.ts`,
+`tests/link/relay-spawn.test.ts`, `tests/integration/daemon.test.ts`.
+
+## Daemon lifetime and builds
+
+The relay finds or starts the daemon (`ensureDaemon`): it probes `/healthz`, and when no inkwire
+answers, it spawns a detached daemon (`daemonEntry`: `src/server/daemon.ts` under tsx,
+`dist/server/daemon.js` from dist) that logs to `<dataDir>/daemon.log`, then polls for 10 s. A
+racing second daemon loses the port before it opens the store and exits 0. `yarn build` writes
+`dist/build.json` (`scripts/write-build-id.mjs`: `{ id, built_at }`, the id hashes `dist/` server,
+core, shared, link and ui, and `built_at` is not in the hash). The daemon reads it one time, at
+boot (`readBuildInfo`), and `/healthz` reports `{ ok, name, pid, build, clients, boards }`. The
+`IdleTimer` stops the daemon `INKWIRE_IDLE_GRACE_MS` after its last link closes (at boot it waits
+at least 10 s). Only the person restarts it: `POST /api/daemon/restart` (`yarn daemon:restart`,
+`scripts/daemon-restart.mjs`) runs `createRestart` — persist every board, stop listening, close
+every link, exit 0 — and the relays reconnect and autostart the current build.
+
+```
+src/link/autostart.ts:35      ensureDaemon
+src/link/autostart.ts:28      daemonEntry
+src/link/probe.ts:26          probeDaemon
+src/server/build-info.ts:18   readBuildInfo
+src/server/build-info.ts:32   isNewerBuild
+src/server/idle.ts:22         IdleTimer
+src/server/restart.ts:22      createRestart
+src/server/http.ts:61         defaultStats
+src/server/clients.ts:446     markStale
+src/server/clients.ts:454     STALE_NOTICE
+```
+
+Beware: bind first. `startDaemon` listens on the port before it opens the store. On EADDRINUSE it
+exits 0 when an inkwire answers (no DB opened) and 1 when another process holds the port. It has
+no stdin close handler: a detached daemon has stdin set to `ignore`.
+
+Beware: `/healthz` with `name: "inkwire"` and no `build` is the old stdio server (the stdio entry
+sends no build). `ensureDaemon` then stops the relay with "port N is held by an old inkwire
+server; close the old Claude Code sessions" and does not reconnect.
+
+Beware: stale builds (Decision 7). A hello whose build id differs and whose `built_at` is later
+sets `clients.staleBuild` and puts `STALE_NOTICE` on that Client's next tool result. Nothing
+restarts by itself. There is no MCP tool for restart; agents must not call the restart route or
+`yarn daemon:restart`.
+
+Beware: `yarn dev` runs the dev daemon on 4692 with `~/.inkwire-dev` and `INKWIRE_IDLE_GRACE_MS=off`.
+Tests use random ports and temp dirs and never bind 4691 or 4692.
+
+Tests: `tests/server/idle.test.ts`, `tests/integration/daemon-port.test.ts`,
+`tests/integration/daemon.test.ts`, `tests/link/relay-spawn.test.ts`, `yarn build-id:test`.
 
 ## The write path
 
@@ -248,10 +368,10 @@ src/shared/protocol.ts:147    clientMessageSchema
 src/shared/protocol.ts:164    captureRequestSchema
 src/shared/protocol.ts:174    SessionPush
 src/shared/protocol.ts:187    ServerMessage
-src/server/ws.ts:98           handle
-src/server/ws.ts:105          case "add_node":
-src/server/ws.ts:208          push
-src/server/ws.ts:231          requestCapture
+src/server/ws.ts:112          handle
+src/server/ws.ts:119          case "add_node":
+src/server/ws.ts:222          push
+src/server/ws.ts:245          requestCapture
 src/ui/ws-client.ts:8         connectWs
 src/ui/ws-client.ts:114       answerCapture
 src/ui/app.ts:89              isServerMessage
@@ -369,7 +489,7 @@ src/server/session-mode.ts:25    AUTO_MODES
 src/server/session-mode.ts:116   releaseAuthorship
 src/server/session-mode.ts:385   terminalProgram
 src/server/session-mode.ts:390   focusTerminal
-src/server/clients.ts:14         HookReport
+src/server/clients.ts:15         HookReport
 src/server/http.ts:58            /api/hook
 src/ui/session.ts:22             setupSession
 src/ui/session.ts:117            renderSession
@@ -414,33 +534,33 @@ Tests: `tests/tools/session.test.ts`, `tests/tools/forward-hook.test.ts`.
 Claude Code pid (ADR 0001): `sessionId`, `cwd`, `label`, `termProgram`, `currentBoardId`, `mode`,
 `hook`, `pending`, `blocks`. It also keeps the Author of each board (`authors`, ADR 0002), the
 pid the person released from each board (`releasedFrom`), the panel notice of each board
-(`noticeByBoard`), and the one-time notices of each Client (M3.5). Until the daemon (M4), the stdio server
-(`index.ts`) makes exactly one Client from `process.ppid` and passes it to `buildMcpServer`.
+(`noticeByBoard`), and the one-time notices of each Client (M3.5). The stdio server (`index.ts`)
+makes exactly one Client from `process.ppid`; the daemon makes one per hello pid (`createLinkHost`).
 
 ```
-src/server/clients.ts:34         Client
-src/server/clients.ts:68         class Clients
-src/server/clients.ts:114        ensure
-src/server/clients.ts:147        attach
-src/server/clients.ts:161        detach
-src/server/clients.ts:197        remove
-src/server/clients.ts:211        sweep
-src/server/clients.ts:224        boardDeleted
-src/server/clients.ts:275        talkingOn
-src/server/clients.ts:291        checkWrite
-src/server/clients.ts:323        commitClaim
-src/server/clients.ts:409        release
+src/server/clients.ts:32         Client
+src/server/clients.ts:66         class Clients
+src/server/clients.ts:112        ensure
+src/server/clients.ts:145        attach
+src/server/clients.ts:159        detach
+src/server/clients.ts:195        remove
+src/server/clients.ts:209        sweep
+src/server/clients.ts:222        boardDeleted
+src/server/clients.ts:273        talkingOn
+src/server/clients.ts:289        checkWrite
+src/server/clients.ts:321        commitClaim
+src/server/clients.ts:407        release
 src/server/session.ts:476        onDelete
 src/server/session.ts:549        resolve
-src/server/clients.ts:83         releasedFrom
-src/server/clients.ts:309        checkSwitch
-src/server/clients.ts:351        allowAgain
-src/server/clients.ts:359        addNotice
-src/server/clients.ts:366        takeNotices
-src/server/clients.ts:377        contextLine
+src/server/clients.ts:81         releasedFrom
+src/server/clients.ts:307        checkSwitch
+src/server/clients.ts:349        allowAgain
+src/server/clients.ts:357        addNotice
+src/server/clients.ts:364        takeNotices
+src/server/clients.ts:375        contextLine
 src/server/mcp.ts:87             resolve
 src/server/mcp.ts:105            writable
-src/server/index.ts:22           client
+src/server/index.ts:18           client
 ```
 
 Beware: a hook can make a Client before its link connects. With no `attach` for that pid within

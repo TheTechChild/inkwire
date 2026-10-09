@@ -1,6 +1,6 @@
 // TESTS.md § 5 — integration against a real HTTP+WS server on an ephemeral
 // port, with `ws` as the fake browser panel.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
@@ -8,6 +8,8 @@ import WebSocket from "ws";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHttpServer } from "../../src/server/http.js";
 import { PanelHub } from "../../src/server/ws.js";
+import { routeUpgrades } from "../../src/server/upgrade.js";
+import { readBuildInfo } from "../../src/server/build-info.js";
 import { Screenshots } from "../../src/server/screenshot.js";
 import { Sessions } from "../../src/server/session.js";
 import { Clients } from "../../src/server/clients.js";
@@ -24,6 +26,7 @@ let hub: PanelHub;
 let screenshots: Screenshots;
 let port: number;
 let boardId: string;
+let buildFile: string;
 const http = { server: null as ReturnType<typeof createHttpServer> | null };
 
 function connect(board: string): Promise<PanelClient> {
@@ -93,8 +96,13 @@ beforeAll(async () => {
   store = new Store(dataDir);
   sessions = new Sessions(store, { debounceMs: 60 });
   clients = new Clients(sessions);
-  http.server = createHttpServer({ store, sessions, clients, screenshots: () => screenshots });
-  hub = new PanelHub(http.server, sessions, clients, { focusTerminal: () => {} });
+  buildFile = path.join(dataDir, "build.json");
+  writeFileSync(buildFile, JSON.stringify({ id: "boot0000boot0000", built_at: "2026-10-08T10:00:00.000Z" }));
+  // Read one time, at boot (Decision 10), as daemon.ts does.
+  const build = readBuildInfo(buildFile);
+  http.server = createHttpServer({ store, sessions, clients, screenshots: () => screenshots, build, pid: 4711 });
+  hub = new PanelHub(sessions, clients, { focusTerminal: () => {} });
+  routeUpgrades(http.server, { "/ws": (req, socket, head) => hub.handleUpgrade(req, socket, head) });
   screenshots = new Screenshots(hub, store.imagesDir);
   await new Promise<void>((r) => http.server!.listen(0, "127.0.0.1", () => r()));
   port = (http.server!.address() as AddressInfo).port;
@@ -109,6 +117,26 @@ afterAll(async () => {
 });
 
 describe("integration", () => {
+  it("/healthz names the server, its pid, the boot build and the counts", async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/healthz`);
+    const body = await res.json();
+    expect(body).toMatchObject({ ok: true, name: "inkwire", pid: 4711, build: { id: "boot0000boot0000" } });
+    expect(typeof body.clients).toBe("number");
+    expect(typeof body.boards).toBe("number");
+  });
+
+  it("/healthz keeps the boot build id after build.json changes (Decision 10)", async () => {
+    writeFileSync(buildFile, JSON.stringify({ id: "rebuilt0rebuilt0", built_at: "2026-10-08T12:00:00.000Z" }));
+    const body = await (await fetch(`http://127.0.0.1:${port}/healthz`)).json();
+    expect(body.build).toEqual({ id: "boot0000boot0000", built_at: "2026-10-08T10:00:00.000Z" });
+  });
+
+  it("an upgrade to a path with no route is destroyed", async () => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/nope`);
+    const err = await new Promise<Error>((resolve) => socket.on("error", resolve));
+    expect(err.message).toMatch(/socket hang up|ECONNRESET/);
+  });
+
   it("two writers: WS drag + tool-side edge both land with correct authorship", async () => {
     const session = sessions.open(boardId);
     const a = mutations.addNode(session, "ai", { label: "svc a", kind: "service", at: [0, 0] }).ids[0]!;

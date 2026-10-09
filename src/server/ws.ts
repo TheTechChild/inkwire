@@ -2,7 +2,8 @@
 // author "human"; state pushes go out on every session change. Also the
 // capture broker for screenshots.
 import { WebSocketServer, WebSocket } from "ws";
-import type { Server } from "node:http";
+import type { IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
 import { clientMessageSchema, type ServerMessage } from "../shared/protocol.js";
 import type { Viewport } from "../shared/types.js";
 import type { Sessions, BoardSession } from "./session.js";
@@ -13,12 +14,13 @@ import { createDraft, deleteDraft, markElement, updateDraft } from "./drafts.js"
 import { createNotebook, deleteNotebook, migrateNotes, updateNotebook } from "./notebooks.js";
 import { sessionMode, sessionReply, type ModeDeps } from "./session-mode.js";
 import type { CaptureBroker } from "./screenshot.js";
+import { checkBrowserRequest, logRefused } from "./origin.js";
 
 export class PanelHub implements CaptureBroker {
   private byBoard = new Map<string, Set<WebSocket>>();
+  private wss: WebSocketServer;
 
   constructor(
-    server: Server,
     private sessions: Sessions,
     private clients: Clients,
     private modeDeps: ModeDeps = {},
@@ -27,11 +29,18 @@ export class PanelHub implements CaptureBroker {
     sessions.onChange(() => {
       for (const s of sessions.all()) if (this.byBoard.get(s.boardId)?.size) this.push(s);
     });
-    const wss = new WebSocketServer({ server, path: "/ws" });
-    // ws re-emits the http server's errors (EADDRINUSE included) on the
-    // WebSocketServer; without a listener that throws and kills the process
-    // before index.ts can print its friendly port-conflict message.
-    wss.on("error", (err) => console.error("ws server error:", err.message));
+    // noServer: routeUpgrades (upgrade.ts) gives this hub the /ws upgrades only (M4.2).
+    // verifyClient: the Origin and Host check (M4.11).
+    const wss = new WebSocketServer({
+      noServer: true,
+      verifyClient: (info, cb) => {
+        const reason = checkBrowserRequest(info.req);
+        if (reason === null) return cb(true);
+        logRefused("/ws", info.req, reason);
+        cb(false, 403, "Forbidden");
+      },
+    });
+    this.wss = wss;
     wss.on("connection", (socket, req) => {
       const url = new URL(req.url ?? "/", "http://localhost");
       const boardId = url.searchParams.get("board");
@@ -48,6 +57,11 @@ export class PanelHub implements CaptureBroker {
       }
       this.attach(socket, session);
     });
+  }
+
+  /** routeUpgrades calls this for each /ws upgrade. */
+  handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+    this.wss.handleUpgrade(req, socket, head, (ws) => this.wss.emit("connection", ws, req));
   }
 
   clientCount(boardId: string): number {

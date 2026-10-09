@@ -1,23 +1,19 @@
 #!/usr/bin/env node
-// Inkwire entry: MCP over stdio + panel HTTP/WS on 127.0.0.1.
+// Inkwire stdio entry: MCP over stdio + panel HTTP/WS on 127.0.0.1. The plugin
+// runs this entry until the cut-over (M7); the daemon entry is daemon.ts.
 // stdout belongs to the MCP transport — every log goes to stderr.
-import { fileURLToPath } from "node:url";
+import { createServer } from "node:http";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig } from "./config.js";
-import { Store } from "./store.js";
-import { Sessions } from "./session.js";
-import { Clients } from "./clients.js";
-import { createHttpServer } from "./http.js";
-import { PanelHub } from "./ws.js";
-import { Screenshots } from "./screenshot.js";
+import { openCore } from "./bootstrap.js";
 import { buildMcpServer } from "./mcp.js";
+import { probeHealth } from "../link/probe.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const store = new Store(config.dataDir);
-  const sessions = new Sessions(store);
-  const clients = new Clients(sessions);
-  // Until the daemon (M4), this stdio server speaks for one Client: the Claude
+  const http = createServer();
+  const { store, sessions, clients, mcpDeps } = openCore(config, http);
+  // Until the cut-over (M7), this stdio server speaks for one Client: the Claude
   // Code process that spawned it. Hooks from that pid route to it.
   const client = clients.ensure(process.ppid, {
     sessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null,
@@ -25,12 +21,6 @@ async function main(): Promise<void> {
     termProgram: process.env.TERM_PROGRAM ?? null,
   });
   clients.attach(client.pid, "stdio");
-
-  let screenshots: Screenshots;
-  const http = createHttpServer({ store, sessions, clients, screenshots: () => screenshots });
-  const pluginRoot = fileURLToPath(new URL("../..", import.meta.url)).replace(/\/$/, "");
-  const hub = new PanelHub(http, sessions, clients, { pluginRoot });
-  screenshots = new Screenshots(hub, store.imagesDir);
 
   await new Promise<void>((resolve, reject) => {
     http.once("error", async (err: NodeJS.ErrnoException) => {
@@ -51,15 +41,7 @@ async function main(): Promise<void> {
   });
   console.error(`inkwire panel on http://127.0.0.1:${config.port}/  (data: ${config.dataDir})`);
 
-  const mcp = buildMcpServer({
-    sessions,
-    clients,
-    client,
-    store,
-    screenshots: () => screenshots,
-    pluginRoot,
-    panelUrl: (boardId) => `http://127.0.0.1:${config.port}/?board=${boardId}`,
-  });
+  const mcp = buildMcpServer({ ...mcpDeps, client });
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
 
@@ -76,19 +58,6 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.stdin.on("close", () => shutdown("stdin closed"));
-}
-
-async function probeHealth(port: number): Promise<boolean> {
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/healthz`, {
-      signal: AbortSignal.timeout(1000),
-    });
-    if (!res.ok) return false;
-    const body = (await res.json()) as { name?: string };
-    return body.name === "inkwire";
-  } catch {
-    return false;
-  }
 }
 
 main().catch((err) => {

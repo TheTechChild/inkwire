@@ -53,12 +53,14 @@ The mode is not persisted; a server restart returns to the terminal. A `session_
 ## Development
 
 ```sh
-yarn dev        # server (tsx watch) + panel bundle (esbuild watch)
+yarn dev        # dev daemon (tsx watch) + panel bundle (esbuild watch)
 yarn test       # full vitest suite
 yarn typecheck
 ```
 
-Configuration (env vars): `INKWIRE_PORT` (default 4691), `INKWIRE_DATA_DIR` (default `~/.inkwire` — SQLite plus an images/ directory). There is no project-root env var: each board stores its own `project_root` (set it with `boards_create`, `boards_clone`, `boards_import` or `boards_update`), and every code ref on the board resolves against it.
+`yarn dev` runs the dev daemon on port 4692 with `~/.inkwire-dev` and `INKWIRE_IDLE_GRACE_MS=off`, so it does not touch the server on 4691 or the data in `~/.inkwire`. Panel URL: `http://127.0.0.1:4692/?board=<id>`.
+
+Configuration (env vars): `INKWIRE_PORT` (default 4691), `INKWIRE_DATA_DIR` (default `~/.inkwire` — SQLite plus an images/ directory), `INKWIRE_IDLE_GRACE_MS` (daemon only; default 30000, `off` turns the idle stop off). There is no project-root env var: each board stores its own `project_root` (set it with `boards_create`, `boards_clone`, `boards_import` or `boards_update`), and every code ref on the board resolves against it.
 
 The design handoff that specifies this project lives in `design_handoff_inkwire/`. See `CLAUDE.md` for architecture notes.
 

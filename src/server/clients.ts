@@ -9,6 +9,7 @@
 import type { SessionMode } from "../shared/types.js";
 import type { SendResult, Sessions } from "./session.js";
 import { releaseAuthorship } from "./session-mode.js";
+import type { BuildInfo } from "./build-info.js";
 
 /** What the Claude Code hook last told us. Proof the plugin is installed. */
 export interface HookReport {
@@ -20,10 +21,7 @@ export interface HookReport {
 }
 
 /** The build a relay runs (`dist/build.json`, M4). */
-export interface BuildInfo {
-  id: string;
-  built_at: string;
-}
+export type { BuildInfo } from "./build-info.js";
 
 export interface PendingSend {
   boardId: string;
@@ -420,4 +418,37 @@ export class Clients {
     this.notify();
     return c;
   }
+
+  /**
+   * After a reconnect (M4.7, Open question 11): the hello names the board of
+   * the relay's last context line. It becomes c's current board when it still
+   * exists. Authorship and inkwire mode are never restored: the next write
+   * claims the board again when it is free. Queues the reconnect notice (M3.5).
+   */
+  restoreCurrentBoard(c: Client, boardId: string): void {
+    const head = "The connection to the daemon was restored.";
+    if (!this.sessions.exists(boardId)) {
+      this.addNotice(c, `${head} Board ${boardId} no longer exists. You have no current board.`);
+      return;
+    }
+    c.currentBoardId = boardId;
+    const author = this.authorOf(boardId);
+    if (author !== null && author !== c.pid) {
+      this.addNotice(c, `${head} Your current board is still ${boardId}. ${boardId} now has another author (${this.labelOf(author)}). You can read it.`);
+      return;
+    }
+    this.addNotice(c, `${head} Your current board is still ${boardId}. You are a reader until your next write claims it.`);
+  }
+
+  /** A relay with a newer build than the daemon said hello (Decision 7). M5 shows it in the panel. */
+  staleBuild: BuildInfo | null = null;
+
+  markStale(build: BuildInfo, c: Client): void {
+    this.staleBuild = build;
+    this.addNotice(c, STALE_NOTICE);
+    this.notify();
+  }
 }
+
+/** The line that the next tool result of a Client with a newer build gets (M4.9). */
+export const STALE_NOTICE = "inkwire daemon runs an old build; it restarts when all sessions close, or restart it in the panel.";

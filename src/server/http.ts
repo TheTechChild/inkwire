@@ -12,6 +12,8 @@ import * as mutations from "./mutations.js";
 import { ImportError, exportBoard, exportFilename, importBoard } from "./board-file.js";
 import { hookEvent } from "./session-mode.js";
 import { listBoards } from "./project-root.js";
+import type { BuildInfo } from "./build-info.js";
+import { checkBrowserRequest, logRefused } from "./origin.js";
 
 const uiDir = fileURLToPath(new URL("../../dist/ui/", import.meta.url));
 
@@ -31,25 +33,80 @@ export interface HttpDeps {
   sessions: Sessions;
   clients: Clients;
   screenshots: () => Screenshots;
+  /**
+   * The daemon's build, read one time at boot (Decision 10). The stdio entry
+   * sends none, so a relay knows that port holds an old inkwire server (M4.6).
+   */
+  build?: BuildInfo;
+  /** The pid that /healthz reports. Default process.pid. */
+  pid?: number;
+  /** The counts that /healthz and the restart route report. Default: every Client and every open board. */
+  stats?: () => HealthStats;
+  /**
+   * The person-only restart (M4.9). Only the daemon sets it; with none,
+   * POST /api/daemon/restart is not found.
+   */
+  restart?: () => void;
 }
 
-export function createHttpServer(deps: HttpDeps): Server {
-  return createServer((req, res) => {
+/** The methods that change state. Each one gets the Origin and Host check (M4.11). */
+const STATE_CHANGING = new Set(["POST", "PUT", "DELETE", "PATCH"]);
+
+export interface HealthStats {
+  clients: number;
+  boards: number;
+}
+
+/** The counts of a daemon: every Client record and every open board. */
+export function defaultStats(deps: Pick<HttpDeps, "clients" | "sessions">): HealthStats {
+  return { clients: deps.clients.all().length, boards: deps.sessions.all().filter((s) => !s.closed).length };
+}
+
+/** The request handler alone, so the daemon can attach it to a server that already listens (M4.4). */
+export function requestHandler(deps: HttpDeps): (req: IncomingMessage, res: ServerResponse) => void {
+  return (req, res) => {
     handle(req, res, deps).catch((err) => {
       console.error("http error:", err);
       if (!res.headersSent) res.writeHead(500);
       res.end("internal error");
     });
-  });
+  };
+}
+
+export function createHttpServer(deps: HttpDeps): Server {
+  return createServer(requestHandler(deps));
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, deps: HttpDeps): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const p = url.pathname;
 
+  // M4.11: a web page in the person's browser must not change state here.
+  if (STATE_CHANGING.has(req.method ?? "")) {
+    const reason = checkBrowserRequest(req);
+    if (reason !== null) {
+      logRefused(p, req, reason);
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "forbidden" }));
+      return;
+    }
+  }
+
   if (req.method === "GET" && p === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true, name: "inkwire" }));
+    // Keep name "inkwire": probeHealth checks it. build is absent on the stdio entry.
+    const stats = (deps.stats ?? (() => defaultStats(deps)))();
+    res.end(JSON.stringify({ ok: true, name: "inkwire", pid: deps.pid ?? process.pid, build: deps.build, ...stats }));
+    return;
+  }
+
+  // Person-only restart (M4.9, Decision 3): `yarn daemon:restart` posts here.
+  // Not an MCP tool. Agents must not call it (Decision 12).
+  if (req.method === "POST" && p === "/api/daemon/restart" && deps.restart) {
+    const stats = (deps.stats ?? (() => defaultStats(deps)))();
+    const restart = deps.restart;
+    res.writeHead(202, { "content-type": "application/json" });
+    res.end(JSON.stringify(stats), () => restart());
     return;
   }
 
