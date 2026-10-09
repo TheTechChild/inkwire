@@ -206,7 +206,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "session.mode",
-    "Set your session mode. On: fails unless permission mode is auto, fails when another Claude Code session is the author of your current board or the person released you from it, and fails in inkwire mode for a board other than the one you talk on; on a board with no author, it makes you the author. On arms the Stop hook that sends replies to session_send. Off: releases your pending session_send with mode_off.",
+    "Set your session mode. On: fails unless a hook event was seen, the permission mode is auto or bypassPermissions, and CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS is 0; fails when no board is open, fails when another Claude Code session is the author of your current board or the person released you from it, and fails in inkwire mode for a board other than the one you talk on; on a board with no author, it makes you the author. On arms the Stop hook that sends replies to session_send. Off: releases your pending session_send with mode_off.",
     (args: { on: boolean }) =>
       text(sessionMode(clients, client, args.on, { pluginRoot: deps.pluginRoot, focusTerminal: deps.focusTerminal })),
   );

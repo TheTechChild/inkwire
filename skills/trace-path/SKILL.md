@@ -1,12 +1,12 @@
 ---
 name: trace-path
 description: Explain an order of execution on the inkwire board — "walk me through", "what happens when", "how does X reach Y", "show me the code path". Traces the code, writes the walk as a path on a layer, and plays it in the panel with a caption per hop.
-allowed-tools: mcp__plugin_inkwire_inkwire__layers_list mcp__plugin_inkwire_inkwire__layers_create mcp__plugin_inkwire_inkwire__layers_update mcp__plugin_inkwire_inkwire__canvas_get_board mcp__plugin_inkwire_inkwire__canvas_get_state mcp__plugin_inkwire_inkwire__paths_create mcp__plugin_inkwire_inkwire__paths_update mcp__plugin_inkwire_inkwire__paths_get mcp__plugin_inkwire_inkwire__paths_play mcp__plugin_inkwire_inkwire__canvas_lint mcp__plugin_inkwire_inkwire__session_send mcp__plugin_inkwire_inkwire__canvas_bind_code mcp__plugin_inkwire_inkwire__boards_update mcp__plugin_inkwire_inkwire__drafts_create mcp__plugin_inkwire_inkwire__drafts_update mcp__plugin_inkwire_inkwire__drafts_delete mcp__plugin_inkwire_inkwire__drafts_get mcp__plugin_inkwire_inkwire__drafts_activate Read Grep Glob
+allowed-tools: mcp__plugin_inkwire_inkwire__layers_list mcp__plugin_inkwire_inkwire__layers_create mcp__plugin_inkwire_inkwire__layers_update mcp__plugin_inkwire_inkwire__canvas_get_board mcp__plugin_inkwire_inkwire__canvas_get_state mcp__plugin_inkwire_inkwire__paths_create mcp__plugin_inkwire_inkwire__paths_update mcp__plugin_inkwire_inkwire__paths_get mcp__plugin_inkwire_inkwire__paths_play mcp__plugin_inkwire_inkwire__canvas_lint mcp__plugin_inkwire_inkwire__session_send mcp__plugin_inkwire_inkwire__canvas_bind_code mcp__plugin_inkwire_inkwire__boards_update mcp__plugin_inkwire_inkwire__drafts_create mcp__plugin_inkwire_inkwire__drafts_update mcp__plugin_inkwire_inkwire__drafts_delete mcp__plugin_inkwire_inkwire__drafts_get mcp__plugin_inkwire_inkwire__drafts_activate mcp__plugin_inkwire_inkwire__notebooks_create mcp__plugin_inkwire_inkwire__notebooks_update mcp__plugin_inkwire_inkwire__canvas_delete mcp__plugin_inkwire_inkwire__paths_delete Read Grep Glob
 ---
 
 The human asked about an order: what runs first, what calls what, where a request goes. Answer with a **path**, not a paragraph.
 
-Four pointers, four jobs. Do not mix them up:
+Four pointers and a notebook, five jobs. Do not mix them up:
 - **highlight** — point at a set of elements. `session_send(highlight)`.
 - **layer** — keep a cut of the board. `layers_create`.
 - **path** — explain an order. `paths_create`, then `session_send(path)`.
@@ -15,7 +15,7 @@ Four pointers, four jobs. Do not mix them up:
 
 ## Steps
 
-Only one Claude Code session at a time is the author of a board. The first line of each tool result tells you the current board and if you are its author or a reader. If a write fails because another session is the author, stop and tell the human. Do not work around it: do not clone the board and do not write to a different board unless the human tells you to.
+Only one Claude Code session at a time is the author of a board. The first line of each tool result tells you the current board and if you are its author or a reader. If a write fails because another Claude Code session is the author, or because the person released you from the board, stop and tell the human. Do not work around it: do not clone the board and do not write to a different board unless the human tells you to. You can be the author of one board at a time: a successful write to a board with no author makes you its author and releases the board you authored before. In inkwire mode such a write fails.
 
 1. **Find the layer.** `layers_list`. If the question is about an existing layer, use it. If not, `layers_create` with the nodes the walk will touch and a title that names the question ("second admin hit", not "path 1").
 
@@ -31,7 +31,7 @@ Only one Claude Code session at a time is the author of a board. The first line 
 
 4. **Caption each hop with what you verified.** ≤160 characters. Put the `ref` on the hop (`path/to/file.ts:symbol`) so the caption is a claim with a citation. The server stamps each hop's ref with a hash of the symbol block when the path is written; a ref whose symbol is not found gets no stamp. Where you verified nothing, write no caption — an empty hop tells the human where to look themselves. Never caption with what the edge label already says.
 
-5. **Send it.** `paths_create`, then one `session_send` with `path: { layer_id, path_id }` and a short text: what the walk shows and the one hop that matters. Do not narrate the hops in the text; the captions are the narration. The scrubber opens in the panel and plays once.
+5. **Send it.** `paths_create`, then one `session_send` with `path: { layer_id, path_id }` and a short text: what the walk shows and the one hop that matters. Do not narrate the hops in the text; the captions are the narration. The scrubber opens in the panel and plays once. In the terminal (`pty` mode), `session_send` returns `mode_off` at once and shows nothing: call `paths_play` instead, and give the short text in the terminal.
 
 6. **Answer at a hop.** The human's reply carries `ctx.trace: { path, hop }` when the scrubber is open. Call `paths_get` for that path — it is small — and answer about *that* hop. To point at a place in the order, send `path: { layer_id, path_id, hop }`; the scrubber seeks there paused. Do not replay from 0 to say "here".
 

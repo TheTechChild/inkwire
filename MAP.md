@@ -25,8 +25,14 @@ to an http server. `index.ts` `main` is the stdio entry that the plugin runs unt
 (M7): one Client from `process.ppid`, then MCP over stdio. `daemon.ts` `startDaemon` is the daemon
 entry: it binds the port first, then calls `openCore` in the listen callback, and serves one
 McpServer per relay link (see The link). `routeUpgrades` sends `/ws` to `PanelHub.handleUpgrade`
-and `/mcp` to the link endpoint, and destroys every other upgrade. The port may already be taken by
-a sibling server, which `probeHealth` (`src/link/probe.ts`) detects.
+and `/mcp` to the link endpoint, and destroys every other upgrade.
+
+The port race is now between two daemons: two relays that start at the same time can each spawn
+one, and the daemon that loses the port exits before it opens the store (see Daemon lifetime and
+builds). On EADDRINUSE both entries call `probeHealth` (`src/link/probe.ts`), which tells an
+inkwire (a daemon or the old stdio server) from another process. The stdio entry then fails with
+"another inkwire server already owns port N"; a second stdio session still fails that way until
+the cut-over (M7).
 
 ```
 src/server/bootstrap.ts:46   openCore
@@ -194,9 +200,9 @@ src/server/mutations.ts:225  moveElement
 coalescing key, ids, `apply`). `Sessions` holds the open boards only. The current board and the
 session mode of each Claude Code session are in `Clients` (see Clients and authorship).
 
-Beware: revisions are derived, per session. `refold` fingerprints the fold's graph and layout
+Beware: revisions are derived, per board (`BoardSession`). `refold` fingerprints the fold's graph and layout
 sections and bumps each counter only on content change. A move must never touch `graph.revision`.
-Revisions reset only when the server loads the board for the first time; `boards_open` on a board
+Revisions reset only when the server (the daemon or the stdio entry) loads the board for the first time; `boards_open` on a board
 that is already open keeps its history and counters.
 
 Beware: `mutate` reports edges the fold pruned (from `canvas_delete`) in `ids`, and discards steps
@@ -313,9 +319,9 @@ src/server/mcp.ts:719   drafts.create
 src/server/mcp.ts:765   notebooks.create
 ```
 
-Families, in file order: `session_*` (205, 212), `boards_*` (246-367: list, open, delete, release,
-update, create, clone, import), `canvas_*` (369-556), `history_get` (560), `layers_*` (572-625),
-`paths_*` (643-707), `drafts_*` (713-755), `notebooks_*` (759-807).
+Families, in file order: `session_*` (207, 214), `boards_*` (249-372: list, open, delete, release,
+update, create, clone, import), `canvas_*` (374-563), `history_get` (565), `layers_*` (577-630),
+`paths_*` (648-716), `drafts_*` (718-762), `notebooks_*` (764-814).
 
 Beware: every write handler resolves its board with `writable()`, not `resolve()`. `writable()`
 fails when another Client is the Author, when the person released this Client from the board, or
@@ -536,7 +542,7 @@ src/server/session-mode.ts:116   releaseAuthorship
 src/server/session-mode.ts:385   terminalProgram
 src/server/session-mode.ts:390   focusTerminal
 src/server/clients.ts:15         HookReport
-src/server/http.ts:58            /api/hook
+src/server/http.ts:115           /api/hook
 src/ui/session.ts:73             setupSession
 src/ui/session.ts:169            renderSession
 src/ui/session.ts:372            messageCard
@@ -551,7 +557,8 @@ pid (the nearest ancestor whose `comm` or first `args` word is `claude`), POSTs 
 `/api/hook?pid=<n>`, and prints the verdict (`block`, `context`, or `ok`). It exits 0 on every
 failure.
 
-Beware: session mode is per Client (one flag on each Client record). `hookEvent` finds the Client by `claude_pid`
+Beware: session mode is per Client (one flag on each Client record). At most one Client per board
+is in `inkwire` mode, and it is the board's Author (`talkingOn`). `hookEvent` finds the Client by `claude_pid`
 (and makes it when it is new), else by `session_id`, else ignores the event. `SessionStart` `clear`
 or `resume` rekeys the Client to the new session id, but only when the hook has a pid: with no pid,
 the new id matches no Client and the rekey cannot happen. The panel push (`ws.ts` `push`) shows the mode
@@ -655,7 +662,8 @@ Tests: `tests/tools/clients.test.ts`, `tests/tools/session.test.ts` (per-client 
 ## Layers and focus
 
 A layer is a named set of nodes. Focus picks one layer; the panel shows its members as "in", their
-neighbours as "rim", and the rest as "out". Focus is per session and shared by every panel.
+neighbours as "rim", and the rest as "out". Focus is per board, shared by every panel, and never
+persisted.
 
 ```
 src/core/layers.ts:15      Tier
@@ -681,7 +689,7 @@ Tests: `tests/core/layers.test.ts`.
 ## Paths and trace
 
 A path is an ordered walk over a layer's edges with one caption per hop. `openTrace` puts it in the
-session's trace, and the panel plays it as a vertical walk in the Layers tab (`renderLayers` mounts `renderWalk`). The `trace-path` skill writes one.
+board's trace, and the panel plays it as a vertical walk in the Layers tab (`renderLayers` mounts `renderWalk`). The `trace-path` skill writes one.
 
 ```
 src/core/layers.ts:139    nextPathId
@@ -779,6 +787,11 @@ Beware: every ref operation takes its root from the board: `writeRoot` for `bind
 
 Beware: a path step's `ref_hash` is written by the server, never a tool argument. An unchanged step (same edge, caption and ref) keeps its old stamp on `paths_update`; a new or changed step is stamped fresh. `verify: [hop]` is the only way to restamp without a change. A ref whose symbol is not found gets no stamp.
 
+Beware: `canvas_bind_code`, `paths_create`, `paths_update` and `paths_play` are writes (`writable()`), so a
+Reader cannot run them. `canvas_lint` and `paths_get` are reads.
+
+Tests: `tests/core/symbols.test.ts`, `tests/tools/contract.test.ts`, `tests/tools/project-root.test.ts`.
+
 ## Board files and Mermaid
 
 A board exports to a versioned JSON file with bitmaps embedded, and imports back as a new board.
@@ -821,7 +834,7 @@ src/server/session.ts:547       clone
 src/server/session.ts:234       updateMeta
 src/server/mcp.ts:249           register("boards.list"
 src/server/mcp.ts:302           register("boards.update"
-src/server/mcp.ts:207           register("boards.create"
+src/server/mcp.ts:318           register("boards.create"
 src/server/mcp.ts:330           register("boards.clone"
 src/server/mcp.ts:345           register("boards.import"
 src/server/board-file.ts:60     importRoot
@@ -866,7 +879,16 @@ src/server/store.ts:164   save
 src/server/store.ts:198   saveImage
 ```
 
-Default data dir is `~/.inkwire` (`INKWIRE_DATA_DIR`).
+One data dir for each daemon, and one daemon for each port. After the cut-over (M7), every Claude Code
+session on that port shares the database through the daemon. Until then, the plugin runs the stdio
+entry, and a second Claude Code session on the same port fails. The default data dir is `~/.inkwire` (`INKWIRE_DATA_DIR`) on port 4691. The dev
+daemon (`yarn dev`) uses `~/.inkwire-dev` on port 4692. A daemon that a relay autostarts logs to
+`daemon.log` in its data dir. Tests use temp dirs.
+
+Beware: a daemon binds the port before it opens the store (`startDaemon`). A daemon that loses the
+port race exits before it opens the DB. The stdio entry (`src/server/index.ts` `main`) does the
+opposite: it opens the store (`openCore`), and so runs the migrations, before it binds. When it
+loses the port, it exits after it opened the DB.
 
 ## The plugin
 
