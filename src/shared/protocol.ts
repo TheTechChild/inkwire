@@ -206,7 +206,7 @@ export interface SessionPush {
 
 /** The daemon's build, and the newer build a relay brought (Decision 7). Same for every board. */
 export interface DaemonPush {
-  /** The boot build id (Decision 10); null on the stdio entry, which has no build. */
+  /** The boot build id (Decision 10); null when the server has no build (in-process tests). */
   build_id: string | null;
   stale: {
     newer_build_id: string;

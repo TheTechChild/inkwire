@@ -1,8 +1,8 @@
-// The bootstrap that the stdio entry (index.ts, until M7) and the daemon
-// (daemon.ts) share: open the store, Sessions, Clients, the panel hub and the
-// screenshot broker, and attach the HTTP handler and the upgrade router to an
-// http server. All of it is synchronous (better-sqlite3), so the daemon can
-// call it in its listen callback and no request arrives before the handler.
+// The daemon's bootstrap (daemon.ts): open the store, Sessions, Clients, the
+// panel hub and the screenshot broker, and attach the HTTP handler and the
+// upgrade router to an http server. All of it is synchronous (better-sqlite3),
+// so the daemon can call it in its listen callback and no request arrives
+// before the handler.
 import type { Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import type { Config } from "./config.js";
@@ -17,8 +17,8 @@ import type { BuildInfo } from "./build-info.js";
 import type { McpDeps } from "./mcp.js";
 
 export interface CoreOptions {
-  /** The daemon's build (Decision 10). The stdio entry sends none. */
-  build?: BuildInfo;
+  /** The daemon's build (Decision 10). */
+  build: BuildInfo;
   stats?: () => HealthStats;
   restart?: () => void;
   /** More upgrade routes than /ws (the daemon adds /mcp). */
@@ -43,7 +43,7 @@ export const pluginRoot = fileURLToPath(new URL("../..", import.meta.url)).repla
  * the upgrade routes to `http`. The port for the panel URL is read from the
  * server once it listens (port 0 in tests), else from the config.
  */
-export function openCore(config: Config, http: Server, opts: CoreOptions = {}): Core {
+export function openCore(config: Config, http: Server, opts: CoreOptions): Core {
   const store = new Store(config.dataDir);
   const sessions = new Sessions(store);
   const clients = new Clients(sessions);

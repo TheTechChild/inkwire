@@ -1794,7 +1794,7 @@ __metadata:
     ws: "npm:^8.18.0"
     zod: "npm:^4.1.0"
   bin:
-    inkwire: dist/server/index.js
+    inkwire: dist/link/relay.js
   languageName: unknown
   linkType: soft
 

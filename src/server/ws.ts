@@ -18,7 +18,7 @@ import { checkBrowserRequest, logRefused } from "./origin.js";
 import type { BuildInfo } from "./build-info.js";
 
 export interface HubDeps extends ModeDeps {
-  /** The daemon's boot build (Decision 10). The stdio entry has none. */
+  /** The daemon's boot build (Decision 10). In-process tests can leave it out. */
   build?: BuildInfo;
   /** The person-only restart (Decision 3, `createRestart`). Only the daemon sets it. */
   restart?: () => void | Promise<void>;

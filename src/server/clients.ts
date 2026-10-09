@@ -141,7 +141,7 @@ export class Clients {
     return c;
   }
 
-  /** A link (a relay, or the stdio server) for pid opened. It cancels the hook-only TTL. */
+  /** A link (a relay) for pid opened. It cancels the hook-only TTL. */
   attach(pid: number, linkId: string): void {
     let set = this.links.get(pid);
     if (!set) {

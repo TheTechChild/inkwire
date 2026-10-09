@@ -19,32 +19,28 @@ Product rules and the test list are in `CLAUDE.md`. The authority for behaviour 
 
 ## Server bootstrap
 
-Two entries share `openCore` (`bootstrap.ts`): it opens the store, builds `Sessions` and `Clients`,
-the panel hub and the screenshot broker, and attaches the HTTP request handler and `routeUpgrades`
-to an http server. `index.ts` `main` is the stdio entry that the plugin runs until the cut-over
-(M7): one Client from `process.ppid`, then MCP over stdio. `daemon.ts` `startDaemon` is the daemon
-entry: it binds the port first, then calls `openCore` in the listen callback, and serves one
-McpServer per relay link (see The link). `routeUpgrades` sends `/ws` to `PanelHub.handleUpgrade`
+`openCore` (`bootstrap.ts`) opens the store, builds `Sessions` and `Clients`, the panel hub and
+the screenshot broker, and attaches the HTTP request handler and `routeUpgrades` to an http server.
+The plugin runs the relay (`dist/link/relay.js`, see The link); the daemon is the one server entry.
+`daemon.ts` `startDaemon` is the daemon entry: it binds the port first, then calls `openCore` in
+the listen callback, and serves one McpServer per relay link (see The link). `routeUpgrades` sends `/ws` to `PanelHub.handleUpgrade`
 and `/mcp` to the link endpoint, and destroys every other upgrade.
 
 The port race is now between two daemons: two relays that start at the same time can each spawn
 one, and the daemon that loses the port exits before it opens the store (see Daemon lifetime and
-builds). On EADDRINUSE both entries call `probeHealth` (`src/link/probe.ts`), which tells an
-inkwire (a daemon or the old stdio server) from another process. The stdio entry then fails with
-"another inkwire server already owns port N"; a second stdio session still fails that way until
-the cut-over (M7).
+builds). On EADDRINUSE the daemon calls `probeHealth` (`src/link/probe.ts`), which tells an
+inkwire (a daemon or an old server) from another process.
 
 ```
 src/server/bootstrap.ts:46   openCore
-src/server/index.ts:12       main
 src/server/daemon.ts:102     startDaemon
 src/link/probe.ts:49         probeHealth
 src/server/config.ts:18      loadConfig
 src/server/upgrade.ts:11     routeUpgrades
-src/server/http.ts:66        requestHandler
-src/server/http.ts:76        createHttpServer
-src/server/http.ts:80        handle
-src/server/http.ts:259       serveFile
+src/server/http.ts:67        requestHandler
+src/server/http.ts:77        createHttpServer
+src/server/http.ts:81        handle
+src/server/http.ts:260       serveFile
 src/server/origin.ts:12      checkBrowserRequest
 src/server/ws.ts:30          PanelHub
 src/server/ws.ts:84          handleUpgrade
@@ -63,10 +59,11 @@ and `PATCH`, the `/ws` upgrade (`verifyClient` in `ws.ts`) and the `/mcp` upgrad
 `http`. A request with no `Origin` passes (the hook's curl, `yarn daemon:restart`). A refusal is a
 403 and one stderr line.
 
-Beware: stdout is the MCP transport of the stdio entry and of the relay. Log to stderr only. Only
-the spawned-stdio smoke test catches a stray `console.log`. The daemon writes nothing to stdout.
+Beware: stdout is the MCP transport of the relay. Log to stderr only. Only the spawned smoke test
+(relay plus daemon) catches a stray `console.log`. The daemon writes nothing to stdout; a relay
+that starts it sends its stdout and stderr to `daemon.log`.
 
-Tests: `tests/integration/server.test.ts`, `tests/integration/port-conflict.test.ts`,
+Tests: `tests/integration/server.test.ts`, `tests/integration/daemon-port.test.ts`,
 `tests/tools/stdio-smoke.test.ts`, `tests/integration/origin.test.ts`.
 
 ## The link (relay and daemon)
@@ -149,7 +146,7 @@ src/server/build-info.ts:18   readBuildInfo
 src/server/build-info.ts:32   isNewerBuild
 src/server/idle.ts:22         IdleTimer
 src/server/restart.ts:22      createRestart
-src/server/http.ts:61         defaultStats
+src/server/http.ts:62         defaultStats
 src/server/clients.ts:472     markStale
 src/server/clients.ts:480     STALE_NOTICE
 ```
@@ -158,8 +155,8 @@ Beware: bind first. `startDaemon` listens on the port before it opens the store.
 exits 0 when an inkwire answers (no DB opened) and 1 when another process holds the port. It has
 no stdin close handler: a detached daemon has stdin set to `ignore`.
 
-Beware: `/healthz` with `name: "inkwire"` and no `build` is the old stdio server (the stdio entry
-sends no build). `ensureDaemon` then stops the relay with "port N is held by an old inkwire
+Beware: `/healthz` with `name: "inkwire"` and no `build` is an old inkwire server (a build from
+before the daemon sends no build). `ensureDaemon` then stops the relay with "port N is held by an old inkwire
 server; close the old Claude Code sessions" and does not reconnect.
 
 Beware: stale builds (Decision 7). A hello whose build id differs and whose `built_at` is later
@@ -202,7 +199,7 @@ session mode of each Claude Code session are in `Clients` (see Clients and autho
 
 Beware: revisions are derived, per board (`BoardSession`). `refold` fingerprints the fold's graph and layout
 sections and bumps each counter only on content change. A move must never touch `graph.revision`.
-Revisions reset only when the server (the daemon or the stdio entry) loads the board for the first time; `boards_open` on a board
+Revisions reset only when the daemon loads the board for the first time; `boards_open` on a board
 that is already open keeps its history and counters.
 
 Beware: `mutate` reports edges the fold pruned (from `canvas_delete`) in `ids`, and discards steps
@@ -542,7 +539,7 @@ src/server/session-mode.ts:116   releaseAuthorship
 src/server/session-mode.ts:385   terminalProgram
 src/server/session-mode.ts:390   focusTerminal
 src/server/clients.ts:15         HookReport
-src/server/http.ts:115           /api/hook
+src/server/http.ts:116           /api/hook
 src/ui/session.ts:73             setupSession
 src/ui/session.ts:169            renderSession
 src/ui/session.ts:372            messageCard
@@ -598,8 +595,8 @@ Tests: `tests/tools/session.test.ts`, `tests/tools/forward-hook.test.ts`.
 Claude Code pid (ADR 0001): `sessionId`, `cwd`, `label`, `termProgram`, `currentBoardId`, `mode`,
 `hook`, `pending`, `blocks`. It also keeps the Author of each board (`authors`, ADR 0002), the
 pid the person released from each board (`releasedFrom`), the panel notice of each board
-(`noticeByBoard`), and the one-time notices of each Client (M3.5). The stdio server (`index.ts`)
-makes exactly one Client from `process.ppid`; the daemon makes one per hello pid (`createLinkHost`).
+(`noticeByBoard`), and the one-time notices of each Client (M3.5). The daemon makes one Client per
+hello pid (`createLinkHost`).
 
 ```
 src/server/clients.ts:32         Client
@@ -626,7 +623,6 @@ src/server/clients.ts:388        takeNotices
 src/server/clients.ts:399        contextLine
 src/server/mcp.ts:87             resolve
 src/server/mcp.ts:105            writable
-src/server/index.ts:18           client
 ```
 
 Beware: a hook can make a Client before its link connects. With no `attach` for that pid within
@@ -879,23 +875,20 @@ src/server/store.ts:164   save
 src/server/store.ts:198   saveImage
 ```
 
-One data dir for each daemon, and one daemon for each port. After the cut-over (M7), every Claude Code
-session on that port shares the database through the daemon. Until then, the plugin runs the stdio
-entry, and a second Claude Code session on the same port fails. The default data dir is `~/.inkwire` (`INKWIRE_DATA_DIR`) on port 4691. The dev
+One data dir for each daemon, and one daemon for each port. Every Claude Code session on that port
+shares the database through the daemon. The default data dir is `~/.inkwire` (`INKWIRE_DATA_DIR`) on port 4691. The dev
 daemon (`yarn dev`) uses `~/.inkwire-dev` on port 4692. A daemon that a relay autostarts logs to
 `daemon.log` in its data dir. Tests use temp dirs.
 
 Beware: a daemon binds the port before it opens the store (`startDaemon`). A daemon that loses the
-port race exits before it opens the DB. The stdio entry (`src/server/index.ts` `main`) does the
-opposite: it opens the store (`openCore`), and so runs the migrations, before it binds. When it
-loses the port, it exits after it opened the DB.
+port race exits before it opens the DB.
 
 ## The plugin
 
 Inkwire ships as a Claude Code plugin and as its own one-plugin marketplace. None of this is `.ts`;
-build first, because the manifest runs `dist/server/index.js`.
+build first, because the manifest runs `dist/link/relay.js`. A relay change needs `yarn build`.
 
-- `.claude-plugin/plugin.json` — manifest and the `mcpServers` entry (`node ${CLAUDE_PLUGIN_ROOT}/dist/server/index.js`).
+- `.claude-plugin/plugin.json` — manifest and the `mcpServers` entry (`node ${CLAUDE_PLUGIN_ROOT}/dist/link/relay.js`).
 - `.claude-plugin/marketplace.json` — the marketplace listing.
 - `hooks/hooks.json`, `hooks/forward.sh` — see Session mode and hooks.
 - `skills/use-inkwire`, `skills/back-to-claude-code`, `skills/trace-path` — `trace-path` is

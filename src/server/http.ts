@@ -34,8 +34,9 @@ export interface HttpDeps {
   clients: Clients;
   screenshots: () => Screenshots;
   /**
-   * The daemon's build, read one time at boot (Decision 10). The stdio entry
-   * sends none, so a relay knows that port holds an old inkwire server (M4.6).
+   * The daemon's build, read one time at boot (Decision 10). An old inkwire
+   * server (a build from before the daemon) sends none, so a relay knows that
+   * port holds an old server (M4.6). In-process tests can leave it out.
    */
   build?: BuildInfo;
   /** The pid that /healthz reports. Default process.pid. */
@@ -94,7 +95,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HttpDeps)
 
   if (req.method === "GET" && p === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
-    // Keep name "inkwire": probeHealth checks it. build is absent on the stdio entry.
+    // Keep name "inkwire": probeHealth checks it. build is absent on an old inkwire server.
     const stats = (deps.stats ?? (() => defaultStats(deps)))();
     res.end(JSON.stringify({ ok: true, name: "inkwire", pid: deps.pid ?? process.pid, build: deps.build, ...stats }));
     return;

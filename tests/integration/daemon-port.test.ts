@@ -1,5 +1,4 @@
-// Daemon port conflicts (plan M4.5). The stdio-entry test
-// (port-conflict.test.ts) stays until the cut-over (M7).
+// Daemon port conflicts (plan M4.5).
 import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
