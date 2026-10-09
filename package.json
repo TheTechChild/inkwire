@@ -16,6 +16,7 @@
     "start": "tsx src/server/daemon.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "health": "yarn build && INKWIRE_HEALTH=1 vitest run tests/health tests/link tests/server/idle.test.ts tests/tools/clients.test.ts tests/tools/project-root.test.ts tests/tools/forward-hook.test.ts tests/tools/authorship.test.ts tests/integration/port-conflict.test.ts tests/integration/daemon.test.ts",
     "lint": "oxlint",
     "typecheck": "tsc --noEmit",
     "gen:schemas": "tsx src/scripts/gen-schemas.ts",

@@ -64,7 +64,9 @@ Beware: stdout is the MCP transport of the relay. Log to stderr only. Only the s
 that starts it sends its stdout and stderr to `daemon.log`.
 
 Tests: `tests/integration/server.test.ts`, `tests/integration/daemon-port.test.ts`,
-`tests/tools/stdio-smoke.test.ts`, `tests/integration/origin.test.ts`.
+`tests/tools/stdio-smoke.test.ts`, `tests/integration/origin.test.ts`,
+`tests/integration/port-conflict.test.ts` (two sessions share one daemon), and the health suite
+`tests/health/` (`yarn health`, see The link).
 
 ## The link (relay and daemon)
 
@@ -122,6 +124,29 @@ store, `session.ts` or better-sqlite3. `tests/link/boundary.test.ts` enforces al
 
 Tests: `tests/link/boundary.test.ts`, `tests/link/endpoint.test.ts`, `tests/link/relay-core.test.ts`,
 `tests/link/relay-spawn.test.ts`, `tests/integration/daemon.test.ts`.
+
+Health suite (`yarn health`, plan M8): `yarn build`, then `tests/health/` with the link, daemon and
+gate tests. `startRelays` (`tests/health/harness.ts`) spawns n relays at one time, each under its own
+`sh -c` wrapper so each has its own Claude Code pid, on a random port with a temp dir; the first
+relay autostarts the daemon. `tools.test.ts` has one case for each name in `WRITE_TOOLS`,
+`READ_TOOLS` and `OWN_RULE_TOOLS` and checks the set against `tools/list`, so a new tool with no
+health case fails. `lifecycle.test.ts` covers autostart, the race, release on close, `/clear`,
+SIGKILL and reconnect, a stale build, both restarts, the idle grace and the dist relay.
+
+```
+tests/health/harness.ts:155   startRelays
+tests/health/harness.ts:78    startRelay
+tests/health/harness.ts:114   openPanel
+tests/health/harness.ts:235   distSkipReason
+```
+
+Beware: the dist-relay case needs `dist/`. `yarn test` does not build, so the case skips (the
+reason is in its name) when `dist/build.json` is missing or older than a file or directory under
+`src/` (a directory mtime catches a rename or a delete). `yarn health` builds first and sets
+`INKWIRE_HEALTH=1`, so there the case never skips: a stale `dist/` fails it.
+
+Beware: `yarn health` runs `yarn build`, which deletes and rebuilds `dist/`. Run it in a worktree,
+never in the checkout that live Claude Code sessions use as the plugin.
 
 ## Daemon lifetime and builds
 
@@ -332,7 +357,9 @@ first and `created()` after: the new board is claimed and becomes current.
 
 Beware: a new tool goes into exactly one of `WRITE_TOOLS`, `READ_TOOLS` or `OWN_RULE_TOOLS`.
 `tests/tools/authorship.test.ts` fails when the three sets differ from `listTools()`, and runs
-every write tool as a reader (it must fail and change nothing) and as the Author.
+every write tool as a reader (it must fail and change nothing) and as the Author. It also needs a
+case in `CASES` in `tests/health/tools.test.ts`: `CASES` is a `Record` over the three sets, so a
+missing case fails `yarn typecheck` and `yarn health`.
 
 Beware: only the Author's calls go into a board's Thread. `recordCall` writes the row on the
 board the call wrote, else the board it read (`resolve()` fills the slot), else the current board,
@@ -355,12 +382,14 @@ Beware: `SELF_RECORDING` (session send and mode) write their own thread rows; `B
 result body from the call row. Add a new big-result tool to that set.
 
 Beware: adding a tool means a zod shape in `toolArgs`, a `register` call, a place in one of the
-three tool sets, a regenerated schema (`yarn gen:schemas`), a row in the panel's `MCP_TOOLS`, and an
-edit to the hand-written fixture in `tests/fixtures/contract/` if a `get_state` read changes.
+three tool sets, a case in `CASES` in `tests/health/tools.test.ts` (a missing case fails typecheck
+and `yarn health`), a regenerated schema (`yarn gen:schemas`), a row in the panel's `MCP_TOOLS`, and
+an edit to the hand-written fixture in `tests/fixtures/contract/` if a `get_state` read changes.
 
 Tests: `tests/tools/contract.test.ts` (real `McpServer` over `InMemoryTransport`; the M3.5
 context line and notices), `tests/tools/authorship.test.ts` (two Clients: the gate, claims,
-release), `tests/tools/session.test.ts`. `tests/tools/harness.ts` builds many Clients over one
+release), `tests/tools/session.test.ts`, `tests/health/tools.test.ts` (every tool through real
+relays and a real daemon). `tests/tools/harness.ts` builds many Clients over one
 `Sessions` + `Clients`.
 
 ## WebSocket protocol

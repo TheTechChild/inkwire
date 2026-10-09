@@ -72,6 +72,7 @@ The mode is per Claude Code session, and only the board's Author can turn it on.
 yarn dev          # dev daemon (tsx watch) + panel bundle (esbuild watch)
 yarn dev:claude   # Claude Code with this repo as the plugin, on the dev daemon
 yarn test         # full vitest suite
+yarn health       # build, then run every MCP tool through a real daemon and relays
 yarn typecheck
 ```
 
@@ -80,6 +81,8 @@ yarn typecheck
 `yarn dev:claude` starts Claude Code with `--plugin-dir .` and the dev port and data dir. The relay and the hook use the dev daemon. If `yarn dev` does not run, the relay starts a daemon from `dist/` on 4692. The relay always runs from `dist/`, so after a change to the relay, run `yarn build`.
 
 Tests use random ports and temp data dirs. They never use 4691, 4692, `~/.inkwire` or `~/.inkwire-dev`.
+
+Health check: run `yarn health` after a change to the link, the daemon, the gate or any tool. It builds, starts a real daemon and two or more relays on a random port with a temp dir, and runs every MCP tool through the full link. A failed case names the tool or the part of the daemon lifecycle that is broken. `yarn test` skips the one case that needs `dist/` when `dist/build.json` is missing or older than `src/`; `yarn health` never skips it (a stale `dist/` fails it). `yarn health` deletes and rebuilds `dist/`, so do not run it in the checkout that live Claude Code sessions use as the plugin.
 
 Configuration (env vars): `INKWIRE_PORT` (default 4691), `INKWIRE_DATA_DIR` (default `~/.inkwire` — SQLite plus an images/ directory), `INKWIRE_IDLE_GRACE_MS` (daemon only; default 30000, `off` turns the idle stop off). There is no project-root env var: each board stores its own `project_root` (set it with `boards_create`, `boards_clone`, `boards_import` or `boards_update`), and every code ref on the board resolves against it.
 
