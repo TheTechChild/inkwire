@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # One AI author per board
