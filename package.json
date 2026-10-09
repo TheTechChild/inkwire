@@ -4,7 +4,7 @@
   "description": "Local MCP server + shared drawing canvas for collaborating visually with an AI agent on a codebase.",
   "license": "MIT",
   "type": "module",
-  "packageManager": "yarn@4.18.0",
+  "packageManager": "yarn@4.18.1",
   "engines": {
     "node": ">=26"
   },
