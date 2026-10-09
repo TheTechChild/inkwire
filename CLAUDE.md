@@ -18,12 +18,12 @@ Use **yarn** only. Do not use npm or npx.
 
 - `yarn test` — full suite (vitest). One file: `yarn vitest run tests/core/fold.test.ts`.
 - `yarn typecheck` — tsc, no emit.
-- `yarn build` — compiles the server to `dist/` and bundles the panel to `dist/ui/` (esbuild).
-- `yarn dev` — server (tsx watch) + panel (esbuild watch). Panel URL: `http://127.0.0.1:4691/?board=<id>`.
+- `yarn build` — compiles the server and the link to `dist/`, bundles the panel to `dist/ui/` (esbuild), and writes `dist/build.json` (the build id).
+- `yarn dev` — the **dev** daemon (tsx watch) + panel (esbuild watch) on port 4692 with `~/.inkwire-dev` and the idle stop off. Panel URL: `http://127.0.0.1:4692/?board=<id>`. Never run a dev server on 4691 or against `~/.inkwire`: live Claude Code sessions use them.
 - `yarn map-anchors` — check every MAP.md anchor.
 - `yarn gen:schemas` — regenerate `schema/*.generated.json` from the zod contract.
 
-Env: `INKWIRE_PORT` (default 4691), `INKWIRE_DATA_DIR` (default `~/.inkwire`). There is no project-root env: each board stores its own `project_root` (ADR 0003, `src/server/project-root.ts`), and every code ref on the board resolves against it. To use from Claude Code, the repo is a plugin and its own one-plugin marketplace (build first): `claude plugin marketplace add <repo>` then `claude plugin install inkwire@inkwire`; `claude --plugin-dir <repo>` for a one-off. The plugin pieces live at the root: `.claude-plugin/plugin.json` (manifest + the MCP server entry) and `marketplace.json`, `hooks/hooks.json` + `hooks/forward.sh`, `skills/use-inkwire`, `skills/back-to-claude-code`, `skills/trace-path` (model-invocable). The Session tab's two requirements (`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0`, permission mode `auto`) live in `.claude/settings.json` here and in the README for other projects. `.claude/skills/ship` is a dev-only skill, not part of the plugin.
+Env: `INKWIRE_PORT` (default 4691), `INKWIRE_DATA_DIR` (default `~/.inkwire`), `INKWIRE_IDLE_GRACE_MS` (default 30000; `off` keeps the daemon running). There is no project-root env: each board stores its own `project_root` (ADR 0003, `src/server/project-root.ts`), and every code ref on the board resolves against it. To use from Claude Code, the repo is a plugin and its own one-plugin marketplace (build first): `claude plugin marketplace add <repo>` then `claude plugin install inkwire@inkwire`; `claude --plugin-dir <repo>` for a one-off. The plugin pieces live at the root: `.claude-plugin/plugin.json` (manifest + the MCP server entry) and `marketplace.json`, `hooks/hooks.json` + `hooks/forward.sh`, `skills/use-inkwire`, `skills/back-to-claude-code`, `skills/trace-path` (model-invocable). The Session tab's two requirements (`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0`, permission mode `auto`) live in `.claude/settings.json` here and in the README for other projects. `.claude/skills/ship` is a dev-only skill, not part of the plugin.
 
 ## Architecture
 
