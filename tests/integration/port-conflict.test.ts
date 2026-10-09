@@ -1,59 +1,76 @@
-// A second inkwire on an owned port must exit with the clear single-instance
-// message — not crash with an unhandled EADDRINUSE (the bug that surfaced as
-// CONNECTION_CLOSED in a second Claude session).
+// Two Claude Code sessions share one daemon (plan M8). Before the daemon, a
+// second session on the same port exited with EADDRINUSE (the bug that showed
+// as CONNECTION_CLOSED in a second Claude session). Now the second relay uses
+// the daemon that the first one started. A port that a non-inkwire process
+// holds still makes the relay exit 1 with the reason.
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
+import { startRelay, type Relay } from "../health/harness.js";
+import { body, call, freePort, health, killTree, root, tempDir, testEnv, waitFor } from "./daemon-helpers.js";
 
-const root = fileURLToPath(new URL("../..", import.meta.url));
-
-function startServer(port: number, dataDir: string) {
-  return spawn(process.execPath, ["--import", "tsx", "src/server/index.ts"], {
-    cwd: root,
-    env: { ...process.env, INKWIRE_PORT: String(port), INKWIRE_DATA_DIR: dataDir },
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-}
-
-describe("port conflict", () => {
-  it("second instance exits cleanly, naming the running server", async () => {
-    const port = 21000 + Math.floor(Math.random() * 20000);
-    const dataDir = mkdtempSync(path.join(tmpdir(), "inkwire-conflict-"));
-
-    const first = startServer(port, dataDir);
+describe("port conflict: two sessions share one daemon", () => {
+  it("a second relay on the port does not fail; both list tools and see one board list", async () => {
+    const port = await freePort();
+    const dataDir = tempDir("conflict");
+    const relays: Relay[] = [];
+    const seen = new Set<number>();
     try {
-      // Wait for the first server to own the port.
-      await waitFor(async () => {
-        try {
-          const res = await fetch(`http://127.0.0.1:${port}/healthz`);
-          return res.ok;
-        } catch {
-          return false;
-        }
+      const A = await startRelay({ port, dataDir, graceMs: 300 });
+      relays.push(A);
+      const first = await waitFor(() => health(port));
+      seen.add(first.pid);
+      const B = await startRelay({ port, dataDir, graceMs: 300 });
+      relays.push(B);
+
+      const [la, lb] = await Promise.all([A.client.listTools(), B.client.listTools()]);
+      expect(la.tools.length).toBeGreaterThan(30);
+      expect(lb.tools.map((t) => t.name).sort()).toEqual(la.tools.map((t) => t.name).sort());
+
+      const created = await call(A.client, "boards_create", { name: "shared", project_root: tempDir("conflict-root") });
+      expect(created.isError, body(created)).toBeFalsy();
+      const id = JSON.parse(body(created)).board_id as string;
+      const listed = JSON.parse(body(await call(B.client, "boards_list", { all: true })));
+      expect(listed.boards.map((b: { id: string }) => b.id)).toContain(id);
+
+      const h = await waitFor(async () => {
+        const x = await health(port);
+        return x && x.clients === 2 ? x : null;
       });
+      expect(h.pid).toBe(first.pid);
+      expect([...A.errors, ...B.errors]).toEqual([]);
+      expect(B.stderr()).not.toContain("EADDRINUSE");
+    } finally {
+      for (const r of relays) await r.close();
+      const h = await health(port);
+      if (h) seen.add(h.pid);
+      for (const pid of seen) killTree(pid);
+    }
+  }, 20000);
 
-      const second = startServer(port, dataDir);
+  it("a port that a non-inkwire process holds makes the relay exit 1 with the reason", async () => {
+    const port = await freePort();
+    const plain = createServer((_req, res) => {
+      res.writeHead(404);
+      res.end("not here");
+    });
+    await new Promise<void>((r) => plain.listen(port, "127.0.0.1", () => r()));
+    const child = spawn(process.execPath, ["--import", "tsx", "src/link/relay.ts"], {
+      cwd: root,
+      env: testEnv(port, tempDir("conflict-foreign"), { INKWIRE_IDLE_GRACE_MS: "300" }),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    try {
       let stderr = "";
-      second.stderr!.on("data", (chunk) => (stderr += String(chunk)));
-      const code = await new Promise<number | null>((resolve) => second.on("exit", resolve));
-
+      child.stderr!.on("data", (c) => (stderr += String(c)));
+      const code = await new Promise<number | null>((resolve) => child.on("exit", resolve));
       expect(code).toBe(1);
-      expect(stderr).toContain("another inkwire server already owns port");
+      expect(stderr).toContain(`port ${port} is taken by another process`);
       expect(stderr).not.toContain("Unhandled");
     } finally {
-      first.kill("SIGTERM");
+      child.kill("SIGKILL");
+      plain.closeAllConnections();
+      await new Promise<void>((r) => plain.close(() => r()));
     }
   }, 20000);
 });
-
-async function waitFor(check: () => Promise<boolean>, timeoutMs = 10000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (await check()) return;
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  throw new Error("condition not met in time");
-}

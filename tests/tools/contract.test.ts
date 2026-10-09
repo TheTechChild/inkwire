@@ -1,5 +1,6 @@
 // TESTS.md § 4 — tool contract tests against the real MCP server, in-process.
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { readFileSync } from "node:fs";
@@ -7,14 +8,19 @@ import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildMcpServer } from "../../src/server/mcp.js";
+import { exportBoard } from "../../src/server/board-file.js";
 import { markElement } from "../../src/server/drafts.js";
 import { migrateNotes } from "../../src/server/notebooks.js";
 import * as mutations from "../../src/server/mutations.js";
 import { Screenshots } from "../../src/server/screenshot.js";
 import { Sessions } from "../../src/server/session.js";
+import { Clients } from "../../src/server/clients.js";
 import { Store } from "../../src/server/store.js";
+import { toolBody } from "../helpers.js";
+import { sessionMode } from "../../src/server/session-mode.js";
+import { Harness } from "./harness.js";
 
 const handoffSchema = JSON.parse(
   readFileSync(
@@ -32,14 +38,28 @@ let store: Store;
 let sessions: Sessions;
 let projectRoot: string;
 let boardId: string;
+/** The caller's cwd the server sees (the boards_list overlap filter, relative import paths). */
+let cwdNow = "/";
 
 async function call(name: string, args: Record<string, unknown> = {}) {
-  const res = (await client.callTool({ name, arguments: args })) as {
+  const raw = (await client.callTool({ name, arguments: args })) as {
     content: { type: string; text?: string; data?: string }[];
     isError?: boolean;
   };
+  // The board context line and the notices come first (M3.5); res holds the body only.
+  const head = raw.content[0]?.text ?? "";
+  const res = { ...raw, content: toolBody(raw.content) };
   const text = res.content.find((c) => c.type === "text")?.text ?? "";
-  return { res, text, json: () => JSON.parse(text) };
+  return { res, raw, head, text, json: () => JSON.parse(text) };
+}
+
+/**
+ * Make id the current board of Client 101. Opening does not move an Author
+ * (M3.5), so release the authored board first; the next write claims id.
+ */
+async function useBoard(id: string) {
+  await call("boards_release");
+  await call("boards_open", { board_id: id });
 }
 
 async function getState() {
@@ -58,12 +78,15 @@ beforeAll(async () => {
   writeFileSync(path.join(projectRoot, "auth.ts"), "export function verifyToken() {}\n");
   store = new Store(dataDir);
   sessions = new Sessions(store, { debounceMs: 50 });
+  const clients = new Clients(sessions);
   const screenshots = new Screenshots({ requestCapture: () => false }, store.imagesDir);
   const mcp = buildMcpServer({
     sessions,
+    clients,
+    client: clients.ensure(101),
     store,
     screenshots: () => screenshots,
-    projectRoot,
+    cwd: () => cwdNow,
     panelUrl: (id) => `http://127.0.0.1:4691/?board=${id}`,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -71,7 +94,8 @@ beforeAll(async () => {
   await mcp.connect(serverTransport);
   await client.connect(clientTransport);
 
-  const created = await call("boards_create", { name: "contract board" });
+  cwdNow = projectRoot;
+  const created = await call("boards_create", { name: "contract board", project_root: projectRoot });
   boardId = created.json().board_id;
   expect(boardId).toBeTruthy();
 });
@@ -207,7 +231,7 @@ describe("tool contracts", () => {
   it("infer_structure consumes ink and reports counts", async () => {
     // No direct stroke tool — strokes are human intents. Seed via a second
     // board opened fresh, using the session API through boards + state.
-    const created = (await call("boards_create", { name: "infer board" })).json();
+    const created = (await call("boards_create", { name: "infer board", project_root: projectRoot })).json();
     const inferBoard = created.board_id;
     // Draw via the mutation path the WS layer uses: not exposed over MCP, so
     // this test seeds strokes by calling infer with nothing and checking the
@@ -217,7 +241,7 @@ describe("tool contracts", () => {
     expect(out.edges_added).toBe(0);
     expect(out.strokes_consumed).toBe(0);
     // Reopen the original board as current for later tests.
-    await call("boards_open", { board_id: boardId });
+    await useBoard(boardId);
   });
 
   it("export_mermaid serializes the current graph", async () => {
@@ -266,7 +290,7 @@ describe("tool contracts", () => {
     const buf = Buffer.from(img!.data!, "base64");
     // PNG magic.
     expect(buf.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
-    const text = res.content.find((c) => c.type === "text")?.text ?? "";
+    const text = toolBody(res.content).find((c) => c.type === "text")?.text ?? "";
     expect(text).toContain("source: server");
     expect(text).toContain("zoom");
   });
@@ -299,7 +323,7 @@ describe("tool contracts", () => {
   });
 
   it("boards_delete removes the row, clears the current board, and a late flush cannot resurrect it", async () => {
-    const created = (await call("boards_create", { name: "doomed" })).json();
+    const created = (await call("boards_create", { name: "doomed", project_root: projectRoot })).json();
     try {
       await call("canvas_add_node", { label: "x", kind: "service", at: [0, 0] });
       const stale = sessions.open(created.board_id); // what a disconnecting socket still holds
@@ -310,7 +334,7 @@ describe("tool contracts", () => {
       expect((await call("canvas_get_state")).res.isError).toBe(true); // current pointer cleared
       expect((await call("boards_delete", { board_id: created.board_id })).text).toMatch(/not found/);
     } finally {
-      await call("boards_open", { board_id: boardId });
+      await useBoard(boardId);
     }
   });
 
@@ -1022,5 +1046,485 @@ describe("notes_migrate (WS-only — deletes note nodes, so it goes through sess
     expect(afterSecond.graph.nodes.map((n: { id: string }) => n.id)).not.toContain(note);
     const bodyAfterSecond = afterSecond.notebooks.find((n: { id: string }) => n.id === nbId).body;
     expect(bodyAfterSecond.split("\n").filter((l: string) => l === line)).toHaveLength(1); // not duplicated
+  });
+});
+
+describe("project root (ADR 0003)", () => {
+  const RULE = "project_root must be an existing absolute directory";
+  const tmp = (prefix: string) => mkdtempSync(path.join(tmpdir(), prefix));
+  const ids = (list: { id: string }[]) => list.map((b) => b.id);
+  /** A store row with root '' — only a migrated row holds it. */
+  const unsetBoard = (name: string) => {
+    const id = `b_u${Math.random().toString(16).slice(2, 7)}`;
+    store.create(id, name, { project_root: "" }, Date.now());
+    return id;
+  };
+  /** Nodes a→b, a layer over them, and the edge id. */
+  const seed = async (board_id: string) => {
+    const a = (await call("canvas_add_node", { board_id, label: "a", kind: "entry" })).json().ids[0];
+    const b = (await call("canvas_add_node", { board_id, label: "b", kind: "service" })).json().ids[0];
+    const e = (await call("canvas_add_edge", { board_id, from: a, to: b })).json().ids[0];
+    const layer = (await call("layers_create", { board_id, node_ids: [a, b], title: "l" })).json().layer_id;
+    return { a, b, e, layer };
+  };
+
+  afterAll(async () => {
+    cwdNow = projectRoot;
+    await useBoard(boardId);
+    sessions.persistAll(); // flush pending debounce timers before the store closes
+  });
+
+  it("boards_create rejects no root, '', a relative path, a file and a missing dir", async () => {
+    const file = path.join(projectRoot, "auth.ts");
+    for (const args of [{}, { project_root: "" }, { project_root: "rel/dir" }, { project_root: file }, { project_root: path.join(projectRoot, "missing") }]) {
+      const out = await call("boards_create", { name: "bad root", ...args });
+      expect(out.res.isError).toBe(true);
+      expect(out.text).toContain(RULE);
+    }
+    await useBoard(boardId);
+  });
+
+  it("state.board.project_root is the board's root", async () => {
+    const state = await getState();
+    expect(state.board.project_root).toBe(projectRoot);
+  });
+
+  it("an unset root: ref operations fail and name boards_update; everything else works", async () => {
+    const id = unsetBoard("unset board");
+    await useBoard(id);
+    const { a, e, layer } = await seed(id);
+    const fails = async (name: string, args: Record<string, unknown>) => {
+      const out = await call(name, args);
+      expect(out.res.isError, name).toBe(true);
+      expect(out.text).toContain(`board ${id} has no project root — set one with boards_update(board_id, project_root)`);
+    };
+    await fails("canvas_bind_code", { node_id: a, ref: "auth.ts:verifyToken" });
+    await fails("canvas_lint", {});
+    await fails("paths_create", { layer_id: layer, title: "p", steps: [{ edge: e, ref: "auth.ts" }] });
+    expect((await call("canvas_bind_code", { node_id: a, endpoint: "GET /a" })).json().ok).toBe(true);
+    const refless = (await call("paths_create", { layer_id: layer, title: "p", steps: [{ edge: e, caption: "c" }] })).json();
+    expect(refless.path_id).toBeTruthy();
+    await fails("paths_update", { path_id: refless.path_id, verify: [1] });
+    const got = (await call("paths_get", { path_id: refless.path_id })).json();
+    expect(got.hops[0].ref_status).toBeNull();
+    expect(got.warnings).toEqual([`board ${id} has no project root — set one with boards_update(board_id, project_root)`]);
+    expect((await call("paths_play", { path_id: refless.path_id })).json().warnings[0]).toContain("boards_update");
+  });
+
+  it("a removed root outside git (main_root '') fails the same way and lists as unset", async () => {
+    const root = tmp("inkwire-gone-");
+    writeFileSync(path.join(root, "auth.ts"), "export function verifyToken() {}\n");
+    const id = (await call("boards_create", { name: "gone root", project_root: root })).json().board_id;
+    expect(store.load(id)!.meta.main_root).toBe("");
+    const { a, e, layer } = await seed(id);
+    const pathId = (await call("paths_create", { layer_id: layer, title: "p", steps: [{ edge: e, ref: "auth.ts:verifyToken" }] })).json().path_id;
+    rmSync(root, { recursive: true, force: true });
+    const gone = `project root ${root} of board ${id} no longer exists — set a new one with boards_update(board_id, project_root)`;
+    for (const [name, args] of [
+      ["canvas_bind_code", { node_id: a, ref: "auth.ts" }],
+      ["canvas_lint", {}],
+      ["paths_create", { layer_id: layer, title: "q", steps: [{ edge: e, ref: "auth.ts" }] }],
+      ["paths_update", { path_id: pathId, verify: [1] }],
+    ] as const) {
+      const out = await call(name, args);
+      expect(out.res.isError, name).toBe(true);
+      expect(out.text).toContain(gone);
+    }
+    const got = (await call("paths_get", { path_id: pathId })).json();
+    expect(got.hops[0].ref_status).toBeNull();
+    expect(got.warnings).toEqual([gone]);
+    const listed = (await call("boards_list", { all: true })).json().boards.find((b: { id: string }) => b.id === id);
+    expect(listed).toMatchObject({ project_root: root, main_root: "", root: "unset" });
+  });
+
+  it("two boards with different roots resolve one relative ref to two files", async () => {
+    const [r1, r2] = [tmp("inkwire-r1-"), tmp("inkwire-r2-")];
+    for (const r of [r1, r2]) writeFileSync(path.join(r, "same.ts"), "export function same() {}\n");
+    const resolved: string[] = [];
+    for (const r of [r1, r2]) {
+      const id = (await call("boards_create", { name: `two roots ${path.basename(r)}`, project_root: r })).json().board_id;
+      const n = (await call("canvas_add_node", { board_id: id, label: "s", kind: "service" })).json().ids[0];
+      const out = (await call("canvas_bind_code", { board_id: id, node_id: n, ref: "same.ts:same" })).json();
+      expect(out.project_root).toBe(r);
+      resolved.push(out.resolved_path);
+    }
+    expect(resolved).toEqual([path.join(r1, "same.ts"), path.join(r2, "same.ts")]);
+  });
+
+  it("boards_create naming: a name that exists gets the lowest free (N), under any root", async () => {
+    const other = tmp("inkwire-name-");
+    const create = async (project_root = projectRoot) => (await call("boards_create", { name: "dup create", project_root })).json();
+    const first = await create();
+    expect(first).toMatchObject({ name: "dup create", name_check: "OK" });
+    expect(first).not.toHaveProperty("warning");
+    const second = await create(other); // another root still collides
+    expect(second.name).toBe("dup create (2)");
+    expect(second.warning).toBe("a board named dup create exists; this board is named dup create (2)");
+    expect(second).not.toHaveProperty("name_check");
+    expect((await create()).name).toBe("dup create (3)");
+    await call("boards_delete", { board_id: second.board_id });
+    expect((await create()).name).toBe("dup create (2)");
+  });
+
+  it("boards_import naming, root and a path relative to the cwd", async () => {
+    const src = sessions.create("dup import", projectRoot);
+    const dir = tmp("inkwire-import-");
+    writeFileSync(path.join(dir, "b.inkwire.json"), JSON.stringify(exportBoard(src, store, Date.now())));
+    const other = tmp("inkwire-import-root-");
+    cwdNow = dir;
+    const imp = async (args: Record<string, unknown> = {}) => (await call("boards_import", { path: "b.inkwire.json", ...args })).json();
+    const first = await imp({ project_root: other });
+    expect(first).toMatchObject({ name: "dup import (2)", project_root: other });
+    expect(first.warning).toBe("a board named dup import exists; this board is named dup import (2)");
+    expect(store.load(first.board_id)!.meta.project_root).toBe(other);
+    const second = await imp(); // the file's root exists here
+    expect(second).toMatchObject({ name: "dup import (3)", project_root: projectRoot });
+    await call("boards_delete", { board_id: first.board_id });
+    expect((await imp()).name).toBe("dup import (2)");
+    sessions.delete(src.boardId);
+    expect(await imp()).toMatchObject({ name: "dup import", name_check: "OK" });
+    cwdNow = projectRoot;
+  });
+
+  it("boards_clone naming: default · basename, copy for the same root, then the lowest free (N)", async () => {
+    const src = (await call("boards_create", { name: "clone name", project_root: projectRoot })).json().board_id;
+    const elsewhere = path.join(tmp("inkwire-clone-"), "wt-feature");
+    mkdirSync(elsewhere);
+    const clone = async (args: Record<string, unknown> = {}) => (await call("boards_clone", { board_id: src, ...args })).json();
+    expect(await clone({ project_root: elsewhere })).toMatchObject({ name: "clone name · wt-feature", name_check: "OK", project_root: elsewhere });
+    expect(await clone()).toMatchObject({ name: "clone name copy", name_check: "OK", project_root: projectRoot });
+    const two = await clone();
+    expect(two.name).toBe("clone name copy (2)");
+    expect(two.warning).toBe("a board named clone name copy exists; this board is named clone name copy (2)");
+    expect((await clone()).name).toBe("clone name copy (3)");
+    await call("boards_delete", { board_id: two.board_id });
+    expect((await clone()).name).toBe("clone name copy (2)");
+    expect(await clone({ name: "clone given" })).toMatchObject({ name: "clone given", name_check: "OK" });
+    expect((await clone({ name: "clone given" })).name).toBe("clone given (2)");
+  });
+
+  it("boards_clone copies content, layers with ref_hash, drafts and notebooks, at step 0", async () => {
+    const src = (await call("boards_create", { name: "clone content", project_root: projectRoot })).json().board_id;
+    const { a, e, layer } = await seed(src);
+    await call("paths_create", { layer_id: layer, title: "p", steps: [{ edge: e, ref: "auth.ts:verifyToken" }] });
+    await call("drafts_create", { title: "d", note: "n", marks: [{ id: a, role: "changed" }] });
+    await call("notebooks_create", { title: "nb", body: `[[${a}]] hi` });
+    // An edit just before the clone (inside the persist debounce) is in it.
+    await call("canvas_add_node", { label: "late edit", kind: "service" });
+    const out = (await call("boards_clone", { board_id: src })).json();
+    expect(out.board_id).not.toBe(src);
+    // The clone is current.
+    expect((await call("canvas_get_board")).json().board.id).toBe(out.board_id);
+    const [s0, s1] = [sessions.open(src), sessions.open(out.board_id)];
+    expect(s1.collections()).toEqual(s0.collections());
+    expect(s1.collections().nodes.map((n) => n.label)).toContain("late edit");
+    expect(s1.layers).toEqual(s0.layers);
+    expect(s1.layers[0]!.paths[0]!.steps[0]!.ref_hash).toBeTruthy();
+    expect(s1.drafts).toEqual(s0.drafts);
+    expect(s1.notebooks).toEqual(s0.notebooks);
+    expect((await call("history_get")).json().head).toBe(0);
+    expect(store.load(out.board_id)!.collections).toEqual(s0.collections()); // persisted now
+    // A change to the clone does not change the source.
+    await call("canvas_add_node", { label: "only in clone", kind: "service" });
+    expect(s0.collections().nodes.map((n) => n.label)).not.toContain("only in clone");
+    expect(s1.layers).not.toBe(s0.layers);
+    // An explicit root wins.
+    const other = tmp("inkwire-clone-root-");
+    expect((await call("boards_clone", { board_id: src, project_root: other })).json().project_root).toBe(other);
+    // An unset-root source needs project_root, and the error names it.
+    const unset = unsetBoard("clone unset");
+    const fail = await call("boards_clone", { board_id: unset });
+    expect(fail.res.isError).toBe(true);
+    expect(fail.text).toContain(`${RULE}: `);
+    expect(fail.text).toContain("project_root");
+    expect((await call("boards_clone", { board_id: unset, project_root: other })).json().project_root).toBe(other);
+  });
+
+  it("boards_list: overlap with the cwd, plus unset boards; all: true lists every board", async () => {
+    const parent = realpathSync(tmp("inkwire-list-"));
+    const [ra, rb] = [path.join(parent, "a"), path.join(parent, "b")];
+    mkdirSync(ra);
+    mkdirSync(rb);
+    const A = (await call("boards_create", { name: "list A", project_root: ra })).json().board_id;
+    const B = (await call("boards_create", { name: "list B", project_root: rb })).json().board_id;
+    const U = unsetBoard("list U");
+    const mine = new Set([A, B, U]);
+    const list = async (cwd: string, all?: boolean) => {
+      cwdNow = cwd;
+      const boards = (await call("boards_list", all === undefined ? {} : { all })).json().boards;
+      return ids(boards).filter((id) => mine.has(id)).sort();
+    };
+    expect(await list(ra)).toEqual([A, U].sort());
+    expect(await list(path.join(ra, "src"))).toEqual([A, U].sort());
+    expect(await list(parent)).toEqual([A, B, U].sort());
+    expect(await list("/somewhere/else", true)).toEqual([A, B, U].sort());
+    const entry = (await call("boards_list", { all: true })).json().boards.find((b: { id: string }) => b.id === A);
+    expect(entry).toMatchObject({ project_root: ra, main_root: "" });
+    expect(entry).not.toHaveProperty("root");
+    cwdNow = projectRoot;
+  });
+
+  it("main_root: a gone worktree falls back to the main checkout for reads; writes and lint refuse", async () => {
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "ignore"] });
+    const main = realpathSync(tmp("inkwire-main-"));
+    git(main, "init", "-q");
+    writeFileSync(path.join(main, "a.ts"), "export function a() {\n  return 1;\n}\n");
+    git(main, "add", ".");
+    git(main, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init");
+    const wtParent = realpathSync(tmp("inkwire-wt-"));
+    const wt = path.join(wtParent, "feature");
+    git(main, "worktree", "add", "-q", wt);
+    const id = (await call("boards_create", { name: "worktree board", project_root: wt })).json().board_id;
+    expect(store.load(id)!.meta).toMatchObject({ project_root: wt, main_root: main });
+    const { a, e, layer } = await seed(id);
+    const pathId = (await call("paths_create", { layer_id: layer, title: "p", steps: [{ edge: e, caption: "c", ref: "a.ts:a" }] })).json().path_id;
+
+    git(main, "worktree", "remove", "--force", wt);
+    const warning = `resolved against main checkout ${main}; set the root with boards_update to make this permanent`;
+    const got = (await call("paths_get", { path_id: pathId })).json();
+    expect(got.hops[0].ref_status).toBe("ok");
+    expect(got.warnings).toEqual([warning]);
+    expect((await call("paths_play", { path_id: pathId })).json().warnings).toEqual([warning]);
+    const board = await call("canvas_get_board");
+    expect(board.json().board.project_root).toBe(wt);
+    expect(board.res.content[1]?.text).toBe(`warning: ${warning}`);
+    const listed = (await call("boards_list", { all: true })).json().boards.find((b: { id: string }) => b.id === id);
+    expect(listed).toMatchObject({ project_root: wt, main_root: main, root: "unset" });
+    for (const [name, args] of [
+      ["canvas_bind_code", { node_id: a, ref: "a.ts:a" }],
+      ["paths_create", { layer_id: layer, title: "q", steps: [{ edge: e, ref: "a.ts:a" }] }],
+      ["paths_update", { path_id: pathId, steps: [{ edge: e, caption: "changed", ref: "a.ts:a" }] }],
+      ["paths_update", { path_id: pathId, verify: [1] }],
+      ["canvas_lint", {}],
+    ] as const) {
+      const out = await call(name, args);
+      expect(out.res.isError, name).toBe(true);
+      expect(out.text).toContain(warning);
+    }
+
+    // boards_update(project_root) sets main_root again.
+    const wt2 = path.join(wtParent, "feature2");
+    git(main, "worktree", "add", "-q", wt2);
+    const upd = (await call("boards_update", { board_id: id, project_root: wt2 })).json();
+    expect(upd).toMatchObject({ project_root: wt2, main_root: main });
+    expect((await call("canvas_lint")).res.isError).toBeFalsy();
+    const root2 = (await call("boards_update", { board_id: id, project_root: main })).json();
+    expect(root2.main_root).toBe("");
+  });
+
+  it("canvas_get_board on an unset or gone root with no main_root gives the paths_get warning as a second text block", async () => {
+    // Unset root: a migrated row.
+    const unset = unsetBoard("get_board unset");
+    const { e, layer } = await seed(unset);
+    const pathId = (await call("paths_create", { board_id: unset, layer_id: layer, title: "p", steps: [{ edge: e }] })).json().path_id;
+    const unsetWarning = (await call("paths_get", { board_id: unset, path_id: pathId })).json().warnings;
+    expect(unsetWarning).toEqual([`board ${unset} has no project root — set one with boards_update(board_id, project_root)`]);
+    expect((await call("paths_play", { board_id: unset, path_id: pathId })).json().warnings).toContain(unsetWarning[0]);
+    let board = await call("canvas_get_board", { board_id: unset });
+    expect(board.res.isError).toBeFalsy();
+    expect(board.json().board.id).toBe(unset);
+    expect(board.res.content).toHaveLength(2);
+    expect(board.res.content[1]?.text).toBe(`warning: ${unsetWarning[0]}`);
+
+    // Gone root, not a worktree, so main_root is '' and there is no fallback.
+    const gone = tmp("inkwire-gone-root-");
+    const id = (await call("boards_create", { name: "get_board gone", project_root: gone })).json().board_id;
+    expect(store.load(id)!.meta.main_root).toBe("");
+    const goneSeed = await seed(id);
+    const gonePath = (await call("paths_create", { board_id: id, layer_id: goneSeed.layer, title: "p", steps: [{ edge: goneSeed.e }] })).json().path_id;
+    rmSync(gone, { recursive: true, force: true });
+    const goneWarning = (await call("paths_get", { board_id: id, path_id: gonePath })).json().warnings;
+    expect(goneWarning).toEqual([`project root ${gone} of board ${id} no longer exists — set a new one with boards_update(board_id, project_root)`]);
+    board = await call("canvas_get_board", { board_id: id });
+    expect(board.res.isError).toBeFalsy();
+    expect(board.res.content[1]?.text).toBe(`warning: ${goneWarning[0]}`);
+
+    // A board with a root that exists gets no second block.
+    expect((await call("canvas_get_board", { board_id: boardId })).res.content).toHaveLength(1);
+  });
+
+  it("boards_update: rename and re-root; bad roots, no fields and an unknown id fail", async () => {
+    const id = unsetBoard("update me");
+    await useBoard(id);
+    expect((await call("canvas_lint")).res.isError).toBe(true);
+    const renamed = (await call("boards_update", { board_id: id, name: "updated name" })).json();
+    expect(renamed.name).toBe("updated name");
+    expect((await getState()).board.name).toBe("updated name");
+    const listed = (await call("boards_list", { all: true })).json().boards.find((b: { id: string }) => b.id === id);
+    expect(listed.name).toBe("updated name");
+    await call("boards_update", { board_id: id, project_root: projectRoot });
+    expect((await getState()).board.project_root).toBe(projectRoot);
+    expect((await call("canvas_lint")).res.isError).toBeFalsy();
+    for (const bad of ["", "rel", path.join(projectRoot, "auth.ts"), path.join(projectRoot, "nope")]) {
+      const out = await call("boards_update", { board_id: id, project_root: bad });
+      expect(out.res.isError).toBe(true);
+      expect(out.text).toContain(RULE);
+    }
+    const none = await call("boards_update", { board_id: id });
+    expect(none.res.isError).toBe(true);
+    expect(none.text).toContain("give name or project_root");
+    const unknown = await call("boards_update", { board_id: "b_nope", name: "x" });
+    expect(unknown.res.isError).toBe(true);
+    expect(unknown.text).toContain("board not found: b_nope");
+  });
+
+  it("boards_open keeps the in-memory history and revisions; its description does not say resets", async () => {
+    await useBoard(boardId);
+    await call("canvas_add_node", { label: "open twice", kind: "service" });
+    const before = (await call("boards_open", { board_id: boardId })).json().state;
+    const after = (await call("boards_open", { board_id: boardId })).json().state;
+    expect(before.history.steps).toBeGreaterThan(0);
+    expect(after.history.steps).toBe(before.history.steps);
+    expect(after.graph.revision).toBe(before.graph.revision);
+    const tool = (await client.listTools()).tools.find((t) => t.name === "boards_open")!;
+    expect(tool.description).not.toContain("resets");
+  });
+});
+
+// M3.5: the agent always knows which board it works on. Two Clients (101, 202) over one daemon-like setup.
+describe("board context line and notices (M3.5)", () => {
+  let h: Harness;
+  const line = (id: string, name: string, role: "author" | "reader", mode = "pty") => `board ${id} "${name}" · you: ${role} · mode: ${mode}`;
+  /** The notices of a result: the head lines after the context line. */
+  const notices = (head: string) => head.split("\n").slice(1);
+
+  beforeEach(async () => {
+    h = new Harness();
+    await h.connect(101);
+    await h.connect(202);
+  });
+
+  afterEach(async () => {
+    for (const c of h.clients.all()) if (c.mode === "inkwire") sessionMode(h.clients, c, false, { focusTerminal: () => {} });
+    await h.close();
+  });
+
+  it("every result starts with the context line: no board, author, reader, a read, a write and an error", async () => {
+    const none = await h.call(101, "boards_list");
+    expect(none.head).toBe("board: none · mode: pty");
+    const x = await h.newBoard(101, "ctx X");
+    expect((await h.call(101, "canvas_get_state")).head).toBe(line(x, "ctx X", "author"));
+    expect((await h.call(101, "canvas_add_node", { label: "a", kind: "service" })).head).toBe(line(x, "ctx X", "author"));
+    const opened = await h.call(202, "boards_open", { board_id: x });
+    expect(opened.head).toBe(line(x, "ctx X", "reader"));
+    const refused = await h.call(202, "canvas_add_node", { label: "b", kind: "service" });
+    expect(refused.res.isError).toBe(true);
+    expect(refused.head).toBe(line(x, "ctx X", "reader"));
+    // Every tool, reads and writes: the first block is the context line. Only an argument error
+    // that the SDK makes before the handler runs (MCP error -32602) has none.
+    let checked = 0;
+    for (const tool of await h.listTools(202)) {
+      const r = await h.call(202, tool, {});
+      if (r.head.startsWith("MCP error -32602")) {
+        expect(r.res.isError, tool).toBe(true);
+        continue;
+      }
+      checked++;
+      expect(r.head.split("\n")[0], tool).toMatch(/^board (b_\w+ ".*" · you: (author|reader)|: none) · mode: (pty|inkwire)$/);
+    }
+    expect(checked).toBeGreaterThanOrEqual(10);
+  });
+
+  it("each event gives its notice exactly once: claim, switch, lost and deleted", async () => {
+    const created = await h.call(101, "boards_create", { name: "N A", project_root: h.root });
+    const a = created.json().board_id;
+    expect(notices(created.head)).toEqual([`You are now the author of ${a}.`]);
+    expect(notices((await h.call(101, "canvas_get_state")).head)).toEqual([]);
+
+    const b = h.sessions.create("N B", h.root).boardId;
+    const moved = await h.call(101, "canvas_add_node", { board_id: b, label: "x", kind: "service" });
+    expect(moved.head.split("\n")[0]).toBe(line(b, "N B", "author"));
+    expect(notices(moved.head)).toEqual([
+      `Current board is now ${b} "N B". All later edits with no board_id go to it. You released ${a}.`,
+      `You are now the author of ${b}.`,
+    ]);
+    expect(notices((await h.call(101, "canvas_get_state")).head)).toEqual([]);
+
+    h.clients.release(b, "person");
+    const lost = await h.call(101, "canvas_get_state");
+    expect(lost.head.split("\n")[0]).toBe(line(b, "N B", "reader"));
+    expect(notices(lost.head)).toEqual([`The person released ${b}. You can still read it.`]);
+    expect(notices((await h.call(101, "canvas_get_state")).head)).toEqual([]);
+
+    await h.call(202, "boards_open", { board_id: b });
+    expect(h.sessions.delete(b)).toBe(true);
+    for (const pid of [101, 202]) {
+      const gone = await h.call(pid, "boards_list");
+      expect(gone.head.split("\n")[0]).toBe("board: none · mode: pty");
+      expect(notices(gone.head)).toEqual([`Board ${b} was deleted. You have no current board.`]);
+      expect(notices((await h.call(pid, "boards_list")).head)).toEqual([]);
+    }
+  });
+
+  it("a switch in pty mode writes a row on both Threads", async () => {
+    const a = await h.newBoard(101, "T A");
+    const b = h.sessions.create("T B", h.root).boardId;
+    await h.call(101, "canvas_add_node", { board_id: b, label: "x", kind: "service" });
+    expect(h.callRows(a).filter((r) => r.name === "author")).toEqual([{ name: "author", text: `claude moved to ${b}` }]);
+    expect(h.callRows(b).filter((r) => r.name === "author")).toEqual([{ name: "author", text: "claude is now the author" }]);
+  });
+
+  it("in inkwire mode a write to B, boards_create, boards_clone and boards_import fail; A stays authored and current; a read of B works", async () => {
+    const c101 = h.clients.get(101)!;
+    const b = h.sessions.create("I B", h.root).boardId;
+    const a = await h.newBoard(101, "I A");
+    h.arm(101);
+    await h.call(101, "session_mode", { on: true });
+    const talking = `You are talking with the person on ${a}. Turn the mode off before you move to a different board.`;
+    const file = path.join(h.root, "i.inkwire.json");
+    writeFileSync(file, JSON.stringify(exportBoard(h.sessions.open(a), h.store, Date.now())));
+    const boardsBefore = h.store.list().length;
+    for (const [tool, args] of [
+      ["canvas_add_node", { board_id: b, label: "x", kind: "service" }],
+      ["boards_create", { name: "I C", project_root: h.root }],
+      ["boards_clone", { board_id: a }],
+      ["boards_import", { path: file }],
+    ] as const) {
+      const r = await h.call(101, tool, args);
+      expect(r.res.isError, tool).toBe(true);
+      expect(r.text, tool).toContain(talking);
+      expect(r.head.split("\n")[0], tool).toBe(line(a, "I A", "author", "inkwire"));
+    }
+    expect(h.store.list()).toHaveLength(boardsBefore);
+    expect(h.clients.authorOf(a)).toBe(101);
+    expect(h.clients.authorOf(b)).toBeNull();
+    expect(c101.currentBoardId).toBe(a);
+    expect(h.clients.talkingOn(a)).toBe(c101);
+    const read = await h.call(101, "canvas_get_state", { board_id: b });
+    expect(read.res.isError).toBeFalsy();
+    expect(read.json().board.name).toBe("I B");
+  });
+
+  for (const mode of ["pty", "inkwire"] as const) {
+    it(`boards_open of B by the Author of A in ${mode} mode returns B's state; A stays current and authored`, async () => {
+      const c101 = h.clients.get(101)!;
+      const b = h.sessions.create("O B", h.root).boardId;
+      const a = await h.newBoard(101, "O A");
+      if (mode === "inkwire") {
+        h.arm(101);
+        await h.call(101, "session_mode", { on: true });
+      }
+      const opened = await h.call(101, "boards_open", { board_id: b });
+      expect(opened.res.isError).toBeFalsy();
+      expect(opened.json().state.board.name).toBe("O B");
+      const next =
+        mode === "pty"
+          ? `A write to ${b} moves you to ${b} and releases ${a}.`
+          : `You are talking with the person on ${a}. Turn the mode off before you move to a different board.`;
+      expect(opened.res.content[1]?.text).toBe(`You are the author of ${a}. Your current board is still ${a}. ${next}`);
+      expect(opened.head).toBe(line(a, "O A", "author", mode === "pty" ? "pty" : "inkwire"));
+      expect(c101.currentBoardId).toBe(a);
+      expect(h.clients.authorOf(a)).toBe(101);
+      expect(h.clients.authorOf(b)).toBeNull();
+    });
+  }
+
+  it("boards_open of B by a Client that authors no board makes B current", async () => {
+    const b = h.sessions.create("O B2", h.root).boardId;
+    const opened = await h.call(202, "boards_open", { board_id: b });
+    expect(opened.res.content).toHaveLength(1);
+    expect(opened.head).toBe(line(b, "O B2", "reader"));
+    expect(h.clients.get(202)!.currentBoardId).toBe(b);
+    expect(h.clients.authorOf(b)).toBeNull();
   });
 });

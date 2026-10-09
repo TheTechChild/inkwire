@@ -99,6 +99,12 @@ export function connectWs(app: App): void {
           sentViewport = incoming;
         }
         app.render();
+      } else if (msg.type === "daemon") {
+        // Only the daemon field changed (the stale-build notice): keep the rest of the push.
+        if (app.push) {
+          app.push.daemon = msg.daemon;
+          app.render();
+        }
       } else if (msg.type === "error") {
         console.error("intent rejected:", msg.text);
         app.render();

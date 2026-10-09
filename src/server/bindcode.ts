@@ -23,10 +23,14 @@ export function splitRef(ref: string): { file: string; symbol: string | null } {
 
 /** Resolve a ref against the project root: the file path, its symbol, and the text when `read` is set. Throws on an escape or a missing file. */
 function resolveRef(projectRoot: string, ref: string, read: boolean) {
+  // Backstop: path.resolve('', ref) resolves against the server's cwd with no error.
+  if (projectRoot === "") throw new Error("the board has no project root — set one with boards_update(board_id, project_root)");
   const { file: filePart, symbol } = splitRef(ref);
   const resolved = path.resolve(projectRoot, filePart);
   const rootResolved = path.resolve(projectRoot);
-  if (resolved !== rootResolved && !resolved.startsWith(rootResolved + path.sep)) {
+  // path.relative, not a prefix test: a root of "/" would make the prefix "//" and reject every ref.
+  const rel = path.relative(rootResolved, resolved);
+  if (rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel)) {
     throw new Error(`ref escapes the project root: ${resolved}`);
   }
   if (!existsSync(resolved) || !statSync(resolved).isFile()) {

@@ -9,11 +9,12 @@
   "properties": {
     "board": {
       "type": "object",
-      "required": ["id", "name"],
+      "required": ["id", "name", "project_root"],
       "additionalProperties": false,
       "properties": {
         "id": { "type": "string" },
-        "name": { "type": "string" }
+        "name": { "type": "string" },
+        "project_root": { "type": "string", "description": "The checkout every code ref on the board resolves against. Empty when unset (a migrated board)." }
       }
     },
     "graph": {

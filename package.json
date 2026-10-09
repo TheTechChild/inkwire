@@ -8,18 +8,22 @@
   "engines": {
     "node": ">=26"
   },
-  "bin": "dist/server/index.js",
+  "bin": "dist/link/relay.js",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node esbuild.ui.mjs",
-    "dev": "node esbuild.ui.mjs --watch & tsx watch src/server/index.ts",
-    "start": "tsx src/server/index.ts",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node esbuild.ui.mjs && node scripts/write-build-id.mjs",
+    "dev": "INKWIRE_PORT=4692 INKWIRE_DATA_DIR=$HOME/.inkwire-dev INKWIRE_IDLE_GRACE_MS=off node esbuild.ui.mjs --watch & INKWIRE_PORT=4692 INKWIRE_DATA_DIR=$HOME/.inkwire-dev INKWIRE_IDLE_GRACE_MS=off tsx watch src/server/daemon.ts",
+    "dev:claude": "INKWIRE_PORT=4692 INKWIRE_DATA_DIR=$HOME/.inkwire-dev claude --plugin-dir .",
+    "start": "tsx src/server/daemon.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "health": "yarn build && INKWIRE_HEALTH=1 vitest run tests/health tests/link tests/server/idle.test.ts tests/tools/clients.test.ts tests/tools/project-root.test.ts tests/tools/forward-hook.test.ts tests/tools/authorship.test.ts tests/integration/port-conflict.test.ts tests/integration/daemon.test.ts",
     "lint": "oxlint",
     "typecheck": "tsc --noEmit",
     "gen:schemas": "tsx src/scripts/gen-schemas.ts",
     "map-anchors": "node scripts/map-anchor-check.mjs --all",
-    "map-anchors:test": "node --test scripts/map-anchor-check.test.mjs"
+    "map-anchors:test": "node --test scripts/map-anchor-check.test.mjs",
+    "build-id:test": "node --test scripts/write-build-id.test.mjs",
+    "daemon:restart": "node scripts/daemon-restart.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

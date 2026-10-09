@@ -1,8 +1,8 @@
 // BoardSession: the in-memory heart of the server. Owns the history, the
 // cached fold, the two revision counters, and the Session tab's thread and
 // highlight. Every mutation — MCP tool or WebSocket intent — goes through
-// mutate(); there is no other write path. Sessions holds the server-wide
-// session mode and the one blocked session_send.
+// mutate(); there is no other write path. Sessions holds the open boards
+// only; per-Client state is in clients.ts.
 import { randomBytes } from "node:crypto";
 import { fold } from "../core/fold.js";
 import { playableHops } from "../core/layers.js";
@@ -29,7 +29,6 @@ import type {
   Layer,
   MutationResult,
   Notebook,
-  SessionMode,
   ThreadEntry,
   ThreadInput,
   Viewport,
@@ -37,6 +36,7 @@ import type {
 } from "../shared/types.js";
 import type { HistoryRow } from "../shared/protocol.js";
 import type { Store, StoredBoard } from "./store.js";
+import { mainRootOf } from "./project-root.js";
 
 export interface SessionDeps {
   store: Store;
@@ -230,6 +230,18 @@ export class BoardSession {
     this.notify();
   }
 
+  /** Rename or re-root the board. Not a history step, so not undoable. Persist and notify only. */
+  updateMeta(author: Author, patch: { name?: string; project_root?: string; main_root?: string }): void {
+    this.meta = { ...this.meta, ...patch };
+    const parts = [
+      ...(patch.name !== undefined ? [`rename · ${patch.name}`] : []),
+      ...(patch.project_root !== undefined ? [`project root · ${patch.project_root}`] : []),
+    ];
+    this.addLog(author, parts.join(" · ") || "board update");
+    this.schedulePersist();
+    this.notify();
+  }
+
   /** Layers are a view, not history: no step, no revision bump. Persist and notify only. */
   updateLayers(author: Author, label: string, fn: (layers: Layer[]) => Layer[]): void {
     this.layers = fn(this.layers);
@@ -348,7 +360,7 @@ export class BoardSession {
 
   state(opts: { includeInkGeometry?: boolean; includeLayout?: boolean } = {}): CanvasState {
     return buildCanvasState({
-      board: { id: this.meta.id, name: this.meta.name },
+      board: { id: this.meta.id, name: this.meta.name, project_root: this.meta.project_root },
       foldResult: this.foldCache,
       history: this.history,
       graphRevision: this.graphRevision,
@@ -431,31 +443,15 @@ export type SendResult =
   | { status: "mode_off"; note: string }
   | { status: "idle" };
 
-/** What the Claude Code hook last told us. Proof the plugin is installed. */
-export interface HookReport {
-  permissionMode: string;
-  /** CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS as the hook saw it; "unset" when absent. */
-  autoBackground: string;
-  sessionId: string | null;
-  at: number;
-}
+export type { HookReport } from "./clients.js";
 
-/** All open sessions plus the MCP-side "current board" pointer, and the
- * server-wide session mode (one Claude Code process talks to one server). */
+/** The open boards. Per-Client state (current board, session mode, pending
+ * send, hook report) lives in Clients (src/server/clients.ts). */
 export class Sessions {
   private sessions = new Map<string, BoardSession>();
-  currentBoardId: string | null = null;
-  mode: SessionMode = "pty";
-  /** Strip body override shown by the panel: a mode-on failure or the idle timeout. */
-  notice: string | null = null;
-  hook: HookReport | null = null;
-  /** The Claude Code session_id that turned the mode on; other sessions' hooks pass through. */
-  boundSession: string | null = null;
-  /** The blocked session_send, if any. */
-  pending: { boardId: string; resolve: (r: SendResult) => void; timer: NodeJS.Timeout } | null = null;
-  /** Consecutive Stop blocks with no session_send in between — the loop ceiling. */
-  blocks = 0;
   private listeners = new Set<() => void>();
+  private deleteListeners = new Set<(boardId: string) => void>();
+  private boardsListeners = new Set<() => void>();
 
   constructor(private store: Store, private deps: Omit<SessionDeps, "store"> = {}) {}
 
@@ -467,7 +463,7 @@ export class Sessions {
     return this.deps.now?.() ?? Date.now();
   }
 
-  /** Mode, pending, or notice changed: every panel on every board re-renders its strip. */
+  /** Mode, pending, notice or authorship changed: every panel on every board re-renders its strip. */
   onChange(fn: () => void): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
@@ -477,15 +473,27 @@ export class Sessions {
     for (const fn of this.listeners) fn();
   }
 
-  /** Release the blocked send with a result; no-op when nothing is pending. */
-  resolvePending(result: SendResult): boolean {
-    const p = this.pending;
-    if (!p) return false;
-    clearTimeout(p.timer);
-    this.pending = null;
-    p.resolve(result);
-    this.notify();
-    return true;
+  /** A board was deleted (Clients releases it and clears it as a current board). */
+  onDelete(fn: (boardId: string) => void): () => void {
+    this.deleteListeners.add(fn);
+    return () => this.deleteListeners.delete(fn);
+  }
+
+  /** The set of open boards changed: a board opened, was created, or was deleted. */
+  onBoards(fn: () => void): () => void {
+    this.boardsListeners.add(fn);
+    return () => this.boardsListeners.delete(fn);
+  }
+
+  private boardsChanged(): void {
+    for (const fn of this.boardsListeners) fn();
+  }
+
+  /** True when the board is open or stored. */
+  exists(boardId: string): boolean {
+    const open = this.sessions.get(boardId);
+    if (open) return !open.closed;
+    return this.store.load(boardId) !== null;
   }
 
   open(boardId: string): BoardSession {
@@ -495,25 +503,64 @@ export class Sessions {
     if (!stored) throw new Error(`board not found: ${boardId}`);
     const session = new BoardSession(stored, { store: this.store, ...this.deps });
     this.sessions.set(boardId, session);
+    this.boardsChanged();
     return session;
   }
 
-  /** New board; with `content`, it starts with that content as step 0 (import). */
+  /** New board; with `content`, it starts with that content as step 0 (import, clone).
+   * The caller checks the root (checkRootArg); main_root comes from git. */
   create(
     name: string,
+    projectRoot: string,
     content?: { collections: Collections; viewport: Viewport; layers?: Layer[]; drafts?: Draft[]; notebooks?: Notebook[] },
   ): BoardSession {
     const now = this.deps.now?.() ?? Date.now();
     const id = `b_${randomBytes(3).toString("hex")}`;
-    const stored = this.store.create(id, name, now, content);
+    const roots = { project_root: projectRoot, main_root: projectRoot ? mainRootOf(projectRoot) : "" };
+    const stored = this.store.create(id, name, roots, now, content);
     const session = new BoardSession(stored, { store: this.store, ...this.deps });
     this.sessions.set(id, session);
+    this.boardsChanged();
     return session;
   }
 
-  /** Resolve a canvas.* tool's board: explicit id, else the current board. */
-  resolve(boardId: string | undefined): BoardSession {
-    const id = boardId ?? this.currentBoardId;
+  /**
+   * One name rule for every new board (create, import, clone): an exact name
+   * that exists on any board, under any root, gets the lowest free " (N)".
+   */
+  uniqueName(name: string): { name: string; name_check: "OK" } | { name: string; warning: string } {
+    const taken = new Set(this.store.list().map((b) => b.name));
+    for (const s of this.sessions.values()) if (!s.closed) taken.add(s.meta.name);
+    if (!taken.has(name)) return { name, name_check: "OK" };
+    let n = 2;
+    while (taken.has(`${name} (${n})`)) n++;
+    const unique = `${name} (${n})`;
+    return { name: unique, warning: `a board named ${name} exists; this board is named ${unique}` };
+  }
+
+  /**
+   * Copy a board's content into a new board at step 0 (ADR 0003). The source
+   * is read through open(), so unsaved edits are in the copy. History, thread,
+   * focus, active draft and notebook, trace, highlight and authorship stay behind.
+   * The caller checks the root.
+   */
+  clone(sourceId: string, name: string, projectRoot: string): BoardSession {
+    const src = this.open(sourceId);
+    const content = structuredClone({
+      collections: src.collections(),
+      viewport: src.viewport,
+      layers: src.layers,
+      drafts: src.drafts,
+      notebooks: src.notebooks,
+    });
+    const session = this.create(name, projectRoot, content);
+    session.persistNow();
+    return session;
+  }
+
+  /** Resolve a canvas.* tool's board: explicit id, else the caller's current board. */
+  resolve(boardId: string | undefined, currentBoardId: string | null): BoardSession {
+    const id = boardId ?? currentBoardId;
     if (!id) {
       throw new Error("no board is open — call boards.open or pass board_id");
     }
@@ -526,16 +573,10 @@ export class Sessions {
     if (!this.store.delete(boardId)) return false;
     this.sessions.get(boardId)?.close();
     this.sessions.delete(boardId);
-    if (this.currentBoardId === boardId) this.currentBoardId = null;
-    // A send blocked on this board can never be answered: release it and
-    // hand the conversation back to the terminal.
-    if (this.pending?.boardId === boardId) {
-      this.mode = "pty";
-      this.notice = "board deleted · mode pty";
-      this.blocks = 0;
-      this.boundSession = null;
-      this.resolvePending({ status: "idle" });
-    }
+    // Clients.boardDeleted: release the Author, clear every current board that
+    // points here, and resolve a send blocked on this board with idle.
+    for (const fn of this.deleteListeners) fn(boardId);
+    this.boardsChanged();
     return true;
   }
 

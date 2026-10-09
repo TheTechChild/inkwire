@@ -151,6 +151,10 @@ export interface BoardMeta {
   name: string;
   created_at: number;
   updated_at: number;
+  /** The checkout every code ref on the board resolves against (ADR 0003). '' means unset. */
+  project_root: string;
+  /** The main checkout when project_root is inside a linked git worktree; '' means none. Reads fall back to it. */
+  main_root: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,7 +258,7 @@ export interface ScopeInfo {
 }
 
 export interface CanvasState {
-  board: { id: string; name: string };
+  board: { id: string; name: string; project_root: string };
   graph: {
     revision: number;
     nodes: NodeEl[];
@@ -300,7 +304,7 @@ export function emptyCollections(): Collections {
 // Session (handoff "Session"): the mode flag, the thread, and highlights.
 // None of this is persisted — it lives with the running server.
 
-/** Where Claude Code's replies go: the terminal, or the Session tab. One flag per server. */
+/** Where Claude Code's replies go: the terminal, or the Session tab. One flag per Client (src/server/clients.ts). */
 export type SessionMode = "pty" | "inkwire";
 
 /** An agent-authored, ephemeral pointer at elements. Not a layer, not focus, not selection. */

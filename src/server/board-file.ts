@@ -14,6 +14,7 @@ import { RENDER } from "../shared/tokens.js";
 import type { Collections, EdgeEl, ImageEl, LayoutMap, NodeEl } from "../shared/types.js";
 import type { BoardSession, Sessions } from "./session.js";
 import type { Store } from "./store.js";
+import { checkRootArg } from "./project-root.js";
 
 export class ImportError extends Error {}
 
@@ -31,6 +32,7 @@ export function exportBoard(session: BoardSession, store: Store, now: number): B
     format: BOARD_FILE_FORMAT,
     version: BOARD_FILE_VERSION,
     name: session.meta.name,
+    ...(session.meta.project_root ? { project_root: session.meta.project_root } : {}),
     exported_at: now,
     viewport: session.viewport,
     nodes: c.nodes,
@@ -53,8 +55,34 @@ export function exportFilename(name: string): string {
   return `${slug || "board"}.inkwire.json`;
 }
 
-/** Validate a board file and create a new board holding its content. */
-export function importBoard(sessions: Sessions, store: Store, raw: unknown): BoardSession {
+/** The root for an imported board: the explicit argument (a bad one fails, it never falls
+ * through), else the file's root when it is an existing absolute directory here, else an error. */
+function importRoot(file: BoardFile, explicit: string | undefined): string {
+  if (explicit !== undefined) {
+    try {
+      return checkRootArg(explicit);
+    } catch (err) {
+      throw new ImportError(err instanceof Error ? err.message : String(err));
+    }
+  }
+  if (file.project_root) {
+    try {
+      return checkRootArg(file.project_root);
+    } catch {
+      throw new ImportError(`the file names project root ${file.project_root}, which does not exist here — pass project_root`);
+    }
+  }
+  throw new ImportError("the file has no project root — pass project_root");
+}
+
+/** Validate a board file and create a new board holding its content. The name goes through
+ * Sessions.uniqueName; the result says whether it changed. */
+export function importBoard(
+  sessions: Sessions,
+  store: Store,
+  raw: unknown,
+  opts: { projectRoot?: string } = {},
+): { session: BoardSession } & ({ name_check: "OK" } | { warning: string }) {
   const parsed = boardFileSchema.safeParse(raw);
   if (!parsed.success) {
     const issues = parsed.error.issues
@@ -64,6 +92,7 @@ export function importBoard(sessions: Sessions, store: Store, raw: unknown): Boa
     throw new ImportError(`not an inkwire board file — ${issues}`);
   }
   const file = parsed.data;
+  const projectRoot = importRoot(file, opts.projectRoot);
 
   const seen = new Set<string>();
   for (const el of [...file.nodes, ...file.edges, ...file.strokes, ...file.images]) {
@@ -129,11 +158,13 @@ export function importBoard(sessions: Sessions, store: Store, raw: unknown): Boa
   }
 
   const collections: Collections = { nodes, edges, strokes: file.strokes, images, layout };
-  return sessions.create(file.name, {
+  const { name, ...check } = sessions.uniqueName(file.name);
+  const session = sessions.create(name, projectRoot, {
     collections,
     viewport: file.viewport ?? { x: 0, y: 0, zoom: 1 },
     layers: file.layers ?? [],
     drafts: file.drafts ?? [],
     notebooks: file.notebooks ?? [],
   });
+  return { session, ...check };
 }

@@ -2,7 +2,11 @@
   "boards.list": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
-    "properties": {}
+    "properties": {
+      "all": {
+        "type": "boolean"
+      }
+    }
   },
   "boards.open": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -23,10 +27,33 @@
       "name": {
         "type": "string",
         "minLength": 1
+      },
+      "project_root": {
+        "type": "string"
       }
     },
     "required": [
-      "name"
+      "name",
+      "project_root"
+    ]
+  },
+  "boards.clone": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1
+      },
+      "project_root": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "board_id"
     ]
   },
   "boards.import": {
@@ -36,6 +63,9 @@
       "path": {
         "type": "string",
         "minLength": 1
+      },
+      "project_root": {
+        "type": "string"
       }
     },
     "required": [
@@ -53,6 +83,34 @@
     "required": [
       "board_id"
     ]
+  },
+  "boards.update": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1
+      },
+      "project_root": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "board_id"
+    ]
+  },
+  "boards.release": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "board_id": {
+        "type": "string"
+      }
+    }
   },
   "canvas.get_state": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",

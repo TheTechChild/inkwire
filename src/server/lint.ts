@@ -29,8 +29,9 @@ export interface LintFinding {
   message: string;
 }
 
-/** Every finding for one path: broken hops, then each step's ref and binding. Shared by canvas.lint and paths.play. */
-export function lintPath(projectRoot: string, layer: Layer, path: Path, nodes: NodeEl[], edges: EdgeEl[]): LintFinding[] {
+/** Every finding for one path: broken hops, then each step's ref and binding. Shared by canvas.lint and paths.play.
+ * A null root (the board has none) skips the ref checks; the caller says why. */
+export function lintPath(projectRoot: string | null, layer: Layer, path: Path, nodes: NodeEl[], edges: EdgeEl[]): LintFinding[] {
   const out: LintFinding[] = [];
   for (const b of pathsAffected([{ ...layer, paths: [path] }], edges)) {
     const message =
@@ -48,7 +49,7 @@ export function lintPath(projectRoot: string, layer: Layer, path: Path, nodes: N
   path.steps.forEach((s, i) => {
     const hop = `path ${path.id} hop ${i + 1}`;
     const warn = (check: LintFinding["check"], message: string) => out.push({ target_id: path.id, check, level: "warn", message });
-    const r = refStatus(projectRoot, s);
+    const r = projectRoot === null ? null : refStatus(projectRoot, s);
     const at = r?.line ? ` (line ${r.line})` : "";
     if (r?.status === "ref_missing") {
       out.push({ target_id: path.id, check: "path_ref_missing", level: "error", message: `${hop}: ref points at a missing file` });

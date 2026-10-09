@@ -10,11 +10,15 @@
         },
         "name": {
           "type": "string"
+        },
+        "project_root": {
+          "type": "string"
         }
       },
       "required": [
         "id",
-        "name"
+        "name",
+        "project_root"
       ],
       "additionalProperties": false
     },
