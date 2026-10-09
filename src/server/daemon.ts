@@ -52,6 +52,8 @@ export function createLinkHost(core: Pick<Core, "clients" | "mcpDeps">, build: B
       // A second link of a live Client keeps that Client's current board.
       if (h.current_board && client.currentBoardId === null) clients.restoreCurrentBoard(client, h.current_board);
       if (isNewerBuild(h.build, build)) clients.markStale(h.build, client);
+      // The panels compare and push only what changed (the reader count, the Clients of a stale notice).
+      else clients.notify();
       const mcp = buildMcpServer({ ...core.mcpDeps, client, cwd: () => client.cwd || h.cwd });
       void link.closed.then(async () => {
         open--;

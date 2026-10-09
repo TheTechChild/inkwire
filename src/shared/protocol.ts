@@ -97,7 +97,14 @@ export const clientIntentSchema = z.discriminatedUnion("type", [
     /** The open notebook, unless the human dropped its chip. */
     notebook: z.string().nullable().default(null),
   }),
+  /** Turns off the mode of this board's Author; a no-op with no Author or an Author in pty. */
   z.object({ type: z.literal("session_mode_off") }),
+  /** The person's Release (ADR 0002). Race guard: the server acts only when pid is the board's Author now. */
+  z.object({ type: z.literal("board_release"), pid: z.int() }),
+  /** Allow pid N: the server acts only when the board's released_from is pid. */
+  z.object({ type: z.literal("board_allow"), pid: z.int() }),
+  /** Restart the daemon (Decision 3). The server acts only when build_id is the stale build the panel showed. */
+  z.object({ type: z.literal("daemon_restart"), build_id: z.string() }),
   /** Toggle a message's highlight as the board's active one; null clears. */
   z.object({ type: z.literal("highlight_set"), msg_id: z.string().nullable() }),
   // The trace. Path ids are board-unique, so the server resolves by path_id alone.
@@ -168,20 +175,46 @@ export const captureRequestSchema = z.object({
   fit: z.boolean(),
 });
 
-/** The Session tab's slice of server state. Mode and pending are those of
- * the Client that talks on this board (pty and none when no Client does);
- * the notice, the thread and the highlight belong to the board. */
-export interface SessionPush {
+/** The board's Author as the panel shows it (Decision 8: label is the basename of the Client's cwd). */
+export interface AuthorPush {
+  pid: number;
+  label: string;
   mode: import("./types.js").SessionMode;
-  /** A session_send is blocked on the human, and on which board. */
+  /** A session_send of the Author is blocked on the person, on this board. */
   pending: boolean;
-  pending_board: string | null;
   /** Strip body override: a mode-on failure or the idle timeout. */
   notice: string | null;
+}
+
+/**
+ * The Session tab's slice of server state. Nothing in it is server-wide. The
+ * Thread, the highlight and the trace belong to the board. The Author and the
+ * reader count belong to the board's Clients. A new panel bundle can load from
+ * an older daemon, so the panel treats author, readers and released_from as optional.
+ */
+export interface SessionPush {
+  author: AuthorPush | null;
+  /** The Clients whose current board this is, less the Author. A count only. */
+  readers: number;
+  /** The pid that the person released from this board, until it is allowed again (Open question 2). */
+  released_from: { pid: number; label: string } | null;
   thread: import("./types.js").ThreadEntry[];
   highlight: ({ msg_id: string } & import("./types.js").Highlight) | null;
   /** The pinned trace, shared by every panel like focus. Peek is panel-local and never here. */
   trace: import("./types.js").Trace | null;
+}
+
+/** The daemon's build, and the newer build a relay brought (Decision 7). Same for every board. */
+export interface DaemonPush {
+  /** The boot build id (Decision 10); null on the stdio entry, which has no build. */
+  build_id: string | null;
+  stale: {
+    newer_build_id: string;
+    built_at: string | null;
+    /** What a restart affects: every open board and every Client with an open link. */
+    boards: { id: string; name: string }[];
+    clients: { label: string; pid: number }[];
+  } | null;
 }
 
 export type ServerMessage =
@@ -191,7 +224,10 @@ export type ServerMessage =
       state: import("./types.js").CanvasState;
       history: HistoryRow[];
       session: SessionPush;
+      daemon: DaemonPush;
     }
+  /** The daemon field alone, to every panel of every board, when only it changed (a hello or a close while stale). */
+  | { type: "daemon"; daemon: DaemonPush }
   | { type: "error"; text: string }
   | z.infer<typeof captureRequestSchema>;
 

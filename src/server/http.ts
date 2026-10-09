@@ -131,8 +131,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HttpDeps)
 
   if (req.method === "GET" && p === "/api/boards") {
     res.writeHead(200, { "content-type": "application/json" });
-    // The panel has no cwd, so it gets every board, each with its project_root and the unset mark.
-    res.end(JSON.stringify({ boards: listBoards(deps.store.list(), "/", true) }));
+    // The panel has no cwd, so it gets every board, each with its project_root, the unset mark and its Author.
+    const boards = listBoards(deps.store.list(), "/", true).map((b) => {
+      const pid = deps.clients.authorOf(b.id);
+      return { ...b, author: pid === null ? null : { label: deps.clients.peek(pid)?.label ?? `pid ${pid}`, pid } };
+    });
+    res.end(JSON.stringify({ boards }));
     return;
   }
 

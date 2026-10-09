@@ -31,23 +31,24 @@ a sibling server, which `probeHealth` (`src/link/probe.ts`) detects.
 ```
 src/server/bootstrap.ts:46   openCore
 src/server/index.ts:12       main
-src/server/daemon.ts:100     startDaemon
+src/server/daemon.ts:102     startDaemon
 src/link/probe.ts:49         probeHealth
 src/server/config.ts:18      loadConfig
 src/server/upgrade.ts:11     routeUpgrades
 src/server/http.ts:66        requestHandler
 src/server/http.ts:76        createHttpServer
 src/server/http.ts:80        handle
-src/server/http.ts:255       serveFile
+src/server/http.ts:259       serveFile
 src/server/origin.ts:12      checkBrowserRequest
-src/server/ws.ts:19          PanelHub
-src/server/ws.ts:63          handleUpgrade
+src/server/ws.ts:30          PanelHub
+src/server/ws.ts:84          handleUpgrade
 src/server/mcp.ts:82         buildMcpServer
 ```
 
 Env: `INKWIRE_PORT`, `INKWIRE_DATA_DIR`, `INKWIRE_IDLE_GRACE_MS` (daemon only; default 30000, `off`
 turns the idle stop off). There is no project-root env (see Project root). HTTP serves the panel
-from `dist/ui/` and the routes `/healthz`, `/api/boards`, `/api/boards/:id/export`,
+from `dist/ui/` and the routes `/healthz`, `/api/boards` (each entry has `project_root`, the unset
+mark and `author: { label, pid } | null`), `/api/boards/:id/export`,
 `/api/boards/import`, `/api/capture/:id`, `/api/hook`, and on the daemon `POST /api/daemon/restart`.
 
 Beware: the Origin and Host check (`checkBrowserRequest`, M4.11). Every `POST`, `PUT`, `DELETE`
@@ -89,7 +90,7 @@ src/link/relay-core.ts:255    upClosed
 src/link/relay-core.ts:297    fatal
 src/link/relay-core.ts:49     LOST_TEXT
 src/server/daemon.ts:34       createLinkHost
-src/server/clients.ts:428     restoreCurrentBoard
+src/server/clients.ts:452     restoreCurrentBoard
 ```
 
 Beware: close codes. No hello in 5 s, or a first frame that is not a hello: 4400. A hello of
@@ -129,8 +130,9 @@ racing second daemon loses the port before it opens the store and exits 0. `yarn
 core, shared, link and ui, and `built_at` is not in the hash). The daemon reads it one time, at
 boot (`readBuildInfo`), and `/healthz` reports `{ ok, name, pid, build, clients, boards }`. The
 `IdleTimer` stops the daemon `INKWIRE_IDLE_GRACE_MS` after its last link closes (at boot it waits
-at least 10 s). Only the person restarts it: `POST /api/daemon/restart` (`yarn daemon:restart`,
-`scripts/daemon-restart.mjs`) runs `createRestart` — persist every board, stop listening, close
+at least 10 s). Only the person restarts it: the panel's Restart (the `daemon_restart` intent, accepted only for
+the build id that the stale notice showed) or `POST /api/daemon/restart` (`yarn daemon:restart`,
+`scripts/daemon-restart.mjs`). Both run `createRestart` — persist every board, stop listening, close
 every link, exit 0 — and the relays reconnect and autostart the current build.
 
 ```
@@ -142,8 +144,8 @@ src/server/build-info.ts:32   isNewerBuild
 src/server/idle.ts:22         IdleTimer
 src/server/restart.ts:22      createRestart
 src/server/http.ts:61         defaultStats
-src/server/clients.ts:446     markStale
-src/server/clients.ts:454     STALE_NOTICE
+src/server/clients.ts:472     markStale
+src/server/clients.ts:480     STALE_NOTICE
 ```
 
 Beware: bind first. `startDaemon` listens on the port before it opens the store. On EADDRINUSE it
@@ -180,7 +182,8 @@ src/server/session.ts:402    schedulePersist
 src/server/session.ts:408    persistNow
 src/server/session.ts:393    onChange
 src/server/session.ts:450    class Sessions
-src/server/session.ts:488    open
+src/server/session.ts:499    open
+src/server/session.ts:483    onBoards
 src/server/mutations.ts:49   addNode
 src/server/mutations.ts:125  addEdge
 src/server/mutations.ts:202  deleteElement
@@ -295,19 +298,19 @@ src/server/mcp.ts:141   recordCall
 src/server/mcp.ts:172   register
 src/server/mcp.ts:249   register("boards.list"
 src/server/mcp.ts:255   boards.open
-src/server/mcp.ts:289   register("boards.release"
-src/server/mcp.ts:373   get_state
-src/server/mcp.ts:401   screenshot
-src/server/mcp.ts:420   infer_structure
-src/server/mcp.ts:428   register("canvas.add_node"
-src/server/mcp.ts:484   bind_code
-src/server/mcp.ts:547   lint
-src/server/mcp.ts:564   history.get
-src/server/mcp.ts:576   layers.list
-src/server/mcp.ts:647   paths.create
-src/server/mcp.ts:696   paths.play
-src/server/mcp.ts:717   drafts.create
-src/server/mcp.ts:763   notebooks.create
+src/server/mcp.ts:291   register("boards.release"
+src/server/mcp.ts:375   get_state
+src/server/mcp.ts:403   screenshot
+src/server/mcp.ts:422   infer_structure
+src/server/mcp.ts:430   register("canvas.add_node"
+src/server/mcp.ts:486   bind_code
+src/server/mcp.ts:549   lint
+src/server/mcp.ts:566   history.get
+src/server/mcp.ts:578   layers.list
+src/server/mcp.ts:649   paths.create
+src/server/mcp.ts:698   paths.play
+src/server/mcp.ts:719   drafts.create
+src/server/mcp.ts:765   notebooks.create
 ```
 
 Families, in file order: `session_*` (205, 212), `boards_*` (246-367: list, open, delete, release,
@@ -362,23 +365,57 @@ release), `tests/tools/session.test.ts`. `tests/tools/harness.ts` builds many Cl
 The panel sends intents, the server answers with full pushes. Intents are validated against a zod
 discriminated union, then dispatched by `type` in `PanelHub.handle`.
 
+The push (`state`) carries the board, its history rows, `session` and `daemon`. `session` has the
+board's `author` (`{ pid, label, mode, pending, notice }` or null), `readers` (a count of the
+other Clients whose current board it is), `released_from` (`{ pid, label }` or null), and the
+board's `thread`, `highlight` and `trace`. Nothing in it is server-wide. `daemon` is
+`{ build_id, stale }`; `stale` is `{ newer_build_id, built_at, boards, clients }` while a relay
+with a newer build has said hello (Decision 7). `clients` lists only Clients with an open link
+(`Clients.peekLinked`): a hook-only record is not a session a restart affects. When only `daemon`
+changed, the hub sends the light `{ type: "daemon", daemon }` message in place of a full push. The person-only intents: `board_release { pid }`
+(acts only when `pid` is the Author now, else `error` and a re-sync: the race guard),
+`board_allow { pid }` (acts only when `released_from` is `pid`), `daemon_restart { build_id }`
+(acts only when `build_id` is `daemon.stale.newer_build_id`, then calls the injected `restart`,
+which is `createRestart` on the daemon), and `session_mode_off` (turns off the board's Author only).
+
 ```
 src/shared/protocol.ts:15     clientIntentSchema
-src/shared/protocol.ts:147    clientMessageSchema
-src/shared/protocol.ts:164    captureRequestSchema
-src/shared/protocol.ts:174    SessionPush
-src/shared/protocol.ts:187    ServerMessage
-src/server/ws.ts:112          handle
-src/server/ws.ts:119          case "add_node":
-src/server/ws.ts:222          push
-src/server/ws.ts:245          requestCapture
+src/shared/protocol.ts:154    clientMessageSchema
+src/shared/protocol.ts:171    captureRequestSchema
+src/shared/protocol.ts:195    SessionPush
+src/shared/protocol.ts:220    ServerMessage
+src/server/ws.ts:134          handle
+src/server/ws.ts:141          case "add_node":
+src/server/ws.ts:192          case "board_release": {
+src/server/ws.ts:202          case "board_allow":
+src/server/ws.ts:207          case "daemon_restart": {
+src/server/ws.ts:20           HubDeps
+src/server/ws.ts:272          strip
+src/server/ws.ts:294          daemon
+src/server/ws.ts:318          fanOut
+src/server/ws.ts:331          push
+src/server/ws.ts:354          requestCapture
+src/server/clients.ts:188     peekLinked
+src/shared/protocol.ts:179    AuthorPush
+src/shared/protocol.ts:208    DaemonPush
 src/ui/ws-client.ts:8         connectWs
-src/ui/ws-client.ts:114       answerCapture
-src/ui/app.ts:89              isServerMessage
+src/ui/ws-client.ts:120       answerCapture
+src/ui/app.ts:91              isServerMessage
 ```
 
 A rejected intent triggers a re-sync push to that client. On board delete the socket closes with
 code 4010.
+
+Beware: the fan-out. `Clients.notify` runs `fanOut`, which pushes a board only when its strip
+fields (`author`, `readers`, `released_from`) differ from what its panels got last. When
+`daemon` changed, every other panel gets only the `daemon` message (no ink geometry). A hello or a
+close on board X does not push the state of board Y. While a newer build waits,
+`Sessions.onBoards` (a board opened, created or deleted) also runs `fanOut`, so every Restart
+confirm lists the open boards. A
+change of a Client's current board must call `clients.notify()` (`boards_open`,
+`restoreCurrentBoard`, `commitClaim` and the link host do), or the reader count goes stale. The
+push reads Clients with `peek`/`peekAll`, never `get`/`all`: those sweep, and a sweep can notify
+inside the push.
 
 Beware: a new intent needs the zod variant in `protocol.ts`, a `case` in `ws.ts`, and a sender in
 the UI. Gestures send one intent on pointer release, not per move.
@@ -421,20 +458,29 @@ shared UI state.
 ```
 src/ui/main.ts:17           boot
 src/ui/main.ts:65           showBoardPicker
-src/ui/app.ts:71            KIND_META
-src/ui/app.ts:104           focusLayer
+src/ui/app.ts:73            KIND_META
+src/ui/app.ts:106           focusLayer
 src/ui/canvas.ts:57         setupCanvas
 src/ui/canvas.ts:628        renderWorld
 src/ui/canvas.ts:565        hitNode
 src/ui/canvas.ts:619        deleteSelection
-src/ui/panel.ts:175         setupPanel
-src/ui/panel.ts:346         renderPanel
-src/ui/panel.ts:358         renderInspector
-src/ui/panel.ts:616         renderAsideStrip
-src/ui/panel.ts:634         renderLayers
-src/ui/panel.ts:510         renderHistory
-src/ui/panel.ts:107         loadPanelPrefs
+src/ui/panel.ts:176         setupPanel
+src/ui/panel.ts:347         renderPanel
+src/ui/panel.ts:374         renderInspector
+src/ui/panel.ts:641         staleStrip
+src/ui/panel.ts:939         renderFooter
+src/ui/panel.ts:620         renderAsideStrip
+src/ui/panel.ts:666         renderLayers
+src/ui/panel.ts:511         renderHistory
+src/ui/panel.ts:108         loadPanelPrefs
 ```
+
+The aside strip (`renderAsideStrip`) shows the stale-build notice (`staleStrip`, with Restart:
+the confirm lists every open board and every Claude Code session and says that undo history and
+every pending `session_send` are lost) above the highlight strip. Nothing draws over the graph.
+The board picker (`showBoardPicker`) shows each board's `project_root` (or `root: unset`) and its
+Author from `GET /api/boards`. The panel treats `author`, `readers`, `released_from`, `daemon` and
+the picker's `author` as optional: a new bundle can load from an older running daemon.
 
 Styles are in `src/ui/styles.css`; `src/ui/index.html` is the shell. `yarn build` bundles the UI to
 `dist/ui/` with esbuild (`esbuild.ui.mjs`).
@@ -491,9 +537,12 @@ src/server/session-mode.ts:385   terminalProgram
 src/server/session-mode.ts:390   focusTerminal
 src/server/clients.ts:15         HookReport
 src/server/http.ts:58            /api/hook
-src/ui/session.ts:22             setupSession
-src/ui/session.ts:117            renderSession
-src/ui/session.ts:252            messageCard
+src/ui/session.ts:73             setupSession
+src/ui/session.ts:169            renderSession
+src/ui/session.ts:372            messageCard
+src/ui/session.ts:38             stripView
+src/ui/session.ts:67             agentState
+src/ui/session.ts:352            authorRow
 ```
 
 Hook files (not `.ts`): `hooks/hooks.json` wires `Stop`, `PreToolUse` on the `session_mode` tool,
@@ -506,8 +555,8 @@ Beware: session mode is per Client (one flag on each Client record). `hookEvent`
 (and makes it when it is new), else by `session_id`, else ignores the event. `SessionStart` `clear`
 or `resume` rekeys the Client to the new session id, but only when the hook has a pid: with no pid,
 the new id matches no Client and the rekey cannot happen. The panel push (`ws.ts` `push`) shows the mode
-and the pending send of `clients.talkingOn(board)` and the board's notice from `noticeByBoard`, so a
-panel on another board does not see a mode change. The thread and the active highlight are per
+and the pending send of the board's Author (`session.author`) and the board's notice from
+`noticeByBoard`, so a panel on another board does not see a mode change. The thread and the active highlight are per
 board, shared by every panel, and never persisted. The mode is not persisted either.
 
 Beware: `session_mode(on)` needs a current board. It fails when another Client is the Author or
@@ -526,6 +575,14 @@ the mode instruction while the mode is on, so the agent knows its board after co
 
 Beware: there is no `/use-inkwire` button in the panel. The user types it in the terminal.
 
+Beware: the Session strip (M5). It shows the Author as `label · pid N` and its mode, `NO AUTHOR`
+("the next AI write claims this board") when there is none, and `N readers`. Release confirms
+with the label and pid (and says that the pending `session_send` returns `mode_off` when one is
+pending), then sends `board_release`. While `released_from` is set, **Allow pid N** sends
+`board_allow`. The reply box works only while the Author is in `inkwire` mode. Thread call rows
+named `author` (the M3.5 switch rows) render as their own line (`authorRow`), never folded into
+the tool calls.
+
 Tests: `tests/tools/session.test.ts`, `tests/tools/forward-hook.test.ts`.
 
 ## Clients and authorship
@@ -543,21 +600,23 @@ src/server/clients.ts:66         class Clients
 src/server/clients.ts:112        ensure
 src/server/clients.ts:145        attach
 src/server/clients.ts:159        detach
-src/server/clients.ts:195        remove
-src/server/clients.ts:209        sweep
-src/server/clients.ts:222        boardDeleted
-src/server/clients.ts:273        talkingOn
-src/server/clients.ts:289        checkWrite
-src/server/clients.ts:321        commitClaim
-src/server/clients.ts:407        release
-src/server/session.ts:476        onDelete
-src/server/session.ts:549        resolve
+src/server/clients.ts:215        remove
+src/server/clients.ts:229        sweep
+src/server/clients.ts:242        boardDeleted
+src/server/clients.ts:293        talkingOn
+src/server/clients.ts:309        checkWrite
+src/server/clients.ts:341        commitClaim
+src/server/clients.ts:431        release
+src/server/session.ts:477        onDelete
+src/server/session.ts:562        resolve
 src/server/clients.ts:81         releasedFrom
-src/server/clients.ts:307        checkSwitch
-src/server/clients.ts:349        allowAgain
-src/server/clients.ts:357        addNotice
-src/server/clients.ts:364        takeNotices
-src/server/clients.ts:375        contextLine
+src/server/clients.ts:327        checkSwitch
+src/server/clients.ts:373        allowAgain
+src/server/clients.ts:381        addNotice
+src/server/clients.ts:285        readerCount
+src/server/clients.ts:176        peek
+src/server/clients.ts:388        takeNotices
+src/server/clients.ts:399        contextLine
 src/server/mcp.ts:87             resolve
 src/server/mcp.ts:105            writable
 src/server/index.ts:18           client
@@ -577,7 +636,7 @@ moved to B" on A's Thread and "claude is now the author" on B's, and queues the 
 
 Beware: release. `release(board, reason)` runs `releaseAuthorship`, which turns off a talking
 Author (its pending send returns `mode_off`). Reasons: `client` (`boards_release`), `person` (the
-panel, M5), `disconnect`, `switch`, `deleted`. A `person` release sets `releasedFrom`: that pid's
+panel `board_release` intent, M5), `disconnect`, `switch`, `deleted`. A `person` release sets `releasedFrom`: that pid's
 writes and `session_mode(on)` on the board fail with "no longer the author" until another Client
 claims it, the pid disconnects (`remove`), or the person calls `allowAgain(board, pid)`.
 
@@ -609,7 +668,7 @@ src/server/layers.ts:58    updateLayer
 src/server/layers.ts:82    deleteLayer
 src/server/session.ts:246  updateLayers
 src/server/session.ts:257  setFocus
-src/ui/panel.ts:634        renderLayers
+src/ui/panel.ts:666        renderLayers
 ```
 
 Beware: layer members are never pruned when a node is deleted; `liveMembers` filters at read time.
@@ -660,7 +719,7 @@ src/server/drafts.ts:42    updateDraft
 src/server/drafts.ts:101   markElement
 src/server/session.ts:270  updateDrafts
 src/server/session.ts:278  setActiveDraft
-src/ui/panel.ts:762        renderDrafts
+src/ui/panel.ts:794        renderDrafts
 ```
 
 Beware: `active_draft` is never persisted. The error hue is shared between draft roles and lint. Draft
@@ -756,15 +815,15 @@ src/server/project-root.ts:109  canonicalPath
 src/server/project-root.ts:118  rootOverlaps
 src/server/project-root.ts:130  listBoards
 src/shared/import-root.ts:9     importNeedsRoot
-src/server/session.ts:500       create
-src/server/session.ts:518       uniqueName
-src/server/session.ts:534       clone
+src/server/session.ts:512       create
+src/server/session.ts:531       uniqueName
+src/server/session.ts:547       clone
 src/server/session.ts:234       updateMeta
 src/server/mcp.ts:249           register("boards.list"
-src/server/mcp.ts:300           register("boards.update"
+src/server/mcp.ts:302           register("boards.update"
 src/server/mcp.ts:207           register("boards.create"
-src/server/mcp.ts:328           register("boards.clone"
-src/server/mcp.ts:343           register("boards.import"
+src/server/mcp.ts:330           register("boards.clone"
+src/server/mcp.ts:345           register("boards.import"
 src/server/board-file.ts:60     importRoot
 ```
 

@@ -1,6 +1,6 @@
 // Shared UI state + helpers. The server owns board state; this object holds
 // only the view over it (selection, tool, viewport, in-flight gesture).
-import type { ClientIntent, HistoryRow, ServerMessage, SessionPush } from "../shared/protocol.js";
+import type { ClientIntent, DaemonPush, HistoryRow, ServerMessage, SessionPush } from "../shared/protocol.js";
 import type { Corner } from "../core/geometry.js";
 import type { Box, CanvasState, Layer, NodeKind, Point } from "../shared/types.js";
 
@@ -24,6 +24,8 @@ export interface StatePush {
   state: CanvasState;
   history: HistoryRow[];
   session: SessionPush;
+  /** Optional: an older daemon does not send it (M5.3). */
+  daemon?: DaemonPush;
 }
 
 export interface App {

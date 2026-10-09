@@ -9,7 +9,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHttpServer } from "../../src/server/http.js";
 import { PanelHub } from "../../src/server/ws.js";
 import { routeUpgrades } from "../../src/server/upgrade.js";
-import { readBuildInfo } from "../../src/server/build-info.js";
+import { readBuildInfo, type BuildInfo } from "../../src/server/build-info.js";
+import { createLinkHost } from "../../src/server/daemon.js";
+import { buildMcpServer } from "../../src/server/mcp.js";
+import { hookEvent } from "../../src/server/session-mode.js";
+import { LINK_VERSION, type Hello } from "../../src/link/hello.js";
+import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Screenshots } from "../../src/server/screenshot.js";
 import { Sessions } from "../../src/server/session.js";
 import { Clients } from "../../src/server/clients.js";
@@ -28,6 +34,10 @@ let port: number;
 let boardId: string;
 let buildFile: string;
 const http = { server: null as ReturnType<typeof createHttpServer> | null };
+/** The fake restart of the hub (M5.2): how many times the panel intent called it. */
+let restarts = 0;
+/** The boot build of the hub, for the stale tests (M5). */
+let bootBuild: BuildInfo;
 
 function connect(board: string): Promise<PanelClient> {
   return PanelClient.connect(`ws://127.0.0.1:${port}/ws?board=${board}`);
@@ -100,8 +110,9 @@ beforeAll(async () => {
   writeFileSync(buildFile, JSON.stringify({ id: "boot0000boot0000", built_at: "2026-10-08T10:00:00.000Z" }));
   // Read one time, at boot (Decision 10), as daemon.ts does.
   const build = readBuildInfo(buildFile);
+  bootBuild = build;
   http.server = createHttpServer({ store, sessions, clients, screenshots: () => screenshots, build, pid: 4711 });
-  hub = new PanelHub(sessions, clients, { focusTerminal: () => {} });
+  hub = new PanelHub(sessions, clients, { focusTerminal: () => {}, build, restart: () => void restarts++ });
   routeUpgrades(http.server, { "/ws": (req, socket, head) => hub.handleUpgrade(req, socket, head) });
   screenshots = new Screenshots(hub, store.imagesDir);
   await new Promise<void>((r) => http.server!.listen(0, "127.0.0.1", () => r()));
@@ -568,15 +579,15 @@ describe("session over WS", () => {
     const c2 = await connect(boardId);
 
     const pending = sessionSend(clients, me, session, { text: "see this", highlight: { label: "here", nodes: [n], edges: [] } });
-    let s = await until(c2, (m) => m.session.pending);
-    expect(s.session.mode).toBe("inkwire");
+    let s = await until(c2, (m) => !!m.session.author?.pending);
+    expect(s.session.author?.mode).toBe("inkwire");
     expect(s.session.highlight).toMatchObject({ label: "here", nodes: [n] });
     expect(s.session.thread.at(-1)).toMatchObject({ type: "claude", text: "see this" });
 
     c1.send({ type: "session_reply", text: "ok", focus: null, selection: n });
     const r = await pending;
     expect(r).toMatchObject({ status: "reply", reply: "ok", ctx: { selection: n } });
-    s = await until(c2, (m) => !m.session.pending);
+    s = await until(c2, (m) => !m.session.author?.pending);
     expect(s.session.thread.at(-1)).toMatchObject({ type: "you", text: "ok" });
 
     c1.send({ type: "highlight_set", msg_id: null });
@@ -587,7 +598,7 @@ describe("session over WS", () => {
     expect(s.state.layers.find((l) => l.title === "here")).toMatchObject({ author: "human", nodes: [n] });
 
     c1.send({ type: "session_mode_off" });
-    s = await until(c2, (m) => m.session.mode === "pty");
+    s = await until(c2, (m) => m.session.author?.mode === "pty");
     expect(c1.messages.filter((m) => m.type === "error")).toEqual([]);
     await c1.close();
     await c2.close();
@@ -628,8 +639,8 @@ describe("session over WS", () => {
     const pb = sessionSend(clients, b, y, { text: "B asks" });
 
     const panel = await connect(x.boardId);
-    let s = await until(panel, (m) => m.session.pending);
-    expect(s.session).toMatchObject({ mode: "inkwire", pending_board: x.boardId });
+    let s = await until(panel, (m) => !!m.session.author?.pending);
+    expect(s.session.author).toMatchObject({ pid: 401, mode: "inkwire", pending: true });
     panel.send({ type: "session_reply", text: "for A", focus: null, selection: null });
     expect(await pa).toMatchObject({ status: "reply", reply: "for A" });
     expect(b.pending).not.toBeNull();
@@ -637,7 +648,7 @@ describe("session over WS", () => {
 
     // The panel mode-off turns off only the Client that talks on this board.
     panel.send({ type: "session_mode_off" });
-    s = await until(panel, (m) => m.session.mode === "pty");
+    s = await until(panel, (m) => m.session.author?.mode === "pty");
     expect(a.mode).toBe("pty");
     expect(b.mode).toBe("inkwire");
 
@@ -655,5 +666,364 @@ describe("session over WS", () => {
     expect(await pb).toEqual({ status: "idle" });
     b.mode = "pty";
     await panel.close();
+  });
+
+  // M5: the board's Author, readers and released pid in the push; Release, Allow and Restart.
+  describe("authorship in the panel (M5)", () => {
+    /** One Claude Code session: a Client and its McpServer over InMemoryTransport, as the daemon makes. */
+    const sessionFor = async (pid: number) => {
+      const c = clients.ensure(pid, { cwd: `/work/repo-${pid}` });
+      clients.attach(pid, `m5-${pid}`);
+      const server = buildMcpServer({
+        sessions,
+        clients,
+        client: c,
+        store,
+        screenshots: () => screenshots,
+        focusTerminal: () => {},
+        panelUrl: (id) => `http://127.0.0.1:${port}/?board=${id}`,
+      });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      const mcp = new McpClient({ name: `m5-${pid}`, version: "0" });
+      await server.connect(st);
+      await mcp.connect(ct);
+      const call = async (name: string, args: Record<string, unknown> = {}) => {
+        const res = (await mcp.callTool({ name, arguments: args })) as { content: { text: string }[]; isError?: boolean };
+        return { isError: !!res.isError, text: res.content.map((x) => x.text).join("\n") };
+      };
+      const close = async () => {
+        await mcp.close();
+        clients.detach(pid, `m5-${pid}`);
+      };
+      return { client: c, call, close };
+    };
+    const addNode = (board: string, label: string) => ({ board_id: board, label, kind: "service", at: [0, 0] });
+    type DaemonField = StateMsg["daemon"];
+    /** The next daemon field that matches, from a full state push or the light daemon message. */
+    const untilDaemon = async (c: PanelClient, pred: (d: DaemonField) => boolean): Promise<DaemonField> => {
+      for (let i = 0; i < 60; i++) {
+        const m = await c.next();
+        if ((m.type === "state" || m.type === "daemon") && pred(m.daemon)) return m.daemon;
+      }
+      throw new Error("no matching daemon field");
+    };
+    /** A push barrier: every message the hub sent to c before this call has arrived when it resolves. */
+    const barrier = async (c: PanelClient): Promise<void> => {
+      c.send({ type: "highlight_set", msg_id: null });
+      await c.nextState();
+    };
+    const linkHost = () =>
+      createLinkHost(
+        { clients, mcpDeps: { sessions, clients, store, screenshots: () => screenshots, panelUrl: (id) => `http://127.0.0.1:${port}/?board=${id}` } },
+        bootBuild,
+      );
+    /** One relay hello through the real link host; returns the close of its link. */
+    const sayHello = async (host: ReturnType<typeof linkHost>, h: Omit<Hello, "type" | "v" | "session_id">): Promise<() => void> => {
+      const [, daemonSide] = InMemoryTransport.createLinkedPair();
+      let closeLink!: () => void;
+      const closed = new Promise<void>((r) => (closeLink = r));
+      await host.accept({ transport: daemonSide, hello: { type: "hello", v: LINK_VERSION, session_id: null, ...h }, closed });
+      return closeLink;
+    };
+    /** The next error message on a panel, then the re-sync push after it. */
+    const errorThenResync = async (c: PanelClient): Promise<{ text: string; resync: StateMsg }> => {
+      for (;;) {
+        const m = await c.next();
+        if (m.type === "error") return { text: m.text, resync: await c.nextState() };
+      }
+    };
+
+    it("with no Author the push has author: null and readers: 0; after A writes it shows A's pid and label; B opening adds a reader and no Thread row", async () => {
+      const board = sessions.create("m5 author", rootDir);
+      const panel = await connect(board.boardId);
+      const first = await panel.nextState();
+      expect(first.session).toMatchObject({ author: null, readers: 0, released_from: null });
+      expect(first.daemon).toEqual({ build_id: bootBuild.id, stale: null });
+
+      const a = await sessionFor(5101);
+      expect((await a.call("canvas_add_node", addNode(board.boardId, "by A"))).isError).toBe(false);
+      const authored = await until(panel, (m) => m.session.author !== null);
+      expect(authored.session.author).toEqual({ pid: 5101, label: "repo-5101", mode: "pty", pending: false, notice: null });
+      expect(authored.session.readers).toBe(0);
+
+      const b = await sessionFor(5102);
+      const threadBefore = board.thread.length;
+      expect((await b.call("boards_open", { board_id: board.boardId })).isError).toBe(false);
+      const read = await until(panel, (m) => m.session.readers === 1);
+      expect(read.session.author?.pid).toBe(5101);
+      expect(board.thread.length).toBe(threadBefore);
+      expect(read.session.thread.some((e) => e.type === "call" && e.name === "boards_open")).toBe(false);
+
+      await a.close();
+      await b.close();
+      await panel.close();
+    });
+
+    it("a hello or a close on board X does not push to a panel on board Y", async () => {
+      const x = sessions.create("m5 hello X", rootDir);
+      const y = sessions.create("m5 hello Y", rootDir);
+      const onX = await connect(x.boardId);
+      const onY = await connect(y.boardId);
+      await onX.nextState();
+      await onY.nextState();
+      const host = createLinkHost(
+        { clients, mcpDeps: { sessions, clients, store, screenshots: () => screenshots, panelUrl: (id) => `http://127.0.0.1:${port}/?board=${id}` } },
+        bootBuild,
+      );
+      const seenOnY = onY.messages.length;
+      // A reconnect hello names X as its current board: X has one reader more.
+      const [, daemonSide] = InMemoryTransport.createLinkedPair();
+      let closeLink!: () => void;
+      const closed = new Promise<void>((r) => (closeLink = r));
+      const hello: Hello = { type: "hello", v: LINK_VERSION, pid: 5201, session_id: null, cwd: "/work/hello", build: bootBuild, current_board: x.boardId };
+      await host.accept({ transport: daemonSide, hello, closed });
+      await until(onX, (m) => m.session.readers === 1);
+      closeLink();
+      await until(onX, (m) => m.session.readers === 0);
+      expect(clients.get(5201)).toBeUndefined();
+      expect(onY.messages.length).toBe(seenOnY);
+
+      // A plain hello (no current board) and its close: still nothing on Y.
+      const closePlain = await sayHello(host, { pid: 5202, cwd: "/work/plain", build: bootBuild });
+      closePlain();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(clients.get(5202)).toBeUndefined();
+      await barrier(onY);
+      expect(onY.messages.length).toBe(seenOnY + 1);
+      await onX.close();
+      await onY.close();
+    });
+
+    it("a mode-off notice (the session_send cancel) reaches the panel as author.notice", async () => {
+      const { sessionSend } = await import("../../src/server/session-mode.js");
+      const board = sessions.create("m5 notice", rootDir);
+      const a = await sessionFor(5251);
+      expect((await a.call("canvas_add_node", addNode(board.boardId, "by A"))).isError).toBe(false);
+      hookEvent(clients, { hook_event_name: "PreToolUse", permission_mode: "auto", claude_pid: 5251 }, "0");
+      expect((await a.call("session_mode", { on: true })).isError).toBe(false);
+      const panel = await connect(board.boardId);
+      const ac = new AbortController();
+      const pending = sessionSend(clients, a.client, board, { text: "waiting" }, ac.signal);
+      await until(panel, (m) => !!m.session.author?.pending);
+      ac.abort();
+      expect(await pending).toMatchObject({ status: "idle" });
+      const s = await until(panel, (m) => m.session.author?.notice != null);
+      expect(s.session.author).toMatchObject({ pid: 5251, mode: "pty", pending: false, notice: "session_send cancelled from the terminal · mode pty" });
+      await a.close();
+      await panel.close();
+    });
+
+    it("board_release with the current pid clears the Author, returns the pending session_send as mode_off, and the old Author's next write fails", async () => {
+      const board = sessions.create("m5 release", rootDir);
+      const a = await sessionFor(5301);
+      expect((await a.call("canvas_add_node", addNode(board.boardId, "by A"))).isError).toBe(false);
+      hookEvent(clients, { hook_event_name: "PreToolUse", permission_mode: "auto", claude_pid: 5301 }, "0");
+      expect((await a.call("session_mode", { on: true })).isError).toBe(false);
+      const panel = await connect(board.boardId);
+      const pending = a.call("session_send", { text: "waiting on you" });
+      const waiting = await until(panel, (m) => !!m.session.author?.pending);
+      expect(waiting.session.author).toMatchObject({ pid: 5301, mode: "inkwire", pending: true });
+      const headBefore = board.state().history.head;
+
+      panel.send({ type: "board_release", pid: 5301 });
+      const released = await until(panel, (m) => m.session.author === null);
+      expect(released.session.released_from).toEqual({ pid: 5301, label: "repo-5301" });
+      expect((await pending).text).toContain("mode_off");
+      expect(clients.authorOf(board.boardId)).toBeNull();
+      expect(a.client.mode).toBe("pty");
+      // A release writes no history step.
+      expect(board.state().history.head).toBe(headBefore);
+      const refused = await a.call("canvas_add_node", addNode(board.boardId, "after release"));
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain("no longer the author");
+      expect(panel.messages.filter((m) => m.type === "error")).toEqual([]);
+      await a.close();
+      await panel.close();
+    });
+
+    it("board_release with a wrong pid gets error and a re-sync, and the Author does not change", async () => {
+      const board = sessions.create("m5 release race", rootDir);
+      const a = await sessionFor(5401);
+      await a.call("canvas_add_node", addNode(board.boardId, "by A"));
+      const panel = await connect(board.boardId);
+      await until(panel, (m) => m.session.author?.pid === 5401);
+      panel.send({ type: "board_release", pid: 9999 });
+      const { text, resync } = await errorThenResync(panel);
+      expect(text).toContain("pid 9999 is not the author");
+      expect(resync.session.author?.pid).toBe(5401);
+      expect(clients.authorOf(board.boardId)).toBe(5401);
+      await a.close();
+      await panel.close();
+    });
+
+    it("after board_release the push has released_from; board_allow with that pid clears it and the old Author can claim again; a wrong pid gets error and a re-sync", async () => {
+      const board = sessions.create("m5 allow", rootDir);
+      const a = await sessionFor(5501);
+      await a.call("canvas_add_node", addNode(board.boardId, "by A"));
+      const panel = await connect(board.boardId);
+      await until(panel, (m) => m.session.author?.pid === 5501);
+      panel.send({ type: "board_release", pid: 5501 });
+      await until(panel, (m) => m.session.released_from?.pid === 5501);
+
+      panel.send({ type: "board_allow", pid: 9999 });
+      const { text, resync } = await errorThenResync(panel);
+      expect(text).toContain("pid 9999 is not released");
+      expect(resync.session.released_from?.pid).toBe(5501);
+
+      panel.send({ type: "board_allow", pid: 5501 });
+      const allowed = await until(panel, (m) => m.session.released_from === null);
+      expect(allowed.session.author).toBeNull();
+      expect((await a.call("canvas_add_node", addNode(board.boardId, "allowed again"))).isError).toBe(false);
+      expect(clients.authorOf(board.boardId)).toBe(5501);
+      await until(panel, (m) => m.session.author?.pid === 5501);
+      await a.close();
+      await panel.close();
+    });
+
+    it("GET /api/boards gives each board its author: null with no Author, { label, pid } after a write", async () => {
+      const board = sessions.create("m5 listing", rootDir);
+      const list = async () =>
+        ((await (await fetch(`http://127.0.0.1:${port}/api/boards`)).json()) as { boards: { id: string; author: unknown }[] }).boards.find(
+          (b) => b.id === board.boardId,
+        );
+      expect((await list())?.author).toBeNull();
+      const a = await sessionFor(5601);
+      await a.call("canvas_add_node", addNode(board.boardId, "by A"));
+      expect((await list())?.author).toEqual({ label: "repo-5601", pid: 5601 });
+      await a.close();
+      expect((await list())?.author).toBeNull();
+    });
+
+    it("session_mode_off from a panel on board X does not change the mode of the Author of board Y", async () => {
+      const x = sessions.create("m5 off X", rootDir);
+      const y = sessions.create("m5 off Y", rootDir);
+      const b = await sessionFor(5702);
+      await b.call("canvas_add_node", addNode(y.boardId, "by B"));
+      hookEvent(clients, { hook_event_name: "PreToolUse", permission_mode: "auto", claude_pid: 5702 }, "0");
+      expect((await b.call("session_mode", { on: true })).isError).toBe(false);
+      const panel = await connect(x.boardId);
+      await panel.nextState();
+      panel.send({ type: "session_mode_off" });
+      panel.send({ type: "highlight_set", msg_id: null }); // a barrier: its push comes after the mode-off ran
+      await panel.nextState();
+      expect(b.client.mode).toBe("inkwire");
+      expect(panel.messages.filter((m) => m.type === "error")).toEqual([]);
+      await b.call("session_mode", { on: false });
+      await b.close();
+      await panel.close();
+    });
+
+    it("a newer build reaches every panel as daemon.stale with the boards and Clients; daemon_restart acts only on that build id", async () => {
+      const x = sessions.create("m5 stale X", rootDir);
+      const y = sessions.create("m5 stale Y", rootDir);
+      const onX = await connect(x.boardId);
+      const onY = await connect(y.boardId);
+      await onX.nextState();
+      await onY.nextState();
+      const before = restarts;
+
+      // No stale build yet: refused, and restart is not called.
+      onX.send({ type: "daemon_restart", build_id: "newer000newer000" });
+      expect((await errorThenResync(onX)).text).toContain("no restart");
+
+      const host = createLinkHost(
+        { clients, mcpDeps: { sessions, clients, store, screenshots: () => screenshots, panelUrl: (id) => `http://127.0.0.1:${port}/?board=${id}` } },
+        bootBuild,
+      );
+      const [, daemonSide] = InMemoryTransport.createLinkedPair();
+      let closeLink!: () => void;
+      const closed = new Promise<void>((r) => (closeLink = r));
+      const newer = { id: "newer000newer000", built_at: "2026-10-08T11:00:00.000Z" };
+      await host.accept({ transport: daemonSide, hello: { type: "hello", v: LINK_VERSION, pid: 5801, session_id: null, cwd: "/work/newer", build: newer }, closed });
+      for (const panel of [onX, onY]) {
+        const d = await untilDaemon(panel, (d) => d.stale !== null);
+        expect(d.build_id).toBe(bootBuild.id);
+        expect(d.stale).toMatchObject({ newer_build_id: newer.id, built_at: newer.built_at });
+        expect(d.stale!.boards).toEqual(expect.arrayContaining([{ id: x.boardId, name: "m5 stale X" }, { id: y.boardId, name: "m5 stale Y" }]));
+        expect(d.stale!.clients).toEqual(expect.arrayContaining([{ label: "newer", pid: 5801 }]));
+      }
+
+      onX.send({ type: "daemon_restart", build_id: "wrong000wrong000" });
+      expect((await errorThenResync(onX)).text).toContain("no restart");
+      expect(restarts).toBe(before);
+
+      onX.send({ type: "daemon_restart", build_id: newer.id });
+      onX.send({ type: "highlight_set", msg_id: null }); // a barrier
+      await onX.nextState();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(restarts).toBe(before + 1);
+      expect(onX.messages.filter((m) => m.type === "error")).toHaveLength(2);
+
+      closeLink();
+      clients.staleBuild = null;
+      clients.notify();
+      await untilDaemon(onY, (d) => d.stale === null);
+      await onX.close();
+      await onY.close();
+    });
+
+    it("while a newer build waits: a hello sends only the daemon field to other boards, a newly opened board joins the list, and a hook-only record is not a session", async () => {
+      const x = sessions.create("m5 wait X", rootDir);
+      const y = sessions.create("m5 wait Y", rootDir);
+      const onX = await connect(x.boardId);
+      const onY = await connect(y.boardId);
+      await onX.nextState();
+      await onY.nextState();
+      const host = linkHost();
+      const newer = { id: "later000later000", built_at: "2026-10-08T12:00:00.000Z" };
+      const closeNewer = await sayHello(host, { pid: 5901, cwd: "/work/later", build: newer });
+      await untilDaemon(onY, (d) => d.stale?.newer_build_id === newer.id);
+
+      // A plain hello while stale: Y gets the light daemon message, not a full state push.
+      const statesOnY = () => onY.messages.filter((m) => m.type === "state").length;
+      const before = statesOnY();
+      const closePlain = await sayHello(host, { pid: 5903, cwd: "/work/plain", build: bootBuild });
+      const d = await untilDaemon(onY, (d) => !!d.stale?.clients.some((c) => c.pid === 5903));
+      expect(d.stale!.clients).toEqual(expect.arrayContaining([{ label: "later", pid: 5901 }, { label: "plain", pid: 5903 }]));
+      expect(statesOnY()).toBe(before);
+
+      // A hook-only record (a hook event, no link, no hello) is not counted or listed.
+      hookEvent(clients, { hook_event_name: "Stop", permission_mode: "auto", claude_pid: 5902 }, "0");
+      expect(clients.peek(5902)).toBeDefined();
+
+      // A new board Z: the panel on X gets Z in daemon.stale.boards, with no Clients change.
+      const z = sessions.create("m5 wait Z", rootDir);
+      const withZ = await untilDaemon(onX, (d) => !!d.stale?.boards.some((b) => b.id === z.boardId));
+      expect(withZ.stale!.clients.map((c) => c.pid)).not.toContain(5902);
+      expect(withZ.stale!.clients.map((c) => c.pid)).toEqual(expect.arrayContaining([5901, 5903]));
+
+      clients.remove(5902);
+      closePlain();
+      closeNewer();
+      clients.staleBuild = null;
+      clients.notify();
+      await untilDaemon(onX, (d) => d.stale === null);
+      await onX.close();
+      await onY.close();
+    });
+
+    it("while a newer build waits, a board opened from the store (not created) joins daemon.stale.boards on the other panels", async () => {
+      const x = sessions.create("m5 open X", rootDir);
+      const onX = await connect(x.boardId);
+      await onX.nextState();
+      // A stored board that is not open: a second Sessions over the same store makes it.
+      const other = new Sessions(store);
+      const stored = other.create("m5 open stored", rootDir);
+      stored.persistNow();
+      expect(sessions.all().some((s) => s.boardId === stored.boardId)).toBe(false);
+
+      const closeNewer = await sayHello(linkHost(), { pid: 5951, cwd: "/work/open", build: { id: "open0000open0000", built_at: "2026-10-08T13:00:00.000Z" } });
+      await untilDaemon(onX, (d) => d.stale !== null);
+      const onStored = await connect(stored.boardId);
+      const d = await untilDaemon(onX, (d) => !!d.stale?.boards.some((b) => b.id === stored.boardId));
+      expect(d.stale!.boards).toContainEqual({ id: stored.boardId, name: "m5 open stored" });
+
+      await onStored.close();
+      closeNewer();
+      clients.staleBuild = null;
+      clients.notify();
+      await untilDaemon(onX, (d) => d.stale === null);
+      await onX.close();
+    });
   });
 });

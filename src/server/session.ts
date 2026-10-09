@@ -451,6 +451,7 @@ export class Sessions {
   private sessions = new Map<string, BoardSession>();
   private listeners = new Set<() => void>();
   private deleteListeners = new Set<(boardId: string) => void>();
+  private boardsListeners = new Set<() => void>();
 
   constructor(private store: Store, private deps: Omit<SessionDeps, "store"> = {}) {}
 
@@ -478,6 +479,16 @@ export class Sessions {
     return () => this.deleteListeners.delete(fn);
   }
 
+  /** The set of open boards changed: a board opened, was created, or was deleted. */
+  onBoards(fn: () => void): () => void {
+    this.boardsListeners.add(fn);
+    return () => this.boardsListeners.delete(fn);
+  }
+
+  private boardsChanged(): void {
+    for (const fn of this.boardsListeners) fn();
+  }
+
   /** True when the board is open or stored. */
   exists(boardId: string): boolean {
     const open = this.sessions.get(boardId);
@@ -492,6 +503,7 @@ export class Sessions {
     if (!stored) throw new Error(`board not found: ${boardId}`);
     const session = new BoardSession(stored, { store: this.store, ...this.deps });
     this.sessions.set(boardId, session);
+    this.boardsChanged();
     return session;
   }
 
@@ -508,6 +520,7 @@ export class Sessions {
     const stored = this.store.create(id, name, roots, now, content);
     const session = new BoardSession(stored, { store: this.store, ...this.deps });
     this.sessions.set(id, session);
+    this.boardsChanged();
     return session;
   }
 
@@ -563,6 +576,7 @@ export class Sessions {
     // Clients.boardDeleted: release the Author, clear every current board that
     // points here, and resolve a send blocked on this board with idle.
     for (const fn of this.deleteListeners) fn(boardId);
+    this.boardsChanged();
     return true;
   }
 

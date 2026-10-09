@@ -268,8 +268,10 @@ export function buildMcpServer(deps: McpDeps): McpServer {
           type: "text" as const,
           text: `You are the author of ${own}. Your current board is still ${own}. ${next}`,
         });
-      } else {
+      } else if (client.currentBoardId !== session.boardId) {
         client.currentBoardId = session.boardId;
+        // The reader counts of two boards changed: their panels redraw the strip.
+        clients.notify();
       }
       return result;
     },

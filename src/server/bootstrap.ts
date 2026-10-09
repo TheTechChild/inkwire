@@ -60,7 +60,7 @@ export function openCore(config: Config, http: Server, opts: CoreOptions = {}): 
       restart: opts.restart,
     }),
   );
-  const hub = new PanelHub(sessions, clients, { pluginRoot });
+  const hub = new PanelHub(sessions, clients, { pluginRoot, build: opts.build, restart: opts.restart });
   screenshots = new Screenshots(hub, store.imagesDir);
   routeUpgrades(http, { "/ws": (req, socket, head) => hub.handleUpgrade(req, socket, head), ...opts.upgrades });
   const port = () => {

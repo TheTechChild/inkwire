@@ -1,8 +1,10 @@
 // Session tab (handoff "Session"): mode strip, the thread with folded call
-// rows, and the composer. Mode, pending, thread and highlight come from the
-// server push; only the draft, dropped chips and open rows live here.
+// rows, and the composer. The board's Author (its mode and pending send), the
+// reader count, the thread and the highlight come from the server push; only
+// the draft, dropped chips and open rows live here.
 import { nextLetter } from "../core/layers.js";
 import { markCounts } from "../core/drafts.js";
+import type { AuthorPush } from "../shared/protocol.js";
 import type { ThreadEntry } from "../shared/types.js";
 import type { App } from "./app.js";
 import { el, focusedLayer } from "./app.js";
@@ -11,12 +13,61 @@ import { fmtTime, savePanelPrefs, toast } from "./panel.js";
 
 type Agent = "off" | "waiting" | "working";
 
-/** Derived, never stored: off in pty; waiting while a send is blocked on
- * this board; working otherwise (a send on another board counts as working here). */
-export function agentState(app: App): Agent {
+/** The board's Clients as the strip shows them. */
+export interface StripView {
+  author: AuthorPush | null;
+  readers: number;
+  releasedFrom: { pid: number; label: string } | null;
+  /** An older daemon sent the push: no author pid, so no Release or Allow control. */
+  legacy: boolean;
+}
+
+/** The push fields that a daemon from before M5 sends in place of author. */
+interface LegacySession {
+  mode?: AuthorPush["mode"];
+  pending?: boolean;
+  pending_board?: string | null;
+  notice?: string | null;
+}
+
+/**
+ * author, readers and released_from are optional: a new panel bundle can load
+ * from an older running daemon (M5.3). That daemon sends the mode and the
+ * pending send of the Client that talks here, with no pid.
+ */
+export function stripView(app: App): StripView {
   const s = app.push?.session;
-  if (!s || s.mode !== "inkwire") return "off";
-  return s.pending && s.pending_board === app.boardId ? "waiting" : "working";
+  if (!s) return { author: null, readers: 0, releasedFrom: null, legacy: false };
+  if (s.author === undefined) {
+    // An older daemon cannot say whether the board has an Author: a pty push looks the
+    // same with an Author in pty and with none. So never show NO AUTHOR here. Keep the
+    // old mode, pending send and notice (the idle timeout, a mode-on failure); pid 0
+    // stands for "unknown", and legacy hides the pid, Release and Allow.
+    const old = s as unknown as LegacySession;
+    const mode = old.mode ?? "pty";
+    const author: AuthorPush = {
+      pid: 0,
+      label: "claude code",
+      mode,
+      pending: mode === "inkwire" && !!old.pending && old.pending_board === app.boardId,
+      notice: old.notice ?? null,
+    };
+    return { author, readers: 0, releasedFrom: null, legacy: true };
+  }
+  return { author: s.author, readers: s.readers ?? 0, releasedFrom: s.released_from ?? null, legacy: false };
+}
+
+/** "content-collections · pid 48211" (Decision 8); a Client with no cwd is "pid N" alone. */
+export function clientLabel(c: { pid: number; label: string }): string {
+  return c.label === `pid ${c.pid}` ? c.label : `${c.label} · pid ${c.pid}`;
+}
+
+/** Derived, never stored: off with no Author or an Author in pty; waiting
+ * while the Author's send is blocked on this board; working otherwise. */
+export function agentState(app: App): Agent {
+  const a = stripView(app).author;
+  if (!a || a.mode !== "inkwire") return "off";
+  return a.pending ? "waiting" : "working";
 }
 
 export function setupSession(app: App): void {
@@ -34,6 +85,7 @@ export function setupSession(app: App): void {
   el("btn-send").addEventListener("click", () => send(app));
 }
 
+/** The reply box works only while the Author is in inkwire mode and its send waits on the person. */
 function canSend(app: App): boolean {
   return agentState(app) === "waiting" && app.draft.trim().length > 0;
 }
@@ -116,10 +168,12 @@ function pinThreadBottom(thread: HTMLElement): void {
 
 export function renderSession(app: App): void {
   const s = app.push?.session;
+  const view = stripView(app);
+  const author = view.author;
   const agent = agentState(app);
-  const inkwire = s?.mode === "inkwire";
+  const inkwire = author?.mode === "inkwire";
 
-  // Strip.
+  // Strip: the board's Author (label · pid, mode), the reader count, Release and Allow.
   const strip = el("modestrip");
   strip.className = inkwire ? "mode-strip on" : "mode-strip";
   strip.replaceChildren();
@@ -129,27 +183,75 @@ export function renderSession(app: App): void {
   col.className = "col";
   const kicker = document.createElement("span");
   kicker.className = "kicker";
-  kicker.textContent = inkwire ? `INKWIRE MODE · ${agent === "working" ? "CLAUDE CODE IS WORKING" : "WAITING ON YOU"}` : "PTY MODE";
+  kicker.textContent = !author
+    ? "NO AUTHOR"
+    : inkwire
+      ? `INKWIRE MODE · ${agent === "working" ? "CLAUDE CODE IS WORKING" : "WAITING ON YOU"}`
+      : "PTY MODE";
   const body = document.createElement("span");
   body.className = "body";
   body.textContent =
-    s?.notice ??
-    (inkwire
-      ? agent === "working"
-        ? "Turn open · calls fold in below as they land"
-        : "session_send is blocked on your reply · pty muted"
-      : "Replies go to the terminal until you resume here");
+    author?.notice ??
+    (!author
+      ? view.releasedFrom
+        ? "the next AI write from another session claims this board"
+        : "the next AI write claims this board"
+      : inkwire
+        ? agent === "working"
+          ? "Turn open · calls fold in below as they land"
+          : "session_send is blocked on your reply · pty muted"
+        : "Replies go to the terminal until you resume here");
   body.title = body.textContent;
   col.append(kicker, body);
+  const who: string[] = [];
+  if (author && !view.legacy) who.push(`${clientLabel(author)} · ${author.mode}`);
+  if (view.readers > 0) who.push(`${view.readers} ${view.readers === 1 ? "reader" : "readers"}`);
+  if (view.releasedFrom) who.push(`released ${clientLabel(view.releasedFrom)}`);
+  if (who.length) {
+    const line = document.createElement("span");
+    line.className = "who";
+    line.textContent = who.join(" · ");
+    line.title = "the author of this board · the other Claude Code sessions that have it open";
+    col.appendChild(line);
+  }
   strip.append(dot, col);
+  const actions = document.createElement("div");
+  actions.className = "strip-actions";
   if (inkwire) {
     const btn = document.createElement("button");
     btn.className = "btn btn-ghost mode-btn";
     btn.textContent = "/back-to-claude-code";
     btn.title = "flag off · pending session_send returns mode_off · terminal is focused";
     btn.addEventListener("click", () => app.send({ type: "session_mode_off" }));
-    strip.appendChild(btn);
+    actions.appendChild(btn);
   }
+  if (author && !view.legacy) {
+    const release = document.createElement("button");
+    release.className = "btn btn-ghost mode-btn";
+    release.textContent = "release";
+    release.title = `stop ${clientLabel(author)} from writing this board`;
+    release.addEventListener("click", () => {
+      const lines = [
+        `Release ${clientLabel(author)}?`,
+        "This Claude Code session stops being the author of this board. It can still read the board. It cannot write the board until you allow it again here, another session claims the board, or it disconnects.",
+      ];
+      if (author.pending) lines.push("Its pending session_send returns mode_off.");
+      if (!window.confirm(lines.join("\n\n"))) return;
+      // The server releases only when this pid is still the Author (race guard).
+      app.send({ type: "board_release", pid: author.pid });
+    });
+    actions.appendChild(release);
+  }
+  if (view.releasedFrom && !view.legacy) {
+    const released = view.releasedFrom;
+    const allow = document.createElement("button");
+    allow.className = "btn btn-ghost mode-btn";
+    allow.textContent = `Allow pid ${released.pid}`;
+    allow.title = `let ${clientLabel(released)} claim this board again with its next write`;
+    allow.addEventListener("click", () => app.send({ type: "board_allow", pid: released.pid }));
+    actions.appendChild(allow);
+  }
+  if (actions.childElementCount) strip.appendChild(actions);
 
   // Thread: rebuild only when something in it changed, then scroll to the end.
   const thread = el("thread");
@@ -167,7 +269,10 @@ export function renderSession(app: App): void {
   if (key !== threadKey) {
     threadKey = key;
     thread.replaceChildren();
-    for (const group of fold(entries)) thread.appendChild(group.length === 1 && group[0]!.type !== "call" ? messageCard(app, group[0]!) : callRow(app, group));
+    for (const group of fold(entries)) {
+      const first = group[0]!;
+      thread.appendChild(first.type === "call" && isAuthorRow(first) ? authorRow(first) : group.length === 1 && first.type !== "call" ? messageCard(app, first) : callRow(app, group));
+    }
     if (agent === "working") {
       const w = document.createElement("div");
       w.className = "working";
@@ -227,15 +332,30 @@ export function renderSession(app: App): void {
   el<HTMLButtonElement>("btn-send").disabled = !canSend(app);
 }
 
-/** Runs of calls fold into one group; every message is a group of one. */
+/** An author switch (M3.5): "claude moved to <id>" or "claude is now the author". */
+function isAuthorRow(e: ThreadEntry): boolean {
+  return e.type === "call" && e.name === "author";
+}
+
+/** Runs of calls fold into one group; every message and every author switch is a group of one. */
 function fold(entries: ThreadEntry[]): ThreadEntry[][] {
   const groups: ThreadEntry[][] = [];
   for (const e of entries) {
     const last = groups.at(-1);
-    if (e.type === "call" && last && last[0]!.type === "call") last.push(e);
+    if (e.type === "call" && !isAuthorRow(e) && last && last[0]!.type === "call" && !isAuthorRow(last[0]!)) last.push(e);
     else groups.push([e]);
   }
   return groups;
+}
+
+/** An author switch reads as a line of its own in the thread, never folded into the tool calls. */
+function authorRow(e: Extract<ThreadEntry, { type: "call" }>): HTMLElement {
+  const div = card(e.id, "author-row");
+  div.innerHTML = `<span class="glyph">◇</span><span class="text"></span><span class="time"></span>`;
+  (div.children[1] as HTMLElement).textContent = e.text;
+  (div.children[2] as HTMLElement).textContent = fmtTime(e.at);
+  div.title = "the author of this board changed";
+  return div;
 }
 
 function card(id: string, cls: string): HTMLDivElement {

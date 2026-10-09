@@ -3,7 +3,7 @@ import { connectWs } from "./ws-client.js";
 import { renderTrace, renderWorld, setupCanvas } from "./canvas.js";
 import { loadPanelPrefs, renderPanel, setupPanel } from "./panel.js";
 import { renderNotebook, setupNotebook } from "./notebook.js";
-import { setupSession } from "./session.js";
+import { clientLabel, setupSession } from "./session.js";
 import { el, type App } from "./app.js";
 
 const boardId = new URLSearchParams(location.search).get("board");
@@ -73,8 +73,18 @@ async function showBoardPicker(): Promise<void> {
   document.body.appendChild(wrap);
   try {
     const res = await fetch("/api/boards");
+    // root and author are optional: an older daemon does not send them.
     const { boards } = (await res.json()) as {
-      boards: { id: string; name: string; nodes: number; edges: number; updated_at: number }[];
+      boards: {
+        id: string;
+        name: string;
+        nodes: number;
+        edges: number;
+        updated_at: number;
+        project_root?: string;
+        root?: "unset";
+        author?: { label: string; pid: number } | null;
+      }[];
     };
     if (boards.length === 0) {
       const p = document.createElement("p");
@@ -87,6 +97,12 @@ async function showBoardPicker(): Promise<void> {
       a.href = `/?board=${encodeURIComponent(b.id)}`;
       a.style.cssText = "display:block;padding:10px 0;border-bottom:1px solid var(--color-divider)";
       a.textContent = `${b.name} — ${b.nodes} nodes · ${b.edges} edges (${b.id})`;
+      const meta = document.createElement("div");
+      meta.style.cssText = "font-family:var(--font-mono);font-size:11px;color:var(--color-neutral-600);margin-top:4px";
+      const root = b.root === "unset" ? "root: unset" : (b.project_root ?? "");
+      const author = b.author === undefined ? "" : b.author ? `author ${clientLabel(b.author)}` : "no author";
+      meta.textContent = [root, author].filter(Boolean).join(" · ");
+      if (meta.textContent) a.appendChild(meta);
       wrap.appendChild(a);
     }
   } catch {

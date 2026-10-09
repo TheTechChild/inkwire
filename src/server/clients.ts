@@ -169,6 +169,26 @@ export class Clients {
     return this.byPid.get(pid);
   }
 
+  /**
+   * The records as they are, with no sweep. For the panel push: a sweep can
+   * remove a Client and notify, and the push runs inside notify.
+   */
+  peek(pid: number): Client | undefined {
+    return this.byPid.get(pid);
+  }
+
+  peekAll(): Client[] {
+    return [...this.byPid.values()];
+  }
+
+  /**
+   * The Clients with an open link, with no sweep. A hook-only record has no
+   * link: a restart does not close it, and it cannot hold a pending send.
+   */
+  peekLinked(): Client[] {
+    return [...this.byPid.values()].filter((c) => this.links.has(c.pid));
+  }
+
   bySessionId(id: string | undefined | null): Client | undefined {
     if (!id) return undefined;
     this.sweep();
@@ -323,7 +343,11 @@ export class Clients {
     this.checkSwitch(c, boardId);
     this.checkWrite(c, boardId);
     if (this.authorOf(boardId) === c.pid) {
-      c.currentBoardId = boardId;
+      if (c.currentBoardId !== boardId) {
+        c.currentBoardId = boardId;
+        // The board c read before has one reader less.
+        this.notify();
+      }
       return;
     }
     const earlier = this.authoredBy(c);
@@ -432,6 +456,8 @@ export class Clients {
       return;
     }
     c.currentBoardId = boardId;
+    // The board has one reader more.
+    this.notify();
     const author = this.authorOf(boardId);
     if (author !== null && author !== c.pid) {
       this.addNotice(c, `${head} Your current board is still ${boardId}. ${boardId} now has another author (${this.labelOf(author)}). You can read it.`);
