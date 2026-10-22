@@ -1,7 +1,8 @@
 // Clients: the daemon's record of each connected Claude Code session (CONTEXT.md
 // "Client"), keyed by the Claude Code pid (ADR 0001). Each Client holds its own
-// current board, session mode, hook report, pending session_send and Stop block
-// count. Clients also holds the Author of each board (ADR 0002), the pid the
+// current board, session mode, hook report, pending session_send, Stop block
+// count, and the mod state of ADR 0004 (liveness, the awaited reply, the
+// inbox). Clients also holds the Author of each board (ADR 0002), the pid the
 // person released from each board, the panel notice of each board, and the
 // one-time notices of each Client (M3.5). No direct I/O here: Clients reaches
 // boards only through Sessions (which can load a board from the store and push
@@ -29,6 +30,17 @@ export interface PendingSend {
   timer: NodeJS.Timeout;
 }
 
+/** A person's reply that waits for the mod to submit it as the next user prompt (ADR 0004). */
+export interface ModReply {
+  /** The id of the `you` Thread row. */
+  id: string;
+  /** The reply text, the `inkwire ctx:` line, and the answer line. */
+  prompt: string;
+}
+
+/** A Client has a live mod while the mod reached the daemon for it in this time (ADR 0004). */
+export const MOD_TTL_MS = 45_000;
+
 export interface Client {
   /** The Claude Code pid: the one id of a Client. Stable across /clear and /resume. */
   readonly pid: number;
@@ -47,6 +59,20 @@ export interface Client {
   pending: PendingSend | null;
   /** Consecutive Stop blocks with no session_send in between: the loop ceiling. */
   blocks: number;
+  /** When the mod's view loop last polled the daemon for this Client; null when it never did (ADR 0004). */
+  mod: { at: number } | null;
+  /** When the mod last sent a hook event for this Client; null when it never did (ADR 0004). */
+  modHookAt: number | null;
+  /** Mod delivery: a session_send returned delivered and the person has not replied yet. */
+  awaiting: boolean;
+  /**
+   * Mod delivery: a session_send returned delivered in this turn. The next
+   * UserPromptSubmit clears it. While it is true, Stop lets the turn end, also
+   * when the person replied before the Stop came.
+   */
+  delivered: boolean;
+  /** Mod delivery: the person's replies that the mod has not taken yet. */
+  inbox: ModReply[];
 }
 
 export interface ClientInit {
@@ -126,6 +152,11 @@ export class Clients {
         hook: null,
         pending: null,
         blocks: 0,
+        mod: null,
+        modHookAt: null,
+        awaiting: false,
+        delivered: false,
+        inbox: [],
       };
       this.byPid.set(pid, c);
       if (!this.links.has(pid)) this.hookOnlySince.set(pid, this.now());
@@ -139,6 +170,39 @@ export class Clients {
     if (c.build === null && init.build) c.build = init.build;
     if (c.termProgram === null && init.termProgram) c.termProgram = init.termProgram;
     return c;
+  }
+
+  /** The mod's view loop polled the daemon for c now (ADR 0004). Only GET /api/mod/view calls this. */
+  markMod(c: Client): void {
+    c.mod = { at: this.now() };
+  }
+
+  /** The mod sent a hook event for c now (ADR 0004). */
+  markModHook(c: Client): void {
+    c.modHookAt = this.now();
+  }
+
+  /**
+   * True while the mod's view loop polled for c in the last MOD_TTL_MS. Only a
+   * running loop can take the inbox, so this picks the delivery model.
+   */
+  hasLiveMod(c: Client): boolean {
+    return c.mod !== null && this.now() - c.mod.at < MOD_TTL_MS;
+  }
+
+  /**
+   * True while the mod answers the hook events of c: its loop is live, or it
+   * sent a hook event in the last MOD_TTL_MS. Then a forward.sh event only rekeys.
+   */
+  modAnswersHooks(c: Client): boolean {
+    return this.hasLiveMod(c) || (c.modHookAt !== null && this.now() - c.modHookAt < MOD_TTL_MS);
+  }
+
+  /** Mode off: no reply is awaited, and the replies that the mod did not take are dropped. */
+  clearMod(c: Client): void {
+    c.awaiting = false;
+    c.delivered = false;
+    c.inbox = [];
   }
 
   /** A link (a relay) for pid opened. It cancels the hook-only TTL. */
@@ -189,11 +253,22 @@ export class Clients {
     return [...this.byPid.values()].filter((c) => this.links.has(c.pid));
   }
 
+  /**
+   * The one Client with this session id. Two Claude Code processes can have
+   * the same id (a session resumed while it is still open in another
+   * terminal). Then the id names no Client, and the mod of each falls back to
+   * forward.sh and the blocking model.
+   */
   bySessionId(id: string | undefined | null): Client | undefined {
     if (!id) return undefined;
     this.sweep();
-    for (const c of this.byPid.values()) if (c.sessionId === id) return c;
-    return undefined;
+    let found: Client | undefined;
+    for (const c of this.byPid.values()) {
+      if (c.sessionId !== id) continue;
+      if (found) return undefined;
+      found = c;
+    }
+    return found;
   }
 
   all(): Client[] {
@@ -245,6 +320,7 @@ export class Clients {
         // The send can never be answered: hand the conversation back to the terminal.
         c.mode = "pty";
         c.blocks = 0;
+        this.clearMod(c);
         this.resolvePending(c, { status: "idle" });
         this.noticeByBoard.set(boardId, "board deleted · mode pty");
       }

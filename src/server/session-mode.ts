@@ -1,6 +1,6 @@
 // Session mode (handoff "Session"): each Client's flag, the blocking
-// session_send, the Claude Code hook endpoint, and the thread entries they
-// produce. Shared by the MCP tools, the WS intents, and the HTTP hook route.
+// session_send (or mod delivery, ADR 0004), the Claude Code hook endpoint, and
+// the thread entries they produce. Shared by the MCP tools, the WS intents, and the HTTP hook route.
 // The hook script is a dumb forwarder; every decision is made here.
 import { execFile } from "node:child_process";
 import type { Highlight } from "../shared/types.js";
@@ -15,11 +15,13 @@ const NOTEBOOK_LINE =
   "Four pointers say where to look. A notebook is where you write about them: markdown on the board, with `[[id]]` refs that resolve live. Never put prose on the canvas — there is no note kind.";
 
 export const MODE_ON_INSTRUCTION =
-  `inkwire mode is on: deliver replies with session_send and end your turn only after it returns. Four pointers: highlight = point at a set, layer = keep a cut, path = explain an order, draft = propose a change. ${NOTEBOOK_LINE}`;
+  `inkwire mode is on: deliver replies with session_send and end your turn only after it returns. When it returns delivered, end your turn at once: the reply comes as your next prompt, with an \`inkwire ctx:\` line. Four pointers: highlight = point at a set, layer = keep a cut, path = explain an order, draft = propose a change. ${NOTEBOOK_LINE}`;
 const STOP_REASON =
   `inkwire mode is on: the human is in the inkwire panel, not the terminal. Deliver this reply with session_send(text, highlight?, path?, draft?, notebook?) and end your turn only after it returns. ${NOTEBOOK_LINE}`;
 const IDLE_NOTICE = "claude code timed out · say something in the terminal";
 const MODE_OFF_NOTE = "user returned to the terminal; reply in the PTY";
+const DELIVERED_NOTE =
+  "delivered to the inkwire panel. End your turn now. The reply comes as your next prompt, with an `inkwire ctx:` line.";
 /** Stop blocks in a row with no session_send between them before the server gives up. */
 const BLOCK_CEILING = 3;
 const AUTO_MODES = new Set(["auto", "bypassPermissions"]);
@@ -43,7 +45,7 @@ export function sessionMode(
   client: Client,
   on: boolean,
   deps: ModeDeps = {},
-): { mode: "pty" | "inkwire"; hook: string; instruction?: string } {
+): { mode: "pty" | "inkwire"; hook: string; delivery?: "mod" | "block"; instruction?: string } {
   if (on) {
     const h = client.hook;
     const root = deps.pluginRoot ?? "<inkwire repo>";
@@ -52,16 +54,10 @@ export function sessionMode(
         `no hook event has reached the server, so the Stop hook is not installed. Relaunch with the inkwire plugin: claude --plugin-dir ${root} --permission-mode auto`,
       );
     }
-    if (!AUTO_MODES.has(h.permissionMode)) {
-      throw new Error(
-        `permission mode is ${h.permissionMode}; the human cannot approve prompts from the panel. Relaunch with: claude --permission-mode auto (or bypassPermissions)`,
-      );
-    }
-    if (h.autoBackground !== "0") {
-      throw new Error(
-        `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS is ${h.autoBackground}; Claude Code would move session_send to a background task after 2 minutes. Relaunch with: CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0 claude --permission-mode auto`,
-      );
-    }
+    // ADR 0004: with a live mod nothing blocks, and the person sees permission prompts beside the pane.
+    const mod = clients.hasLiveMod(client);
+    const problem = mod ? null : blockingProblem(h);
+    if (problem) throw new Error(problem);
     const boardId = client.currentBoardId;
     if (!boardId) throw new Error("no board is open — call boards_open first, then turn the mode on");
     // ADR 0002: in inkwire mode, nothing the Client does can claim another board.
@@ -72,18 +68,42 @@ export function sessionMode(
     if (clients.authorOf(boardId) !== client.pid) throw new Error(`board not found: ${boardId}`);
     const talking = clients.talkingOn(boardId);
     if (talking && talking !== client) throw new Error(`internal: ${clients.labelOf(talking.pid)} already talks on ${boardId}`);
+    // A repeated "on" keeps the awaited reply and the inbox: only the change from pty starts them clean.
+    if (client.mode !== "inkwire") clients.clearMod(client);
     client.mode = "inkwire";
     clients.noticeByBoard.delete(boardId);
     client.blocks = 0;
     clients.notify();
-    record(clients, "session_mode", "on · permission mode is auto, flag on. Stop hook armed.", { mode: "inkwire", hook: "Stop" }, boardId);
-    return { mode: "inkwire", hook: "Stop", instruction: MODE_ON_INSTRUCTION };
+    const delivery = mod ? "mod" : "block";
+    record(
+      clients,
+      "session_mode",
+      mod ? "on · the pane delivers replies, flag on. Stop hook armed." : "on · permission mode is auto, flag on. Stop hook armed.",
+      { mode: "inkwire", hook: "Stop", delivery },
+      boardId,
+    );
+    return { mode: "inkwire", hook: "Stop", delivery, instruction: MODE_ON_INSTRUCTION };
   }
   const released = modeOff(clients, client, null, { status: "mode_off", note: MODE_OFF_NOTE }, "session_mode", (r) =>
     r ? "off · the pending session_send returned mode_off; terminal focus requested." : "off · replies go to the terminal; terminal focus requested.",
   );
   (deps.focusTerminal ?? focusTerminal)(terminalProgram(client));
   return { mode: "pty", hook: "released", ...(released ? { pending_send: { status: "mode_off" } } : {}) };
+}
+
+/**
+ * Why the blocking session_send cannot run in this session, or null when it
+ * can: the human cannot approve prompts from the panel, or Claude Code would
+ * move the blocked call to a background task.
+ */
+function blockingProblem(h: { permissionMode: string; autoBackground: string }): string | null {
+  if (!AUTO_MODES.has(h.permissionMode)) {
+    return `permission mode is ${h.permissionMode}; the human cannot approve prompts from the panel. Relaunch with: claude --permission-mode auto (or bypassPermissions)`;
+  }
+  if (h.autoBackground !== "0") {
+    return `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS is ${h.autoBackground}; Claude Code would move session_send to a background task after 2 minutes. Relaunch with: CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0 claude --permission-mode auto`;
+  }
+  return null;
 }
 
 /**
@@ -102,6 +122,7 @@ function modeOff(
   const boardId = client.pending?.boardId ?? clients.authoredBy(client);
   client.mode = "pty";
   client.blocks = 0;
+  clients.clearMod(client);
   if (boardId) {
     if (notice) clients.noticeByBoard.set(boardId, notice);
     else clients.noticeByBoard.delete(boardId);
@@ -129,7 +150,10 @@ export interface SendArgs {
 }
 
 /** Append the agent's message, light the highlight, then block until the
- * human replies, the mode flips off, or the timeout fires. */
+ * human replies, the mode flips off, or the timeout fires. With a live mod
+ * (ADR 0004) it returns delivered at once and the Client awaits the reply.
+ * Without a live mod, in a session that cannot block (permission mode not
+ * auto, or backgrounding not 0), it turns the mode off and returns mode_off. */
 export function sessionSend(
   clients: Clients,
   client: Client,
@@ -146,6 +170,15 @@ export function sessionSend(
     throw new Error(`session_send must go to the board you talk on${own ? ` (${own})` : ""}, not ${session.boardId}`);
   }
   if (client.pending) throw new Error("a session_send is already pending; one turn at a time");
+  // The mode went on with a live mod, so the blocking model was never checked.
+  // Without the mod now, a session that cannot block goes back to the terminal.
+  const mod = clients.hasLiveMod(client);
+  const problem = mod || !client.hook ? null : blockingProblem(client.hook);
+  if (problem) {
+    const note = `the inkwire pane is not running, and this session cannot wait for a reply: ${problem}. Reply in the terminal.`;
+    modeOff(clients, client, "the claude code pane stopped · mode pty", { status: "mode_off", note }, "session_send", () => "the pane stopped and this session cannot block · mode pty");
+    return Promise.resolve({ status: "mode_off", note });
+  }
 
   const warnings: string[] = [];
   let highlight: Highlight | undefined;
@@ -211,6 +244,18 @@ export function sessionSend(
   if (notebook) session.setActiveNotebook(notebook, "ai");
   client.blocks = 0;
 
+  if (mod) {
+    // Mod delivery: no timer, no pending send. The reply goes to the inbox, and the mod submits it.
+    client.awaiting = true;
+    client.delivered = true;
+    clients.notify();
+    const delivered: SendResult = { status: "delivered", note: DELIVERED_NOTE };
+    return Promise.resolve(warnings.length ? { ...delivered, warnings } : delivered);
+  }
+  // The blocking model: the reply resolves this send, so nothing is awaited.
+  client.awaiting = false;
+  client.delivered = false;
+
   return new Promise<SendResult & { warnings?: string[] }>((resolve) => {
     const timer = setTimeout(() => {
       // Idle: nobody answered. Back to the terminal so the Stop hook lets the turn end.
@@ -236,7 +281,9 @@ export function sessionSend(
 }
 
 /** The human's reply from the composer: chips from ids, then release the send
- * of the Client that talks on this board. No other Client gets it. */
+ * of the Client that talks on this board. No other Client gets it. With no
+ * pending send but an awaited reply (ADR 0004), the reply goes to the inbox
+ * as a prompt for the mod to submit. */
 export function sessionReply(
   clients: Clients,
   session: BoardSession,
@@ -252,7 +299,12 @@ export function sessionReply(
   const talker = clients.talkingOn(session.boardId);
   if (!talker) throw new Error("pty mode: no Claude Code session talks on this board; replies go to the terminal");
   // talkingOn(board) is the board's Author, and sessionSend accepts only that board, so a pending send is always on this board.
-  if (!talker.pending) throw new Error("no session_send is pending; claude code is still working");
+  if (!talker.pending) {
+    if (!talker.awaiting) throw new Error("no session_send is pending; claude code is still working");
+    if (!clients.hasLiveMod(talker)) {
+      throw new Error("the claude code pane is not running, so it cannot deliver this reply; type it in the terminal");
+    }
+  }
   const c = session.collections();
   const ctx: { label: string; title: string }[] = [];
   const layer = args.focus ? session.layers.find((l) => l.id === args.focus) : undefined;
@@ -291,19 +343,27 @@ export function sessionReply(
     }
   }
   ctx.push({ label: `rev ${session.graphRevision}`, title: "graph.revision the message was written against" });
-  session.addThread({ type: "you", text: args.text, ctx });
-  clients.resolvePending(talker, {
-    status: "reply",
-    reply: args.text,
-    ctx: {
-      focus: layer ? layer.id : null,
-      selection: selected,
-      trace,
-      draft,
-      notebook,
-      revision: session.graphRevision,
-    },
-  });
+  const row = session.addThread({ type: "you", text: args.text, ctx });
+  const ids = {
+    focus: layer ? layer.id : null,
+    selection: selected,
+    trace,
+    draft,
+    notebook,
+    revision: session.graphRevision,
+  };
+  if (talker.pending) {
+    clients.resolvePending(talker, { status: "reply", reply: args.text, ctx: ids });
+    return;
+  }
+  talker.inbox.push({ id: row.id, prompt: modPrompt(args.text, { ...ids, board: session.boardId }) });
+  talker.awaiting = false;
+  clients.notify();
+}
+
+/** The prompt the mod submits: the reply, one line of ids as JSON, then the answer line (ADR 0004). */
+export function modPrompt(text: string, ids: Record<string, unknown>): string {
+  return `${text}\ninkwire ctx: ${JSON.stringify(ids)}\nAnswer with session_send.`;
 }
 
 export interface HookInput {
@@ -314,24 +374,53 @@ export interface HookInput {
   stop_hook_active?: boolean;
   /** The Claude Code pid that hooks/forward.sh found (the ?pid= query); null when it found none. */
   claude_pid?: number | null;
+  /** "mod" when the mod sent the event (the ?via=mod query, ADR 0004); absent from forward.sh. */
+  via?: "mod";
+  /** Mod events: the session id the mod knew before SessionStart clear or resume. */
+  prev_session_id?: string;
 }
 
 /**
- * One endpoint for every Claude Code hook event. The event goes to the Client
- * of its Claude Code pid (created when it is new), else to the Client with its
- * session id, else nowhere. Returns what the shell forwarder should do: block
- * the stop with a reason, add context, or nothing.
+ * One endpoint for every Claude Code hook event. A forward.sh event goes to
+ * the Client of its Claude Code pid (created when it is new), else to the
+ * Client with its session id, else nowhere. A mod event (ADR 0004) goes to the
+ * Client with its session id, else to the Client with its prev_session_id, and
+ * never makes a Client. A forward.sh event with a pid sets the Client's session
+ * id to the event's. While the mod answers the hooks of a Client
+ * (modAnswersHooks), a forward.sh event only rekeys. Stop lets the turn end
+ * while a reply is awaited or was delivered in this turn, but only while the
+ * mod's loop is live. Returns what the forwarder should do: block the stop
+ * with a reason, add context, or nothing.
  */
 export function hookEvent(
   clients: Clients,
   input: HookInput,
   autoBackground: string,
 ): { block?: string; context?: string } {
-  const client =
-    typeof input.claude_pid === "number"
-      ? clients.ensure(input.claude_pid, { sessionId: input.session_id ?? null })
-      : clients.bySessionId(input.session_id);
-  if (!client) return {};
+  const rekeys = (input.source === "clear" || input.source === "resume") && input.hook_event_name === "SessionStart" && !!input.session_id;
+  let client: Client | undefined;
+  if (input.via === "mod") {
+    client = clients.bySessionId(input.session_id);
+    if (!client && typeof input.prev_session_id === "string") client = clients.bySessionId(input.prev_session_id);
+    if (!client) return {};
+    clients.markModHook(client);
+  } else {
+    client =
+      typeof input.claude_pid === "number"
+        ? clients.ensure(input.claude_pid, { sessionId: input.session_id ?? null })
+        : clients.bySessionId(input.session_id);
+    if (!client) return {};
+    // The pid is the true key: the session id of every event is the current
+    // one. A Client that a hello made after /clear holds the launch id.
+    if (typeof input.claude_pid === "number" && input.session_id && client.sessionId !== input.session_id) {
+      clients.rekey(client.pid, input.session_id);
+    }
+    if (clients.modAnswersHooks(client)) {
+      // The mod already answered this event: no hook report, no block count.
+      if (rekeys) clients.rekey(client.pid, input.session_id!);
+      return {};
+    }
+  }
   client.hook = {
     permissionMode: input.permission_mode ?? "unknown",
     autoBackground,
@@ -341,6 +430,16 @@ export function hookEvent(
   switch (input.hook_event_name) {
     case "Stop": {
       if (client.mode !== "inkwire") return {};
+      if (client.awaiting || client.delivered) {
+        // Mod delivery: the turn ends, and the reply comes as a new prompt. A
+        // reply that came before this Stop is in the inbox or the mod's outbox.
+        if (clients.hasLiveMod(client)) return {};
+        // The mod's loop stopped: nothing can deliver the reply. Use the
+        // blocking model's rules, so session_send blocks (or turns the mode off).
+        client.awaiting = false;
+        client.delivered = false;
+        clients.notify();
+      }
       client.blocks++;
       if (client.blocks > BLOCK_CEILING) {
         modeOff(clients, client, "claude code kept replying to the terminal · mode pty", { status: "idle" }, "session_mode", () => `off · ${BLOCK_CEILING} stops in a row without a session_send`);
@@ -348,9 +447,17 @@ export function hookEvent(
       }
       return { block: STOP_REASON };
     }
+    case "UserPromptSubmit":
+      // The person typed in the terminal (or the mod submitted a reply): a new turn, and no reply is awaited now.
+      client.delivered = false;
+      if (client.awaiting) {
+        client.awaiting = false;
+        clients.notify();
+      }
+      return {};
     case "SessionStart":
       // /clear and /resume give a new session id inside the same Claude Code process.
-      if ((input.source === "clear" || input.source === "resume") && input.session_id) clients.rekey(client.pid, input.session_id);
+      if (rekeys) clients.rekey(client.pid, input.session_id!);
       // After compaction the agent gets its board back (M3.5), and the instruction when it talks in the panel.
       if (input.source !== "compact") return {};
       return { context: client.mode === "inkwire" ? `${clients.contextLine(client)}\n${MODE_ON_INSTRUCTION}` : clients.contextLine(client) };

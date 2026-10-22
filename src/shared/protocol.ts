@@ -180,8 +180,13 @@ export interface AuthorPush {
   pid: number;
   label: string;
   mode: import("./types.js").SessionMode;
-  /** A session_send of the Author is blocked on the person, on this board. */
+  /** The Author waits on the person, on this board: a blocked session_send, or mod delivery's awaited reply. */
   pending: boolean;
+  /**
+   * Mod delivery (ADR 0004): the Author waits for a reply, with no blocked send.
+   * Absent from an older daemon.
+   */
+  awaiting?: boolean;
   /** Strip body override: a mode-on failure or the idle timeout. */
   notice: string | null;
 }

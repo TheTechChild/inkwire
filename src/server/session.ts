@@ -441,7 +441,9 @@ export type SendResult =
       };
     }
   | { status: "mode_off"; note: string }
-  | { status: "idle" };
+  | { status: "idle" }
+  /** Mod delivery (ADR 0004): the message is posted and the turn ends; the reply comes as the next prompt. */
+  | { status: "delivered"; note: string };
 
 export type { HookReport } from "./clients.js";
 
