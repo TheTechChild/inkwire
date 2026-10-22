@@ -127,8 +127,8 @@ Claude Code installs each update into a new folder and removes an old folder 14 
 ### To the shared daemon
 
 1. Close all Claude Code sessions that use the old inkwire server. If an old session holds port 4691, the new relay stops with "port 4691 is held by an old inkwire server; close the old Claude Code sessions".
-2. Run `yarn build` and install the plugin update. `yarn build` deletes `dist/` first, so the old `dist/server/index.js` is gone and an old `.mcp.json` (step 3) fails with a missing-file error. It does not start a hidden old server.
-3. A project `.mcp.json` that starts inkwire with `node .../dist/server/index.js` must change its args to `.../dist/link/relay.js`. Also remove `INKWIRE_PROJECT_ROOT` from its env: it has no effect now.
+2. Install the plugin from the GitHub marketplace (see [Quick start](#quick-start) and [To run from source](#to-run-from-source)).
+3. A project `.mcp.json` that starts the old server (`node .../dist/server/index.js`) must change to `"command": "sh"` with the args `.../plugin/src/link/relay.sh`. Also remove `INKWIRE_PROJECT_ROOT` from its env: it has no effect now.
 4. Start one new Claude Code session and do the post-migration step.
 
 **Post-migration step:** run `boards_list` and set a root on every `root: unset` board with `boards_update`. At migration time this is one board, `b_8946f6` "Discover Config API — generateDiscoverConfig", root `/Users/clayton.noyes/angel-studios` (its 8 refs all start with `content-collections/`; verified 2026-10-08).
