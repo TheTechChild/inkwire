@@ -8,6 +8,7 @@ import { playableHops } from "../core/layers.ts";
 import { findPath, openTrace } from "./layers.ts";
 import { findDraft } from "./drafts.ts";
 import { findNotebook } from "./notebooks.ts";
+import { isInstalledRoot } from "./build-info.ts";
 import type { BoardSession, SendResult } from "./session.ts";
 import type { Client, Clients, ReleaseReason } from "./clients.ts";
 
@@ -34,10 +35,8 @@ export interface ModeDeps {
   pluginRoot?: string;
 }
 
-/** True when a plugin root is a Claude Code install (~/.claude/plugins/cache/...), not a checkout. */
-export function isInstalledRoot(root: string): boolean {
-  return /[\\/]plugins[\\/]cache[\\/]/.test(root);
-}
+/** True when a plugin root is a Claude Code install, not a checkout (build-info.ts). */
+export { isInstalledRoot };
 
 /** The error of session_mode(on) when no hook event came. */
 export function noHookError(pluginRoot: string | undefined): string {

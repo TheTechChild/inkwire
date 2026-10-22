@@ -188,7 +188,7 @@ describe("daemon in-process", () => {
     }
   });
 
-  it("the build registry orders the builds: first_seen wins over the built_at of the hello (Decision 7)", async () => {
+  it("the build registry orders the builds: last_seen wins over the built_at of the hello (Decision 7)", async () => {
     const dir = tempDir("daemon-registry");
     const srcDir = path.join(dir, "src");
     mkdirSync(path.join(srcDir, "server"), { recursive: true });
@@ -196,12 +196,16 @@ describe("daemon in-process", () => {
     const d = (await startDaemon({ config: { port: 0, dataDir: dir, idleGraceMs: null }, srcDir, exit: () => {} }))!;
     const bootAt = Date.parse(d.build.built_at!);
     // Registered by their relays: one build before the daemon's, one after it. A
-    // registry entry needs its daemon entry on disk, else the next register removes it.
-    const other = path.join(dir, "other");
-    mkdirSync(path.join(other, "src", "server"), { recursive: true });
-    writeFileSync(path.join(other, "src", "server", "daemon.ts"), "\n");
-    registerBuild(dir, "before0000000000", other, new Date(bootAt - 86_400_000));
-    registerBuild(dir, "after00000000000", other, new Date(bootAt + 86_400_000));
+    // registry entry needs its daemon entry on disk, else the next register removes
+    // it, and one folder holds one build, so each build has its own folder.
+    const folder = (name: string) => {
+      const other = path.join(dir, name);
+      mkdirSync(path.join(other, "src", "server"), { recursive: true });
+      writeFileSync(path.join(other, "src", "server", "daemon.ts"), "\n");
+      return other;
+    };
+    registerBuild(dir, "before0000000000", folder("before"), { now: new Date(bootAt - 86_400_000) });
+    registerBuild(dir, "after00000000000", folder("after"), { now: new Date(bootAt + 86_400_000) });
     // The hellos say the reverse.
     const before = await linkClient(d.port, 7101, { build: { id: "before0000000000", built_at: "2999-01-01T00:00:00.000Z" } });
     try {
@@ -228,11 +232,11 @@ describe("daemon in-process", () => {
     const boot = readBuildInfo(srcDir);
     const d = (await startDaemon({ config: { port: 0, dataDir: dir, idleGraceMs: null }, srcDir, exit: () => {} }))!;
     try {
-      // The daemon registers its build at boot: built_at is the first_seen of the registry.
+      // The daemon registers its build at boot: built_at is the last_seen of the registry.
       const first = readRegistry(dir)[boot.id];
-      expect(first).toEqual({ root: dir, first_seen: expect.any(String) });
-      expect((await health(d.port))?.build).toEqual({ id: boot.id, built_at: first!.first_seen });
-      expect(d.build).toEqual({ id: boot.id, built_at: first!.first_seen });
+      expect(first).toEqual({ root: dir, first_seen: expect.any(String), last_seen: expect.any(String), pids: [] });
+      expect((await health(d.port))?.build).toEqual({ id: boot.id, built_at: first!.last_seen });
+      expect(d.build).toEqual({ id: boot.id, built_at: first!.last_seen });
       writeFileSync(file, "export const boot = 1;\n");
       expect(readBuildInfo(srcDir).id).not.toBe(boot.id);
       expect((await health(d.port))?.build).toEqual(d.build);

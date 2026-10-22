@@ -2,11 +2,15 @@
 //
 // Usage: node scripts/check-install.ts   (yarn check-install)
 //
-// 1. Copy plugin/ to a temp folder outside the repo (so that Node cannot
-//    find the root node_modules).
+// 1. Copy the files of plugin/ that git tracks to a temp folder outside the
+//    repo (so that Node cannot find the root node_modules). Claude Code
+//    installs only the files that git tracks. A file in plugin/ that git
+//    does not track (and does not ignore) stops the check: "git add" it, or
+//    the install of that commit does not have it.
 // 2. Run "npm ci --ignore-scripts" there. It must finish in 60 s.
-// 3. Start the relay as plugin.json does (node <copy>/src/link/relay.ts)
-//    with a temp INKWIRE_DATA_DIR, a random INKWIRE_PORT and a clean env.
+// 3. Start the relay with the command and the args of plugin.json
+//    (sh <copy>/src/link/relay.sh) with a temp INKWIRE_DATA_DIR, a random
+//    INKWIRE_PORT and a clean env.
 // 4. Do the MCP handshake, list the tools and call boards_create.
 // 5. Check that the relay started the daemon from the copy, and GET /,
 //    /main.js and /styles.css from it.
@@ -17,7 +21,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -64,6 +68,30 @@ async function waitFor(check: () => boolean | Promise<boolean>, ms: number, what
   throw new Error(`timed out: ${what}`);
 }
 
+/** The files of plugin/ that git tracks, relative to plugin/. Throws when plugin/ has a file that git does not track. */
+function trackedPluginFiles(): string[] {
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", ROOT, ...args], { encoding: "utf8" })
+      .split("\0")
+      .filter((f) => f.length > 0);
+  const untracked = git("ls-files", "-z", "--others", "--exclude-standard", "--", "plugin");
+  if (untracked.length > 0) {
+    throw new Error(`git does not track these plugin files, so the install would not have them; "git add" them: ${untracked.join(", ")}`);
+  }
+  return git("ls-files", "-z", "--", "plugin").map((f) => path.relative("plugin", f));
+}
+
+/** The command and the args of the MCP server in plugin.json, with ${CLAUDE_PLUGIN_ROOT} set to `pluginDir`. */
+function manifestCommand(pluginDir: string): { command: string; args: string[] } {
+  const manifest = JSON.parse(readFileSync(path.join(pluginDir, ".claude-plugin", "plugin.json"), "utf8")) as {
+    mcpServers?: Record<string, { command?: string; args?: string[] }>;
+  };
+  const server = manifest.mcpServers?.inkwire;
+  if (!server?.command) throw new Error("plugin.json has no mcpServers.inkwire.command");
+  const expand = (s: string) => s.replaceAll("${CLAUDE_PLUGIN_ROOT}", pluginDir);
+  return { command: expand(server.command), args: (server.args ?? []).map(expand) };
+}
+
 function text(result: unknown, index: number): string {
   const content = (result as { content?: { text?: string }[] }).content ?? [];
   return content[index]?.text ?? "";
@@ -78,15 +106,16 @@ async function main(): Promise<void> {
   let relayPid: number | undefined;
   let daemonPid: number | undefined;
   try {
-    // 1. The copy: the files git tracks would be the same set, less the
-    // ignored ones. Leave out node_modules and the generated mod types.
-    cpSync(path.join(ROOT, "plugin"), pluginDir, {
-      recursive: true,
-      filter: (src) => {
-        const rel = path.relative(path.join(ROOT, "plugin"), src);
-        return rel !== "node_modules" && rel !== path.join(".claude-plugin", "types");
-      },
-    });
+    // 1. The copy: the files that git tracks, with their content in the work tree.
+    const files = trackedPluginFiles();
+    for (const rel of files) {
+      const from = path.join(ROOT, "plugin", rel);
+      // A tracked file that is deleted in the work tree is not in the next commit.
+      if (!existsSync(from)) continue;
+      mkdirSync(path.dirname(path.join(pluginDir, rel)), { recursive: true });
+      copyFileSync(from, path.join(pluginDir, rel));
+    }
+    log(`copy: ${files.length} tracked files`);
 
     // 2. The install.
     const started = Date.now();
@@ -99,14 +128,15 @@ async function main(): Promise<void> {
     log(`npm ci --ignore-scripts: ${(installMs / 1000).toFixed(1)} s`);
     if (installMs > INSTALL_LIMIT_MS) throw new Error(`the install took more than ${INSTALL_LIMIT_MS / 1000} s`);
 
-    // 3. The relay, as plugin.json runs it.
+    // 3. The relay, as plugin.json runs it. The node of this check comes first on PATH.
     const port = await freePort();
+    const { command, args } = manifestCommand(pluginDir);
     const transport = new StdioClientTransport({
-      command: process.execPath,
-      args: [path.join(pluginDir, "src", "link", "relay.ts")],
+      command,
+      args,
       cwd,
       env: {
-        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH ?? "/usr/bin:/bin"}`,
         HOME: process.env.HOME ?? work,
         INKWIRE_PORT: String(port),
         INKWIRE_DATA_DIR: path.join(work, "data"),
@@ -137,9 +167,9 @@ async function main(): Promise<void> {
     const health = (await (await fetch(`${base}/healthz`)).json()) as { pid?: number };
     daemonPid = health.pid;
     if (daemonPid === undefined) throw new Error("/healthz has no pid");
-    const command = execFileSync("ps", ["-o", "command=", "-p", String(daemonPid)], { encoding: "utf8" });
+    const daemonCommand = execFileSync("ps", ["-o", "command=", "-p", String(daemonPid)], { encoding: "utf8" });
     const entry = path.join(pluginDir, "src", "server", "daemon.ts");
-    if (!command.includes(entry)) throw new Error(`the daemon does not run ${entry}: ${command.trim()}`);
+    if (!daemonCommand.includes(entry)) throw new Error(`the daemon does not run ${entry}: ${daemonCommand.trim()}`);
     log(`daemon: pid ${daemonPid} runs the installed copy`);
     for (const [file, type] of [
       ["/", "text/html"],

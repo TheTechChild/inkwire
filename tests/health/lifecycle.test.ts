@@ -237,7 +237,7 @@ describe("health: daemon lifecycle", () => {
     expect(clean, "every daemon exited by itself").toBe(true);
   }, 30_000);
 
-  it("lifecycle: the relay as the plugin runs it (node <plugin root>/src/link/relay.ts, another cwd) autostarts the source daemon and runs tools", async () => {
+  it("lifecycle: the relay as the plugin runs it (sh <plugin root>/src/link/relay.sh, another cwd) autostarts the source daemon and runs tools", async () => {
     let r: Relays | null = null;
     let clean: boolean | undefined;
     try {

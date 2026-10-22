@@ -63,15 +63,19 @@ export interface Relays {
   stop: (waitMs?: number) => Promise<boolean>;
 }
 
-/** The relay entry of a repo, as the plugin manifest runs it: `node <plugin root>/src/link/relay.ts`. */
-export const relayEntry = (repo: string) => path.join(repo, "plugin", "src", "link", "relay.ts");
+/** The relay entry of a repo, as the plugin manifest runs it: `sh <plugin root>/src/link/relay.sh`, which runs relay.ts with Node 26. */
+export const relayEntry = (repo: string) => path.join(repo, "plugin", "src", "link", "relay.sh");
 
 /** The TERM_PROGRAM of every health relay: not in focusTerminal's table, so it activates no app. */
 export const HEALTH_TERM_PROGRAM = "inkwire-health";
 
 const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
-/** Start one relay under `sh -c 'node …; :'`. The `; :` keeps sh in the foreground, so the relay's ppid stays. */
+/**
+ * Start one relay under `sh -c 'sh relay.sh; :'`. The `; :` keeps sh in the
+ * foreground, so the relay's ppid stays: relay.sh runs node with exec. The node
+ * of the test comes first on PATH.
+ */
 export async function startRelay(opts: RelayOptions): Promise<Relay> {
   const repo = opts.repo ?? root;
   const cwd = opts.cwd ?? repo;
@@ -79,9 +83,10 @@ export async function startRelay(opts: RelayOptions): Promise<Relay> {
   // A TERM_PROGRAM that focusTerminal does not map: the hello carries term_program
   // (Open question 3), and session_mode(off) brings no terminal to the front.
   env.TERM_PROGRAM = HEALTH_TERM_PROGRAM;
+  env.PATH = `${path.dirname(process.execPath)}${path.delimiter}${env.PATH ?? ""}`;
   const transport = new StdioClientTransport({
     command: "/bin/sh",
-    args: ["-c", `${quote(process.execPath)} ${quote(relayEntry(repo))}; :`],
+    args: ["-c", `sh ${quote(relayEntry(repo))}; :`],
     cwd,
     env: env as Record<string, string>,
     stderr: "pipe",

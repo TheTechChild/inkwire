@@ -6,7 +6,9 @@
 // not a Yarn workspace: the root package.json has no "workspaces", so Yarn
 // ignores it. scripts/lock-plugin.ts writes both files from the root
 // "dependencies" (the runtime deps) at the versions that yarn.lock resolves.
-// scripts/check-plugin.ts checks them.
+// Each package in the lockfile, also a transitive one, has a version that
+// yarn.lock resolves for its name, so the tests run the same packages that
+// users get. scripts/check-plugin.ts checks them.
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -65,6 +67,60 @@ export function yarnResolutions(lockText: string): Map<string, string> {
     if (version !== undefined) for (const key of keys) out.set(key, version);
   }
   return out;
+}
+
+/** The npm descriptors of a yarn.lock entry key: "zod@npm:^4.1.0" gives "zod@^4.1.0". Other protocols are skipped. */
+function npmDescriptors(keys: string[]): string[] {
+  return keys.filter((k) => /.@npm:/.test(k)).map((k) => k.replace(/@npm:/, "@"));
+}
+
+/** The package name of a descriptor ("@scope/name@^1" gives "@scope/name"). */
+const nameOf = (descriptor: string) => descriptor.slice(0, descriptor.lastIndexOf("@"));
+
+/** Each version that yarn.lock resolves, by package name. */
+export function yarnVersionsByName(lockText: string): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const [key, version] of yarnResolutions(lockText)) {
+    const npm = npmDescriptors([key])[0];
+    if (npm === undefined) continue;
+    const name = nameOf(npm);
+    if (!out.has(name)) out.set(name, new Set());
+    out.get(name)!.add(version);
+  }
+  return out;
+}
+
+/** The registry tarball URL of a package version. */
+export function tarballUrl(name: string, version: string): string {
+  return `${REGISTRY}${name}/-/${name.split("/").pop()}-${version}.tgz`;
+}
+
+/**
+ * A yarn v1 lockfile with the resolutions of a yarn.lock (Yarn 2 or later).
+ * npm reads a yarn.lock v1 when it makes a package-lock.json, and it uses the
+ * version and the tarball of each matching descriptor. So npm resolves each
+ * package, also a transitive one, to the version that Yarn resolves.
+ */
+export function yarnV1Lockfile(lockText: string): string {
+  const out = ["# yarn lockfile v1", ""];
+  let keys: string[] = [];
+  for (const line of lockText.split("\n")) {
+    if (line.length > 0 && !line.startsWith(" ") && !line.startsWith("#") && line.endsWith(":")) {
+      keys = line
+        .slice(0, -1)
+        .split(", ")
+        .map((k) => k.replace(/^"|"$/g, ""));
+      continue;
+    }
+    const version = /^ {2}version: "?([^"\s]+)"?$/.exec(line)?.[1];
+    const descriptors = npmDescriptors(keys);
+    if (version === undefined || descriptors.length === 0) continue;
+    out.push(`${descriptors.map((d) => JSON.stringify(d)).join(", ")}:`);
+    out.push(`  version "${version}"`);
+    out.push(`  resolved "${tarballUrl(nameOf(descriptors[0]!), version)}"`);
+    out.push("");
+  }
+  return out.join("\n");
 }
 
 /**

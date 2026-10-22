@@ -8,7 +8,7 @@
 // plugin/ holds no build output and no node_modules. plugin/package.json
 // and plugin/package-lock.json give the runtime deps that Claude Code
 // installs; "yarn lock-plugin" writes them.
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -21,6 +21,7 @@ import {
   pluginPackageJson,
   readJson,
   runtimeDependencies,
+  yarnVersionsByName,
 } from "./plugin-package.ts";
 
 interface Marketplace {
@@ -140,10 +141,19 @@ function checkPackage(root: string, pluginDir: string, fail: (m: string) => void
       fail(`plugin/package-lock.json: ${name} is ${locked ?? "missing"}, but plugin/package.json has ${version}. ${LOCK_HINT}`);
     }
   }
+  // Each package, also a transitive one, at a version that yarn.lock resolves for its name:
+  // the tests run on Yarn's tree, and users get npm's tree.
+  const yarnVersions = yarnVersionsByName(readFileSync(path.join(root, "yarn.lock"), "utf8"));
   for (const [key, entry] of Object.entries(packages)) {
     if (key === "") continue;
     if (entry.link || !entry.resolved?.startsWith(REGISTRY) || !entry.integrity) {
       fail(`plugin/package-lock.json: ${key} must be an npm registry package with an integrity hash.`);
+    }
+    const name = key.slice(key.lastIndexOf("node_modules/") + "node_modules/".length);
+    const versions = yarnVersions.get(name);
+    if (entry.version === undefined || !versions?.has(entry.version)) {
+      const have = versions ? [...versions].join(", ") : "none";
+      fail(`plugin/package-lock.json: ${key} is ${entry.version ?? "missing"}, but yarn.lock resolves ${name} to ${have}. ${LOCK_HINT}`);
     }
   }
 }

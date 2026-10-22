@@ -3,6 +3,9 @@ name: ci
 on:
   workflow_dispatch:
   pull_request:
+  # Each merge to main is a plugin update (ADR 0005): check main too.
+  push:
+    branches: [main]
 
 concurrency:
   group: ${{ github.ref }}

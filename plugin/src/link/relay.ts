@@ -3,18 +3,20 @@
 // starts. It finds or starts the daemon, then pipes MCP between stdio and the
 // /mcp link. stdout is the MCP transport: log to stderr only. The relay does
 // not import the store, session.ts or better-sqlite3 (tests/link/boundary.test.ts).
+import "./node-version.ts";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig } from "../server/config.ts";
-import { currentBuild } from "../server/build-info.ts";
+import { currentBuild, registerBuild } from "../server/build-info.ts";
 import { LINK_VERSION, type Hello } from "./hello.ts";
 import { connectLink } from "./ws-client.ts";
-import { ensureDaemon } from "./autostart.ts";
+import { OWN_ROOT, ensureDaemon } from "./autostart.ts";
 import { RelayCore } from "./relay-core.ts";
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  // Register this copy's build in the data dir: its first_seen orders the builds (Decision 7).
-  const build = currentBuild(config.dataDir);
+  // Register this copy's build in the data dir with the Claude Code pid: a new
+  // Claude Code process makes this build the newest (Decision 7).
+  const build = currentBuild(config.dataDir, undefined, { pid: process.ppid });
   const env = process.env;
   const base: Hello = {
     type: "hello",
@@ -32,7 +34,17 @@ async function main(): Promise<void> {
   const core = new RelayCore(
     new StdioServerTransport(),
     async (extra) => {
-      const health = await ensureDaemon({ port: config.port, dataDir: config.dataDir, env });
+      const health = await ensureDaemon({
+        port: config.port,
+        dataDir: config.dataDir,
+        env,
+        // Before an autostart, put a lost entry back with this relay's own time; the order does not change.
+        register: () => {
+          if (build.id !== "unbuilt") {
+            registerBuild(config.dataDir, build.id, OWN_ROOT, { pid: process.ppid, touch: false, now: new Date(build.built_at ?? Date.now()) });
+          }
+        },
+      });
       const transport = await connectLink(`ws://127.0.0.1:${config.port}/mcp`, { ...base, ...extra });
       return { transport, buildId: health.build.id, link: transport };
     },

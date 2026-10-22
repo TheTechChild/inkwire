@@ -114,7 +114,8 @@ export interface Daemon {
 export function startDaemon(opts: DaemonOptions): Promise<Daemon | null> {
   const { config } = opts;
   const exit = opts.exit ?? ((code: number) => process.exit(code));
-  const build = opts.build ?? currentBuild(config.dataDir, opts.srcDir);
+  // A daemon does not change the order of the builds (touch: false): only a new session does.
+  const build = opts.build ?? currentBuild(config.dataDir, opts.srcDir, { touch: false });
   const ui = createUiBundle(opts.uiDir ?? UI_DIR, { watch: opts.watchUi ?? false });
   const http = createServer();
 

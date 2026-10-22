@@ -5,8 +5,8 @@
   "types": "./hooks/mod/contract.d.ts",
   "mcpServers": {
     "inkwire": {
-      "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/src/link/relay.ts"]
+      "command": "sh",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/src/link/relay.sh"]
     }
   }
 }

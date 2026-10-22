@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkPlugin } from "../../scripts/check-plugin.ts";
-import { yarnResolutions } from "../../scripts/plugin-package.ts";
+import { yarnResolutions, yarnV1Lockfile, yarnVersionsByName } from "../../scripts/plugin-package.ts";
 import { root } from "../integration/daemon-helpers.ts";
 
 // The files the check reads, relative to the repo root.
@@ -20,7 +20,7 @@ const FILES = [
   "plugin/hooks/forward.sh",
   "plugin/hooks/mod/register.tsx",
   "plugin/hooks/mod/contract.d.ts",
-  "plugin/src/link/relay.ts",
+  "plugin/src/link/relay.sh",
 ];
 
 let dir: string;
@@ -116,11 +116,19 @@ describe("check-plugin", () => {
     expect(errors).toContainEqual(expect.stringMatching(/node_modules\/ws must be an npm registry package/));
   });
 
+  it("fails on a transitive lock entry at a version that yarn.lock does not resolve (the tests run Yarn's tree)", () => {
+    const key = Object.keys(JSON.parse(readFileSync(path.join(dir, "plugin/package-lock.json"), "utf8")).packages).find((k) =>
+      k.endsWith("node_modules/qs"),
+    )!;
+    edit<Lock>("plugin/package-lock.json", (l) => (l.packages[key]!.version = "6.0.0"));
+    expect(checkPlugin(dir)).toEqual([expect.stringMatching(new RegExp(`${key} is 6\\.0\\.0, but yarn\\.lock resolves qs to `))]);
+  });
+
   it("fails when a file the manifest names is missing", () => {
-    rmSync(path.join(dir, "plugin/src/link/relay.ts"));
+    rmSync(path.join(dir, "plugin/src/link/relay.sh"));
     rmSync(path.join(dir, "plugin/hooks/mod/contract.d.ts"));
     const errors = checkPlugin(dir);
-    expect(errors).toContainEqual(expect.stringMatching(/plugin\.json: names plugin\/src\/link\/relay\.ts, which does not exist/));
+    expect(errors).toContainEqual(expect.stringMatching(/plugin\.json: names plugin\/src\/link\/relay\.sh, which does not exist/));
     expect(errors).toContainEqual(expect.stringMatching(/plugin\.json: names plugin\/hooks\/mod\/contract\.d\.ts/));
   });
 
@@ -150,5 +158,45 @@ describe("check-plugin", () => {
     const map = yarnResolutions(lock);
     expect(map.get("zod@npm:^4.1.0")).toBe("4.5.4");
     expect(map.get("zod@npm:^3.25 || ^4.0")).toBe("4.5.4");
+  });
+
+  it("gives each version that yarn.lock resolves, by name, and only for the npm protocol", () => {
+    const lock = [
+      '"qs@npm:^6.14.0":',
+      "  version: 6.16.0",
+      "",
+      '"qs@npm:^5.0.0":',
+      "  version: 5.2.1",
+      "",
+      '"@scope/x@npm:^1.0.0, @scope/x@npm:^1.1.0":',
+      "  version: 1.2.0",
+      "",
+      '"inkwire@workspace:.":',
+      "  version: 0.0.0-use.local",
+      "",
+    ].join("\n");
+    const map = yarnVersionsByName(lock);
+    expect([...map.get("qs")!].sort()).toEqual(["5.2.1", "6.16.0"]);
+    expect([...map.get("@scope/x")!]).toEqual(["1.2.0"]);
+    expect(map.has("inkwire")).toBe(false);
+    // The seed lockfile for npm: yarn v1, one entry per yarn.lock entry, with the registry tarball.
+    expect(yarnV1Lockfile(lock)).toBe(
+      [
+        "# yarn lockfile v1",
+        "",
+        '"qs@^6.14.0":',
+        '  version "6.16.0"',
+        '  resolved "https://registry.npmjs.org/qs/-/qs-6.16.0.tgz"',
+        "",
+        '"qs@^5.0.0":',
+        '  version "5.2.1"',
+        '  resolved "https://registry.npmjs.org/qs/-/qs-5.2.1.tgz"',
+        "",
+        '"@scope/x@^1.0.0", "@scope/x@^1.1.0":',
+        '  version "1.2.0"',
+        '  resolved "https://registry.npmjs.org/@scope/x/-/x-1.2.0.tgz"',
+        "",
+      ].join("\n"),
+    );
   });
 });

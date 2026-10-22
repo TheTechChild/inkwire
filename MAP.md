@@ -30,8 +30,8 @@ Product rules and the test list are in `CLAUDE.md`. The authority for behaviour 
 `openCore` (`bootstrap.ts`) opens the store, builds `Sessions` and `Clients`, the panel hub and
 the screenshot broker (with the fonts that `installFonts` copies to the data dir), and attaches the
 HTTP request handler and `routeUpgrades` to an http server.
-The plugin runs the relay (`node plugin/src/link/relay.ts`, see The link); the daemon is the one
-server entry.
+The plugin runs the relay (`sh plugin/src/link/relay.sh`, which runs `relay.ts` with a Node 26, see
+The link); the daemon is the one server entry.
 `daemon.ts` `startDaemon` is the daemon entry: it hashes and registers its build (see Daemon
 lifetime and builds), binds the port first, then calls `openCore` in the listen callback, and
 serves one McpServer per relay link (see The link). The entry starts the panel bundle at boot, in
@@ -99,7 +99,7 @@ plugin/src/link/ws-transport.ts:8  WsTransport
 plugin/src/link/endpoint.ts:11     Link
 plugin/src/link/endpoint.ts:34     createLinkEndpoint
 plugin/src/link/ws-client.ts:7     connectLink
-plugin/src/link/relay.ts:14        main
+plugin/src/link/relay.ts:15        main
 plugin/src/link/relay-core.ts:63   RelayCore
 plugin/src/link/relay-core.ts:161  attach
 plugin/src/link/relay-core.ts:201  fromDown
@@ -110,6 +110,18 @@ plugin/src/link/relay-core.ts:297  fatal
 plugin/src/link/relay-core.ts:49   LOST_TEXT
 plugin/src/server/daemon.ts:35     createLinkHost
 plugin/src/server/clients.ts:530   restoreCurrentBoard
+```
+
+Beware: the Node version. `plugin.json` runs `sh plugin/src/link/relay.sh`, not `node relay.ts`:
+Claude Code starts the server in the cwd of the session, and the `node` on PATH can come from the
+`.nvmrc` of that project. `relay.sh` runs the `node` on PATH when it is 26 or later, else `mise x
+node@26 -- node`, else it stops with a message on stderr. Each step uses `exec`, so the relay's
+`ppid` (the hello pid) stays the Claude Code pid. `relay.ts` imports `node-version.ts` first
+(`NODE_MAJOR`), which stops an older Node that can read `.ts` with a clear message.
+Tests: `tests/link/relay-launcher.test.ts`.
+
+```
+plugin/src/link/node-version.ts:7  NODE_MAJOR
 ```
 
 Beware: close codes. No hello in 5 s, or a first frame that is not a hello: 4400. A hello of
@@ -146,17 +158,17 @@ relay autostarts the daemon. `tools.test.ts` has one case for each name in `WRIT
 `READ_TOOLS` and `OWN_RULE_TOOLS` and checks the set against `tools/list`, so a new tool with no
 health case fails. `lifecycle.test.ts` covers autostart, the race, release on close, `/clear`,
 SIGKILL and reconnect, a stale build (a copy of `plugin/src/` with one more file, so another
-build id), both restarts, the idle grace, and the relay as the plugin runs it (`relayEntry`: `node
-<plugin root>/src/link/relay.ts`, from a cwd outside the repo).
+build id), both restarts, the idle grace, and the relay as the plugin runs it (`relayEntry`: `sh
+<plugin root>/src/link/relay.sh`, from a cwd outside the repo, with the test's node first on PATH).
 
 ```
-tests/health/harness.ts:152  startRelays
-tests/health/harness.ts:75   startRelay
-tests/health/harness.ts:111  openPanel
+tests/health/harness.ts:157  startRelays
+tests/health/harness.ts:79   startRelay
+tests/health/harness.ts:116  openPanel
 tests/health/harness.ts:67   relayEntry
 ```
 
-Beware: the relay runs with `node` and no loader (no tsx), as the manifest runs it. A relative
+Beware: the relay runs with `node` and no loader (no tsx), as the manifest runs it through `relay.sh`. A relative
 import without `.ts`, a type import without `import type`, or syntax that Node cannot strip stops
 the relay at startup. `yarn typecheck` finds all three; `tests/tools/stdio-smoke.test.ts` and the
 health suite find them at run time.
@@ -174,36 +186,51 @@ reconnect and autostart the newest build. The `IdleTimer` stops the daemon `INKW
 after its last link closes (at boot it waits at least 10 s).
 
 The build is the source. `readBuildInfo` hashes every file under `plugin/src/` server, core,
-shared, link and ui (`BUILD_DIRS`): relative paths and content, not the folder path, so the same
-source in two cache folders is one build. Claude Code installs each update into a new cache folder
+shared, link and ui (`BUILD_DIRS`), and `package.json`, `package-lock.json` and `assets/fonts/` of
+the plugin root (`BUILD_ROOT_PARTS`), so a release that changes only a dependency is a new build. It
+hashes relative paths and content, not the folder path, so the same plugin in two cache folders is
+one build. Claude Code installs each update into a new cache folder
 (`~/.claude/plugins/cache/inkwire/inkwire/<sha>/`; no `version` field, so the sha is the version)
 and removes an old folder 14 days later. The order of the builds comes from the build registry,
-`<dataDir>/builds.json` (`REGISTRY_FILE`): build id → `{ root, first_seen }`, where `root` is the
-plugin root. `currentBuild` hashes and registers (`registerBuild`): each relay at its start and
-each daemon at boot. A known build keeps its `first_seen` and gets the new root; other entries
-whose daemon entry is gone are removed. The `BuildInfo` of a relay or daemon is `{ id, built_at }`,
-where `built_at` is the registry's `first_seen` (the hello keeps the name, so an old daemon reads a
-new relay's hello). The daemon reads its build one time, at boot (Decision 10), and `/healthz`
-reports `{ ok, name, pid, build, clients, boards }`.
+`<dataDir>/builds.json` (`REGISTRY_FILE`): build id → `{ root, first_seen, last_seen, pids }`,
+where `root` is the plugin root and `pids` are the Claude Code pids of its relays (the last
+`PIDS_KEPT`). `currentBuild` hashes and registers (`registerBuild`): each relay at its start with
+its `ppid`, and each daemon at boot with `touch: false`. A known build keeps its `first_seen` and
+gets the new root. `last_seen` changes only when a relay of a new pid registers it: a relay that
+starts again in the same Claude Code process, and a daemon, do not change the order. Other entries
+are removed when their daemon entry is gone or when they have the same root (one folder holds one
+build at a time). The `BuildInfo` of a relay or daemon is `{ id, built_at }`, where `built_at` is
+the registry's `last_seen` (the hello keeps the name, so an old daemon reads a new relay's hello).
+The daemon reads its build one time, at boot (Decision 10), and `/healthz` reports `{ ok, name,
+pid, build, clients, boards }`.
 
-The daemon that a relay starts is the newest registered build whose daemon entry is still on disk
-(`pickDaemonRoot`, `liveBuilds`: `<root>/src/server/daemon.ts`, with the cwd at that root), else
-the relay's own (`daemonEntry`). So an old session that starts the daemon after an update starts
-the new build, and a removed folder is skipped.
+"Newer" (`liveBuilds`, `isNewerBuild`): an installed build (`isInstalledRoot`: a root in the
+Claude Code plugin cache) comes before a checkout build, then the later `last_seen`. So a
+`--plugin-dir` run or `yarn start` on the default data dir does not take over the daemon of the
+installed plugin, and a downgrade (a new session of an older installed build) makes the older build
+the newest. The daemon that a relay starts is the first of `daemonRoots`: the registered builds
+whose daemon entry is still on disk, newest first, then the relay's own root (`daemonEntry`), with
+the cwd at that root. `ensureDaemon` calls the relay's `register` first (it puts a lost entry back
+with the relay's own time). When a daemon exits with an error before it answers, `ensureDaemon`
+starts the next root; exit 0 is the loser of a port race, and the poll goes on.
 
 ```
-plugin/src/link/autostart.ts:52     ensureDaemon
-plugin/src/link/autostart.ts:38     daemonEntry
-plugin/src/link/autostart.ts:46     pickDaemonRoot
+plugin/src/link/autostart.ts:65     ensureDaemon
+plugin/src/link/autostart.ts:44     daemonEntry
+plugin/src/link/autostart.ts:53     daemonRoots
+plugin/src/link/autostart.ts:59     pickDaemonRoot
 plugin/src/link/probe.ts:26         probeDaemon
-plugin/src/server/build-info.ts:67  readBuildInfo
-plugin/src/server/build-info.ts:43  BUILD_DIRS
-plugin/src/server/build-info.ts:46  REGISTRY_FILE
-plugin/src/server/build-info.ts:90  readRegistry
-plugin/src/server/build-info.ts:115 registerBuild
-plugin/src/server/build-info.ts:140 currentBuild
-plugin/src/server/build-info.ts:150 liveBuilds
-plugin/src/server/build-info.ts:163 isNewerBuild
+plugin/src/server/build-info.ts:109 readBuildInfo
+plugin/src/server/build-info.ts:68  BUILD_DIRS
+plugin/src/server/build-info.ts:71  BUILD_ROOT_PARTS
+plugin/src/server/build-info.ts:74  REGISTRY_FILE
+plugin/src/server/build-info.ts:77  PIDS_KEPT
+plugin/src/server/build-info.ts:90  isInstalledRoot
+plugin/src/server/build-info.ts:160 readRegistry
+plugin/src/server/build-info.ts:263 registerBuild
+plugin/src/server/build-info.ts:305 currentBuild
+plugin/src/server/build-info.ts:329 liveBuilds
+plugin/src/server/build-info.ts:342 isNewerBuild
 plugin/src/server/idle.ts:22        IdleTimer
 plugin/src/server/restart.ts:22     createRestart
 plugin/src/server/http.ts:79        defaultStats
@@ -220,8 +247,8 @@ before the daemon sends no build). `ensureDaemon` then stops the relay with "por
 server; close the old Claude Code sessions" and does not reconnect.
 
 Beware: stale builds (Decision 7). A hello whose build id differs and whose build is newer
-(`isNewerBuild`: a later `first_seen` in the registry; a build that is not registered uses the
-hello's `built_at`) sets `clients.staleBuild` and puts `STALE_NOTICE` on that Client's next tool
+(`isNewerBuild`: the order above from the registry; a build that is not registered is a checkout
+build at the hello's `built_at`) sets `clients.staleBuild` and puts `STALE_NOTICE` on that Client's next tool
 result. Nothing restarts by itself. There is no MCP tool for restart; agents must not call the
 restart route or `yarn daemon:restart`.
 
@@ -229,15 +256,18 @@ Beware: a running daemon must not read its plugin folder after boot: the folder 
 panel comes from memory (see Panel UI) and the fonts from the data dir (see Rendering). Node loads
 every server module at boot, so the source is not read again.
 
-Beware: the registry write is read-modify-write with a rename. Two relays that register at the
-same time can lose one entry; that relay's next start registers it again.
+Beware: the registry write is read-modify-write with a rename, under a lock file
+(`builds.json.lock`, made with the `wx` flag; a lock older than 5 s is removed, and after 2 s the
+write goes on with no lock). A `builds.json` that is there but bad is not written over: it moves to
+`builds.json.bad`, and a new registry starts.
 
 Beware: `yarn dev` runs the dev daemon on 4692 with `~/.inkwire-dev`, `INKWIRE_IDLE_GRACE_MS=off`
 and `INKWIRE_UI_WATCH=1`. Tests use random ports and temp dirs and never bind 4691 or 4692.
 
 Tests: `tests/server/idle.test.ts`, `tests/integration/daemon-port.test.ts`,
 `tests/integration/daemon.test.ts`, `tests/link/relay-spawn.test.ts`, `tests/server/build-info.test.ts`
-(the registry, the order and the autostart choice), `tests/server/ui-bundle.test.ts`, and the
+(the registry, the lock, the order, a downgrade, a checkout run and the autostart choice),
+`tests/link/autostart.test.ts` (the fallback when the newest daemon cannot start), `tests/server/ui-bundle.test.ts`, and the
 health case for a stale build (`tests/health/lifecycle.test.ts`: a restart starts the newer build,
 and the build before it when the newer folder is gone).
 
@@ -640,15 +670,15 @@ has a live mod, it returns `delivered` at once and the reply comes back as the n
 which blocks `Stop` while that Client's mode is on. Every function takes `(clients, client, …)`.
 
 ```
-plugin/src/server/session-mode.ts:57   sessionMode
-plugin/src/server/session-mode.ts:166  sessionSend
-plugin/src/server/session-mode.ts:296  sessionReply
-plugin/src/server/session-mode.ts:404  hookEvent
-plugin/src/server/session-mode.ts:26   BLOCK_CEILING
-plugin/src/server/session-mode.ts:27   AUTO_MODES
-plugin/src/server/session-mode.ts:146  releaseAuthorship
-plugin/src/server/session-mode.ts:501  terminalProgram
-plugin/src/server/session-mode.ts:506  focusTerminal
+plugin/src/server/session-mode.ts:56   sessionMode
+plugin/src/server/session-mode.ts:165  sessionSend
+plugin/src/server/session-mode.ts:295  sessionReply
+plugin/src/server/session-mode.ts:403  hookEvent
+plugin/src/server/session-mode.ts:27   BLOCK_CEILING
+plugin/src/server/session-mode.ts:28   AUTO_MODES
+plugin/src/server/session-mode.ts:145  releaseAuthorship
+plugin/src/server/session-mode.ts:500  terminalProgram
+plugin/src/server/session-mode.ts:505  focusTerminal
 plugin/src/server/clients.ts:16        HookReport
 plugin/src/server/http.ts:135           /api/hook
 plugin/src/ui/session.ts:73            setupSession
@@ -736,11 +766,11 @@ plugin/src/server/clients.ts:191       hasLiveMod
 plugin/src/server/clients.ts:199       modAnswersHooks
 plugin/src/server/clients.ts:204       clearMod
 plugin/src/server/clients.ts:264       bySessionId
-plugin/src/server/session-mode.ts:108  blockingProblem
-plugin/src/server/session-mode.ts:166  sessionSend
-plugin/src/server/session-mode.ts:296  sessionReply
-plugin/src/server/session-mode.ts:374  modPrompt
-plugin/src/server/session-mode.ts:404  hookEvent
+plugin/src/server/session-mode.ts:107  blockingProblem
+plugin/src/server/session-mode.ts:165  sessionSend
+plugin/src/server/session-mode.ts:295  sessionReply
+plugin/src/server/session-mode.ts:373  modPrompt
+plugin/src/server/session-mode.ts:403  hookEvent
 plugin/src/server/http.ts:295          handleMod
 plugin/src/server/http.ts:346          modView
 plugin/src/server/http.ts:369          waitForChange
@@ -1115,7 +1145,7 @@ copies only that folder. There is no build step: the manifest runs the relay fro
 manifest and the marketplace entry have no `version`, so Claude Code uses the commit SHA, and each
 merge to `main` that changes `plugin/` is an update.
 
-- `plugin/.claude-plugin/plugin.json` — manifest and the `mcpServers` entry (`node ${CLAUDE_PLUGIN_ROOT}/src/link/relay.ts`).
+- `plugin/.claude-plugin/plugin.json` — manifest and the `mcpServers` entry (`sh ${CLAUDE_PLUGIN_ROOT}/src/link/relay.sh`, which runs `relay.ts` with a Node 26; see The link).
 - `.claude-plugin/marketplace.json` — the marketplace listing (at the repo root, not in `plugin/`).
 - `plugin/hooks/hooks.json`, `plugin/hooks/forward.sh` — see Session mode and hooks.
 - `plugin/hooks/mod/` — the Claude Code mod (`plugin/hooks/mod/register.tsx` is the module) — see The mod.
@@ -1124,7 +1154,7 @@ merge to `main` that changes `plugin/` is an update.
 - `plugin/package.json`, `plugin/package-lock.json` — the runtime deps that Claude Code installs
   in the cache folder (`npm ci --ignore-scripts`: exact registry versions, no install scripts).
   `yarn lock-plugin` writes both from the root `dependencies` at the versions that `yarn.lock`
-  resolves. They are not a Yarn workspace: the root `package.json` has no `workspaces`, so Yarn
+  resolves, also for each transitive package. They are not a Yarn workspace: the root `package.json` has no `workspaces`, so Yarn
   ignores them. In dev, `plugin/node_modules` does not exist and Node finds the packages in the
   root `node_modules`.
 - `.claude/skills/ship` — dev-only, not part of the plugin.
@@ -1134,22 +1164,32 @@ merge to `main` that changes `plugin/` is an update.
 The checks of the plugin are scripts at the repo root (ADR 0005). `checkPlugin` (`yarn
 check-plugin`, a CI job) fails on a `version`, a marketplace source other than `./plugin`, plugin
 deps that are not the root runtime deps at exact `yarn.lock` versions (`runtimeDependencies`,
-`yarnResolutions`), a lockfile that is not v3 or does not match, a file that `plugin.json` or
+`yarnResolutions`), a lockfile that is not v3 or does not match, a lock entry (also a transitive
+one) at a version that `yarn.lock` does not resolve for its name (`yarnVersionsByName`), a file that `plugin.json` or
 `hooks.json` names and that is missing (a hook script must also be executable), and a
 `plugin/node_modules` or `plugin/dist`. `yarn lock-plugin` writes the two files
-(`pluginPackageJson`, then npm in a temp folder: `writeLockfile`) and runs the check.
-`yarn check-install` (also a CI job) copies `plugin/` to a temp folder outside the repo, runs `npm
-ci --ignore-scripts` there (60 s limit), starts the relay from the copy with a clean env, a random
-port and a temp data dir, calls `boards_create`, checks that the daemon runs from the copy and gets
+(`pluginPackageJson`, then npm in a temp folder: `writeLockfile`) and runs the check. npm makes
+the lockfile from a yarn v1 lockfile that `yarnV1Lockfile` writes from `yarn.lock` (npm reads a
+yarn v1 lockfile, not the Yarn 4 format), with no old `package-lock.json`, so npm takes Yarn's
+version of each package.
+`yarn check-install` (also a CI job) copies the files of `plugin/` that git tracks
+(`trackedPluginFiles`; it stops when `plugin/` has a file that git does not track and does not
+ignore) to a temp folder outside the repo, runs `npm ci --ignore-scripts` there (60 s limit),
+starts the relay with the command of `plugin.json` (`manifestCommand`) from the copy with a clean
+env, a random port and a temp data dir, calls `boards_create`, checks that the daemon runs from the copy and gets
 `/`, `/main.js` and `/styles.css`.
 
 ```
-scripts/check-plugin.ts:152    checkPlugin
-scripts/plugin-package.ts:74   runtimeDependencies
-scripts/plugin-package.ts:53   yarnResolutions
-scripts/plugin-package.ts:98   pluginPackageJson
-scripts/lock-plugin.ts:22      writeLockfile
-scripts/check-install.ts:72    main
+scripts/check-plugin.ts:162    checkPlugin
+scripts/plugin-package.ts:130   runtimeDependencies
+scripts/plugin-package.ts:55   yarnResolutions
+scripts/plugin-package.ts:81   yarnVersionsByName
+scripts/plugin-package.ts:104  yarnV1Lockfile
+scripts/check-install.ts:72    trackedPluginFiles
+scripts/check-install.ts:85    manifestCommand
+scripts/plugin-package.ts:154   pluginPackageJson
+scripts/lock-plugin.ts:24      writeLockfile
+scripts/check-install.ts:100    main
 ```
 
 Tests: `tests/scripts/check-plugin.test.ts` (each rule on a temp copy of the files).

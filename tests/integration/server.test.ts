@@ -116,7 +116,7 @@ beforeAll(async () => {
   srcFile = path.join(srcDir, "server", "boot.ts");
   writeFileSync(srcFile, "export const boot = 0;\n");
   // Read one time, at boot (Decision 10), as daemon.ts does. built_at is the
-  // first_seen of the build registry: older than the "newer" builds below.
+  // last_seen of the build registry: older than the "newer" builds below.
   const build = { ...readBuildInfo(srcDir), built_at: "2026-10-08T10:00:00.000Z" };
   bootBuild = build;
   http.server = createHttpServer({ store, sessions, clients, screenshots: () => screenshots, build, pid: 4711 });
