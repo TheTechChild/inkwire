@@ -4,11 +4,11 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
-import { Sim } from "../helpers.js";
-import { scopeState } from "../../src/core/layers.js";
-import { buildCanvasState } from "../../src/core/state.js";
-import { canvasStateSchema } from "../../src/shared/schemas.js";
-import type { CanvasState, Layer } from "../../src/shared/types.js";
+import { Sim } from "../helpers.ts";
+import { scopeState } from "../../plugin/src/core/layers.ts";
+import { buildCanvasState } from "../../plugin/src/core/state.ts";
+import { canvasStateSchema } from "../../plugin/src/shared/schemas.ts";
+import type { CanvasState, Layer } from "../../plugin/src/shared/types.ts";
 
 const handoffSchema = JSON.parse(
   readFileSync(

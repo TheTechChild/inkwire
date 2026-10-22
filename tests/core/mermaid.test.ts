@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { exportMermaid } from "../../src/core/mermaid.js";
-import { makeEdge, makeNode } from "../helpers.js";
+import { exportMermaid } from "../../plugin/src/core/mermaid.ts";
+import { makeEdge, makeNode } from "../helpers.ts";
 
 describe("mermaid export", () => {
   it("serializes nodes and edges with kinds and labels", () => {

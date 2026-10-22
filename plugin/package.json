@@ -1,0 +1,17 @@
+{
+  "name": "inkwire",
+  "private": true,
+  "description": "The runtime dependencies of the inkwire plugin. Do not edit: \"yarn lock-plugin\" writes this file from the root package.json and yarn.lock.",
+  "type": "module",
+  "engines": {
+    "node": ">=26"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@resvg/resvg-js": "2.6.2",
+    "better-sqlite3": "13.0.3",
+    "esbuild": "0.25.12",
+    "ws": "8.21.3",
+    "zod": "4.5.4"
+  }
+}

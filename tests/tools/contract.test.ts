@@ -9,18 +9,18 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { buildMcpServer } from "../../src/server/mcp.js";
-import { exportBoard } from "../../src/server/board-file.js";
-import { markElement } from "../../src/server/drafts.js";
-import { migrateNotes } from "../../src/server/notebooks.js";
-import * as mutations from "../../src/server/mutations.js";
-import { Screenshots } from "../../src/server/screenshot.js";
-import { Sessions } from "../../src/server/session.js";
-import { Clients } from "../../src/server/clients.js";
-import { Store } from "../../src/server/store.js";
-import { toolBody } from "../helpers.js";
-import { sessionMode } from "../../src/server/session-mode.js";
-import { Harness } from "./harness.js";
+import { buildMcpServer } from "../../plugin/src/server/mcp.ts";
+import { exportBoard } from "../../plugin/src/server/board-file.ts";
+import { markElement } from "../../plugin/src/server/drafts.ts";
+import { migrateNotes } from "../../plugin/src/server/notebooks.ts";
+import * as mutations from "../../plugin/src/server/mutations.ts";
+import { Screenshots } from "../../plugin/src/server/screenshot.ts";
+import { Sessions } from "../../plugin/src/server/session.ts";
+import { Clients } from "../../plugin/src/server/clients.ts";
+import { Store } from "../../plugin/src/server/store.ts";
+import { toolBody } from "../helpers.ts";
+import { sessionMode } from "../../plugin/src/server/session-mode.ts";
+import { Harness } from "./harness.ts";
 
 const handoffSchema = JSON.parse(
   readFileSync(

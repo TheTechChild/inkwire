@@ -1,9 +1,9 @@
 // Coalescing, truncation, rewind, scoped undo (TESTS.md § 2 + SPEC § 4.5/4.6).
 import { describe, expect, it } from "vitest";
-import { Sim } from "../helpers.js";
-import { redo, rewindTo, toggleSkip, undo } from "../../src/core/history.js";
-import { fold } from "../../src/core/fold.js";
-import { stableStringify } from "../../src/core/util.js";
+import { Sim } from "../helpers.ts";
+import { redo, rewindTo, toggleSkip, undo } from "../../plugin/src/core/history.ts";
+import { fold } from "../../plugin/src/core/fold.ts";
+import { stableStringify } from "../../plugin/src/core/util.ts";
 
 describe("coalescing", () => {
   it("two move:n1 steps 200 ms apart produce one step", () => {

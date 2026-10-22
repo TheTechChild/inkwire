@@ -1,8 +1,8 @@
 // Draft math: id assignment, mark counts excluding gone marks, and the sets
 // canvas.lint / canvas.delete need to report on marks.
 import { describe, expect, it } from "vitest";
-import { draftsAffectedBy, goneMarks, markCounts, nextDraftId } from "../../src/core/drafts.js";
-import type { Draft, EdgeEl, NodeEl } from "../../src/shared/types.js";
+import { draftsAffectedBy, goneMarks, markCounts, nextDraftId } from "../../plugin/src/core/drafts.ts";
+import type { Draft, EdgeEl, NodeEl } from "../../plugin/src/shared/types.ts";
 
 function draft(id: string, marks: Draft["marks"] = {}, over: Partial<Draft> = {}): Draft {
   return { id, title: "t", note: "", marks, author: "ai", ...over };

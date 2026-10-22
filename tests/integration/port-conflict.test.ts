@@ -6,8 +6,8 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
-import { startRelay, type Relay } from "../health/harness.js";
-import { body, call, freePort, health, killTree, root, tempDir, testEnv, waitFor } from "./daemon-helpers.js";
+import { startRelay, type Relay } from "../health/harness.ts";
+import { body, call, freePort, health, killTree, root, tempDir, testEnv, waitFor } from "./daemon-helpers.ts";
 
 describe("port conflict: two sessions share one daemon", () => {
   it("a second relay on the port does not fail; both list tools and see one board list", async () => {
@@ -55,7 +55,7 @@ describe("port conflict: two sessions share one daemon", () => {
       res.end("not here");
     });
     await new Promise<void>((r) => plain.listen(port, "127.0.0.1", () => r()));
-    const child = spawn(process.execPath, ["--import", "tsx", "src/link/relay.ts"], {
+    const child = spawn(process.execPath, ["plugin/src/link/relay.ts"], {
       cwd: root,
       env: testEnv(port, tempDir("conflict-foreign"), { INKWIRE_IDLE_GRACE_MS: "300" }),
       stdio: ["pipe", "pipe", "pipe"],

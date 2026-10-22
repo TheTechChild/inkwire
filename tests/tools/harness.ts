@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { buildMcpServer } from "../../src/server/mcp.js";
-import { Screenshots } from "../../src/server/screenshot.js";
-import { hookEvent } from "../../src/server/session-mode.js";
-import { Sessions } from "../../src/server/session.js";
-import { Clients, type Client as InkwireClient } from "../../src/server/clients.js";
-import { Store } from "../../src/server/store.js";
-import { toolBody } from "../helpers.js";
+import { buildMcpServer } from "../../plugin/src/server/mcp.ts";
+import { Screenshots } from "../../plugin/src/server/screenshot.ts";
+import { hookEvent } from "../../plugin/src/server/session-mode.ts";
+import { Sessions } from "../../plugin/src/server/session.ts";
+import { Clients, type Client as InkwireClient } from "../../plugin/src/server/clients.ts";
+import { Store } from "../../plugin/src/server/store.ts";
+import { toolBody } from "../helpers.ts";
 
 export interface CallResult {
   /** The result with the context line and notices removed. */

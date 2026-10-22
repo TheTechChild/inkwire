@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "inkwire",
-      "source": "./",
+      "source": "./plugin",
       "description": "Shared drawing canvas for collaborating visually with Claude Code: the MCP server, the Stop hook, and the /use-inkwire and /back-to-claude-code commands."
     }
   ]

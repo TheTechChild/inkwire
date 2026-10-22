@@ -7,10 +7,10 @@ import WebSocket from "ws";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { routeUpgrades } from "../../src/server/upgrade.js";
-import { createLinkEndpoint, type Link, type LinkEndpoint } from "../../src/link/endpoint.js";
-import { connectLink } from "../../src/link/ws-client.js";
-import { LINK_VERSION, type Hello } from "../../src/link/hello.js";
+import { routeUpgrades } from "../../plugin/src/server/upgrade.ts";
+import { createLinkEndpoint, type Link, type LinkEndpoint } from "../../plugin/src/link/endpoint.ts";
+import { connectLink } from "../../plugin/src/link/ws-client.ts";
+import { LINK_VERSION, type Hello } from "../../plugin/src/link/hello.ts";
 
 let http: Server;
 let endpoint: LinkEndpoint;

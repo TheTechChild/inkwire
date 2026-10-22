@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-const srcRoot = fileURLToPath(new URL("../../src/", import.meta.url));
+const srcRoot = fileURLToPath(new URL("../../plugin/src/", import.meta.url));
 
 function tsFiles(dir: string): string[] {
   const out: string[] = [];

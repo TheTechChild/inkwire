@@ -5,10 +5,10 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { validateRef, stampRef, refStatus } from "../../src/server/bindcode.js";
-import { boardRoot, checkRootArg, listBoards, mainRootOf, rootOverlaps } from "../../src/server/project-root.js";
-import { importNeedsRoot } from "../../src/shared/import-root.js";
-import type { BoardListing } from "../../src/server/store.js";
+import { validateRef, stampRef, refStatus } from "../../plugin/src/server/bindcode.ts";
+import { boardRoot, checkRootArg, listBoards, mainRootOf, rootOverlaps } from "../../plugin/src/server/project-root.ts";
+import { importNeedsRoot } from "../../plugin/src/shared/import-root.ts";
+import type { BoardListing } from "../../plugin/src/server/store.ts";
 
 const tmp = (prefix: string) => mkdtempSync(path.join(tmpdir(), prefix));
 const RULE = "project_root must be an existing absolute directory";

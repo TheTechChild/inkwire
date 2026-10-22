@@ -10,13 +10,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { GAP_TEXT, LINK_LOST_CODE, LOST_TEXT, REINIT_PREFIX, RelayCore, type UpstreamFactory } from "../../src/link/relay-core.js";
-import { LINK_VERSION, type Hello } from "../../src/link/hello.js";
-import { createLinkHost, type LinkHost } from "../../src/server/daemon.js";
-import { Store } from "../../src/server/store.js";
-import { Sessions } from "../../src/server/session.js";
-import { Clients } from "../../src/server/clients.js";
-import { Screenshots } from "../../src/server/screenshot.js";
+import { GAP_TEXT, LINK_LOST_CODE, LOST_TEXT, REINIT_PREFIX, RelayCore, type UpstreamFactory } from "../../plugin/src/link/relay-core.ts";
+import { LINK_VERSION, type Hello } from "../../plugin/src/link/hello.ts";
+import { createLinkHost, type LinkHost } from "../../plugin/src/server/daemon.ts";
+import { Store } from "../../plugin/src/server/store.ts";
+import { Sessions } from "../../plugin/src/server/session.ts";
+import { Clients } from "../../plugin/src/server/clients.ts";
+import { Screenshots } from "../../plugin/src/server/screenshot.ts";
 
 type Extra = { current_board?: string };
 
@@ -45,7 +45,13 @@ class Upstreams {
   current: InMemoryTransport | null = null;
   /** The close code and reason of the newest link, as WsTransport keeps them. */
   link = { closeCode: null as number | null, closeReason: "" };
-  constructor(private serve: (t: InMemoryTransport, extra: Extra) => Promise<void>, private buildId = "build-1") {}
+  private serve: (t: InMemoryTransport, extra: Extra) => Promise<void>;
+  private buildId: string;
+
+  constructor(serve: (t: InMemoryTransport, extra: Extra) => Promise<void>, buildId = "build-1") {
+    this.serve = serve;
+    this.buildId = buildId;
+  }
   factory: UpstreamFactory = async (extra) => {
     if (this.failWith) throw this.failWith;
     if (this.blocked) throw new Error("connect refused (test)");

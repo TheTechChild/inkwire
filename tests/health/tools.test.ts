@@ -9,9 +9,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { OWN_RULE_TOOLS, READ_TOOLS, WRITE_TOOLS } from "../../src/server/mcp.js";
-import { body, call, freePort, head, postHook, tempDir, type ToolResult } from "../integration/daemon-helpers.js";
-import { startRelays, type Relay, type Relays } from "./harness.js";
+import { OWN_RULE_TOOLS, READ_TOOLS, WRITE_TOOLS } from "../../plugin/src/server/mcp.ts";
+import { body, call, freePort, head, postHook, tempDir, type ToolResult } from "../integration/daemon-helpers.ts";
+import { startRelays, type Relay, type Relays } from "./harness.ts";
 
 const TOOLS = [...WRITE_TOOLS, ...READ_TOOLS, ...OWN_RULE_TOOLS] as const;
 type ToolName = (typeof TOOLS)[number];

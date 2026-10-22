@@ -3,8 +3,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import WebSocket from "ws";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { startDaemon, type Daemon } from "../../src/server/daemon.js";
-import { health, rawRequest, tempDir } from "./daemon-helpers.js";
+import { startDaemon, type Daemon } from "../../plugin/src/server/daemon.ts";
+import { health, rawRequest, tempDir } from "./daemon-helpers.ts";
 
 let d: Daemon;
 let port: number;

@@ -1,12 +1,17 @@
 // Spawned-stdio smoke test: the in-process transport cannot catch stray
 // writes to stdout, so talk to the real entry point over real pipes. The
-// entry is the relay (what the plugin runs, plan M7.1). It autostarts a
-// daemon on a random port with a temp dir; the test covers relay plus daemon.
+// entry is the relay as the plugin manifest runs it (plan M7.1): `node
+// <plugin root>/src/link/relay.ts`, with no tsx and no build, from a cwd
+// outside the repo and with a clean env (no NODE_OPTIONS from the test
+// runner). It autostarts a daemon on a random port with a temp dir; the test
+// covers relay plus daemon.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { toolArgs } from "../../src/shared/schemas.js";
-import { alive, freePort, health, killTree, root, tempDir, testEnv, waitFor } from "../integration/daemon-helpers.js";
+import { toolArgs } from "../../plugin/src/shared/schemas.ts";
+import { execFileSync } from "node:child_process";
+import path from "node:path";
+import { alive, freePort, health, killTree, root, tempDir, waitFor } from "../integration/daemon-helpers.ts";
 
 let client: Client;
 let transport: StdioClientTransport;
@@ -17,9 +22,16 @@ beforeAll(async () => {
   port = await freePort();
   transport = new StdioClientTransport({
     command: process.execPath,
-    args: ["--import", "tsx", "src/link/relay.ts"],
-    cwd: root,
-    env: testEnv(port, tempDir("smoke"), { INKWIRE_IDLE_GRACE_MS: "300" }) as Record<string, string>,
+    args: [path.join(root, "plugin", "src", "link", "relay.ts")],
+    cwd: tempDir("smoke-cwd"),
+    // A clean shell: only PATH and HOME, plus the test port and dir.
+    env: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      HOME: process.env.HOME ?? tempDir("smoke-home"),
+      INKWIRE_PORT: String(port),
+      INKWIRE_DATA_DIR: tempDir("smoke"),
+      INKWIRE_IDLE_GRACE_MS: "300",
+    },
     stderr: "ignore",
   });
   client = new Client({ name: "smoke", version: "0.0.0" });
@@ -84,5 +96,16 @@ describe("stdio transport (relay plus daemon)", () => {
 
   it("the daemon answers /healthz with a pid", () => {
     expect(daemonPid).toBeTypeOf("number");
+  });
+
+  it("the daemon runs from the source and serves the panel it bundles", async () => {
+    const command = execFileSync("ps", ["-o", "command=", "-p", String(daemonPid)], { encoding: "utf8" });
+    expect(command).toContain(path.join(root, "plugin", "src", "server", "daemon.ts"));
+    const base = `http://127.0.0.1:${port}`;
+    for (const [file, type] of [["/", "text/html"], ["/main.js", "text/javascript"], ["/styles.css", "text/css"]] as const) {
+      const res = await fetch(base + file);
+      expect(res.status, file).toBe(200);
+      expect(res.headers.get("content-type"), file).toContain(type);
+    }
   });
 });

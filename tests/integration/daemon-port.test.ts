@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { freePort, health, spawnDaemon, tempDir, waitFor } from "./daemon-helpers.js";
+import { freePort, health, spawnDaemon, tempDir, waitFor } from "./daemon-helpers.ts";
 
 describe("daemon port conflict", () => {
   it("a second daemon on a port that an inkwire daemon owns exits 0 and never opens a DB", async () => {

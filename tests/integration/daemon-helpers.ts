@@ -9,9 +9,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { connectLink } from "../../src/link/ws-client.js";
-import { LINK_VERSION, type Hello } from "../../src/link/hello.js";
-import type { Health } from "../../src/link/probe.js";
+import { connectLink } from "../../plugin/src/link/ws-client.ts";
+import { LINK_VERSION, type Hello } from "../../plugin/src/link/hello.ts";
+import type { Health } from "../../plugin/src/link/probe.ts";
 
 export const root = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -49,7 +49,7 @@ export interface Spawned {
 }
 
 export function spawnDaemon(port: number, dataDir: string, extra: NodeJS.ProcessEnv = {}): Spawned {
-  const child = spawn(process.execPath, ["--import", "tsx", "src/server/daemon.ts"], {
+  const child = spawn(process.execPath, ["plugin/src/server/daemon.ts"], {
     cwd: root,
     env: testEnv(port, dataDir, extra),
     stdio: ["ignore", "pipe", "pipe"],

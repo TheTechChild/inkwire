@@ -1,10 +1,10 @@
 // TESTS.md § 2 — hand-written fold cases.
 import { describe, expect, it } from "vitest";
-import { Sim, makeNode } from "../helpers.js";
-import { dropStep, toggleSkip } from "../../src/core/history.js";
-import { fold } from "../../src/core/fold.js";
-import { emptyCollections } from "../../src/shared/types.js";
-import { stableStringify } from "../../src/core/util.js";
+import { Sim, makeNode } from "../helpers.ts";
+import { dropStep, toggleSkip } from "../../plugin/src/core/history.ts";
+import { fold } from "../../plugin/src/core/fold.ts";
+import { emptyCollections } from "../../plugin/src/shared/types.ts";
+import { stableStringify } from "../../plugin/src/core/util.ts";
 
 describe("fold", () => {
   it("base only — the board equals step 0's snapshot", () => {

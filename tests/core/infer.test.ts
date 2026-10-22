@@ -2,9 +2,9 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { inferStructure, type InferInput } from "../../src/core/infer.js";
-import { stableStringify } from "../../src/core/util.js";
-import type { Box, Point } from "../../src/shared/types.js";
+import { inferStructure, type InferInput } from "../../plugin/src/core/infer.ts";
+import { stableStringify } from "../../plugin/src/core/util.ts";
+import type { Box, Point } from "../../plugin/src/shared/types.ts";
 
 interface Fixture {
   name: string;

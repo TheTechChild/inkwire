@@ -1,7 +1,7 @@
 // Idle grace (plan M4.8) with a fake clock.
 import { describe, expect, it } from "vitest";
-import { BOOT_GRACE_MIN_MS, IdleTimer, type Timers } from "../../src/server/idle.js";
-import { loadConfig } from "../../src/server/config.js";
+import { BOOT_GRACE_MIN_MS, IdleTimer, type Timers } from "../../plugin/src/server/idle.ts";
+import { loadConfig } from "../../plugin/src/server/config.ts";
 
 class FakeTimers implements Timers {
   now = 0;

@@ -1,5 +1,4 @@
 node_modules/
-dist/
 *.log
 .inkwire-data/
 
@@ -9,7 +8,7 @@ dist/
 .DS_Store
 
 # Claude Code writes the mod API types here when it loads the plugin from this folder.
-.claude-plugin/types/
+plugin/.claude-plugin/types/
 
 # Design handoff stays local; only .keep is tracked so the directory exists.
 design_handoff_inkwire/*

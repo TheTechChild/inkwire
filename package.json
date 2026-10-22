@@ -8,29 +8,30 @@
   "engines": {
     "node": ">=26"
   },
-  "bin": "dist/link/relay.js",
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node esbuild.ui.mjs && node scripts/write-build-id.mjs",
-    "dev": "INKWIRE_PORT=4692 INKWIRE_DATA_DIR=$HOME/.inkwire-dev INKWIRE_IDLE_GRACE_MS=off node esbuild.ui.mjs --watch & INKWIRE_PORT=4692 INKWIRE_DATA_DIR=$HOME/.inkwire-dev INKWIRE_IDLE_GRACE_MS=off tsx watch src/server/daemon.ts",
-    "dev:claude": "INKWIRE_PORT=4692 INKWIRE_DATA_DIR=$HOME/.inkwire-dev claude --plugin-dir .",
-    "start": "tsx src/server/daemon.ts",
+    "dev": "INKWIRE_PORT=4692 INKWIRE_DATA_DIR=$HOME/.inkwire-dev INKWIRE_IDLE_GRACE_MS=off INKWIRE_UI_WATCH=1 node --watch-path=plugin/src/server --watch-path=plugin/src/core --watch-path=plugin/src/shared --watch-path=plugin/src/link plugin/src/server/daemon.ts",
+    "dev:claude": "INKWIRE_PORT=4692 INKWIRE_DATA_DIR=$HOME/.inkwire-dev claude --plugin-dir ./plugin",
+    "start": "node plugin/src/server/daemon.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "health": "yarn build && INKWIRE_HEALTH=1 vitest run tests/health tests/link tests/server/idle.test.ts tests/tools/clients.test.ts tests/tools/project-root.test.ts tests/tools/forward-hook.test.ts tests/tools/authorship.test.ts tests/integration/port-conflict.test.ts tests/integration/daemon.test.ts",
+    "health": "vitest run tests/health tests/link tests/server/idle.test.ts tests/server/build-info.test.ts tests/server/ui-bundle.test.ts tests/server/fonts.test.ts tests/tools/clients.test.ts tests/tools/project-root.test.ts tests/tools/forward-hook.test.ts tests/tools/authorship.test.ts tests/integration/port-conflict.test.ts tests/integration/daemon.test.ts",
     "lint": "oxlint",
     "typecheck": "tsc --noEmit",
-    "gen:schemas": "tsx src/scripts/gen-schemas.ts",
+    "gen:schemas": "node scripts/gen-schemas.ts",
     "map-anchors": "node scripts/map-anchor-check.mjs --all",
     "map-anchors:test": "node --test scripts/map-anchor-check.test.mjs",
-    "build-id:test": "node --test scripts/write-build-id.test.mjs",
+    "lock-plugin": "node scripts/lock-plugin.ts",
+    "check-plugin": "node scripts/check-plugin.ts",
+    "check-install": "node scripts/check-install.ts",
     "daemon:restart": "node scripts/daemon-restart.mjs",
-    "mod:validate": "claude plugin validate .",
-    "mod:test": "node hooks/run-mod-tests.mjs"
+    "mod:validate": "claude plugin validate . && claude plugin validate plugin",
+    "mod:test": "claude plugin test plugin"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@resvg/resvg-js": "^2.6.2",
     "better-sqlite3": "^13.0.3",
+    "esbuild": "^0.25.0",
     "ws": "^8.18.0",
     "zod": "^4.1.0"
   },
@@ -40,7 +41,6 @@
     "@types/ws": "^8.5.12",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
-    "esbuild": "^0.25.0",
     "fast-check": "^4.9.0",
     "oxlint": "^1.86.0",
     "tsx": "^4.19.0",
