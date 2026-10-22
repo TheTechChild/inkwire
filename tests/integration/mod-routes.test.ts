@@ -1,6 +1,6 @@
 // ADR 0004: the mod's HTTP routes on a real daemon (random port, temp data
 // dir): the hook with ?via=mod, GET /api/mod/view (long poll), POST
-// /api/mod/intent and POST /api/mod/take, and the Origin check on them.
+// /api/mod/take, and the Origin check on them.
 import WebSocket from "ws";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { startDaemon, type Daemon } from "../../src/server/daemon.js";
@@ -13,7 +13,6 @@ import { rawRequest, tempDir } from "./daemon-helpers.js";
 let d: Daemon;
 let port: number;
 let boardId: string;
-let other: string;
 let me: Client;
 const SID = "sess-mod";
 let errors: MockInstance<typeof console.error>;
@@ -36,7 +35,6 @@ beforeAll(async () => {
   port = d.port;
   const root = tempDir("mod-root");
   boardId = d.core.sessions.create("mod board", root).boardId;
-  other = d.core.sessions.create("other board", root).boardId;
   me = d.core.clients.ensure(5151, { sessionId: SID, cwd: "/work/modrepo" });
   d.core.clients.attach(5151, "link-test");
   d.core.clients.commitClaim(me, boardId);
@@ -129,14 +127,14 @@ describe("GET /api/mod/view", () => {
     expect((await view(`session=${SID}&wait=soon`)).status).toBe(400);
   });
 
-  it("a known session gets its client and its current board, with the push fields", async () => {
+  it("a known session gets its client and its current board: id, name and the Author push", async () => {
     me.mod = null;
     const r = await view(`session=${SID}&wait=0`);
     expect(r.status).toBe(200);
     expect(r.body.client).toEqual({ pid: 5151, label: "modrepo", mode: "pty", awaiting: false, inbox: 0, current_board: boardId });
     expect(r.body.board).toMatchObject({ id: boardId, name: "mod board" });
-    expect(Object.keys(r.body.board).sort()).toEqual(["daemon", "history", "id", "name", "session", "state"]);
-    expect(r.body.board.session.author).toMatchObject({ pid: 5151, pending: false });
+    expect(Object.keys(r.body.board).sort()).toEqual(["author", "id", "name"]);
+    expect(r.body.board.author).toMatchObject({ pid: 5151, pending: false });
     // The view (the mod's loop) marks the mod live.
     expect(d.core.clients.hasLiveMod(me)).toBe(true);
   });
@@ -160,15 +158,10 @@ describe("GET /api/mod/view", () => {
     expect(Date.now() - t0).toBeLessThan(1000);
   });
 
-  it("the long poll wakes on a board change with a new key", async () => {
+  it("a board edit does not change the key: the view holds only the status line's fields", async () => {
     const first = (await view(`session=${SID}&wait=0`)).body;
-    const t0 = Date.now();
-    const waiting = view(`session=${SID}&since=${first.key}&wait=5000`);
-    setTimeout(() => mutations.addNode(d.core.sessions.open(boardId), "human", { label: "woken", kind: "service", at: [0, 0] }), 100);
-    const r = await waiting;
-    expect(Date.now() - t0).toBeLessThan(3000);
-    expect(r.body.key).not.toBe(first.key);
-    expect(r.body.board.state.graph.nodes.some((n: { label: string }) => n.label === "woken")).toBe(true);
+    mutations.addNode(d.core.sessions.open(boardId), "human", { label: "not shown", kind: "service", at: [0, 0] });
+    expect((await view(`session=${SID}&wait=0`)).body.key).toBe(first.key);
   });
 
   it("the long poll wakes on a Clients change", async () => {
@@ -203,45 +196,6 @@ describe("GET /api/mod/view", () => {
     await req;
     await new Promise((r) => setTimeout(r, 100));
     expect(listeners.size).toBe(before);
-  });
-});
-
-describe("POST /api/mod/intent", () => {
-  it("applies an intent on the current board, authored human", async () => {
-    const r = await post("/api/mod/intent", { session: SID, board: boardId, intent: { type: "add_node", label: "from pane", kind: "service", at: [10, 10] } });
-    expect(r.status).toBe(200);
-    expect(JSON.parse(r.body)).toEqual({ ok: true });
-    const s = d.core.sessions.open(boardId);
-    expect(s.collections().nodes.some((n) => n.label === "from pane")).toBe(true);
-    expect(s.historyRows().at(-1)?.author).toBe("human");
-  });
-
-  it("refuses a board that is not the current board", async () => {
-    const r = await post("/api/mod/intent", { session: SID, board: other, intent: { type: "layers_focus", layer_id: null } });
-    expect(r.status).toBe(400);
-    expect(JSON.parse(r.body).error).toContain("not the current board");
-  });
-
-  it("an unknown session gets 404; bad bodies get 400", async () => {
-    expect((await post("/api/mod/intent", { session: "nobody", board: boardId, intent: {} })).status).toBe(404);
-    expect((await post("/api/mod/intent", "not json")).status).toBe(400);
-    expect((await post("/api/mod/intent", { board: boardId })).status).toBe(400);
-  });
-
-  it("a rejected intent gets 400 and the panels of the board re-sync", async () => {
-    const p = await panel(boardId);
-    try {
-      await p.waitFor((m) => m.type === "state");
-      const n = p.messages.length;
-      const r = await post("/api/mod/intent", { session: SID, board: boardId, intent: { type: "delete", id: "n_ghost" } });
-      expect(r.status).toBe(400);
-      expect(JSON.parse(r.body).error).toBeTruthy();
-      await p.waitFor((m) => m.type === "state" && p.messages.indexOf(m) >= n);
-      const bad = await post("/api/mod/intent", { session: SID, board: boardId, intent: { type: "no_such_intent" } });
-      expect(bad.status).toBe(400);
-    } finally {
-      p.close();
-    }
   });
 });
 
@@ -282,10 +236,13 @@ describe("Origin check on the mod routes", () => {
     expect((await view(`session=${SID}&wait=0`)).status).toBe(200);
   });
 
+  it("the old intent route is gone", async () => {
+    expect((await post("/api/mod/intent", { session: SID, board: boardId, intent: { type: "session_mode_off" } })).status).toBe(404);
+  });
+
   it("a mod request with a foreign Origin is refused", async () => {
     const evil = { Origin: "https://evil.example" };
     expect((await post("/api/mod/take", { session: SID }, evil)).status).toBe(403);
-    expect((await post("/api/mod/intent", { session: SID, board: boardId, intent: {} }, evil)).status).toBe(403);
     expect((await rawRequest(port, "GET", `/api/mod/view?session=${SID}&wait=0`, evil)).status).toBe(403);
     expect((await post("/api/hook?via=mod", { hook_event_name: "Stop", session_id: SID }, evil)).status).toBe(403);
   });

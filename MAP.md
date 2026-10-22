@@ -37,10 +37,10 @@ src/server/daemon.ts:102     startDaemon
 src/link/probe.ts:49         probeHealth
 src/server/config.ts:18      loadConfig
 src/server/upgrade.ts:11     routeUpgrades
-src/server/http.ts:85        requestHandler
-src/server/http.ts:95        createHttpServer
-src/server/http.ts:99        handle
-src/server/http.ts:444       serveFile
+src/server/http.ts:84        requestHandler
+src/server/http.ts:94        createHttpServer
+src/server/http.ts:98        handle
+src/server/http.ts:424       serveFile
 src/server/origin.ts:12      checkBrowserRequest
 src/server/ws.ts:30          PanelHub
 src/server/ws.ts:84          handleUpgrade
@@ -51,8 +51,8 @@ Env: `INKWIRE_PORT`, `INKWIRE_DATA_DIR`, `INKWIRE_IDLE_GRACE_MS` (daemon only; d
 turns the idle stop off). There is no project-root env (see Project root). HTTP serves the panel
 from `dist/ui/` and the routes `/healthz`, `/api/boards` (each entry has `project_root`, the unset
 mark and `author: { label, pid } | null`), `/api/boards/:id/export`,
-`/api/boards/import`, `/api/capture/:id`, `/api/hook`, the mod's routes `GET /api/mod/view`,
-`POST /api/mod/intent` and `POST /api/mod/take` (see The mod), and on the daemon
+`/api/boards/import`, `/api/capture/:id`, `/api/hook`, the mod's routes `GET /api/mod/view`
+and `POST /api/mod/take` (see The mod), and on the daemon
 `POST /api/daemon/restart`.
 
 Beware: the Origin and Host check (`checkBrowserRequest`, M4.11). Every `POST`, `PUT`, `DELETE`
@@ -173,7 +173,7 @@ src/server/build-info.ts:18   readBuildInfo
 src/server/build-info.ts:32   isNewerBuild
 src/server/idle.ts:22         IdleTimer
 src/server/restart.ts:22      createRestart
-src/server/http.ts:80         defaultStats
+src/server/http.ts:79         defaultStats
 src/server/clients.ts:548     markStale
 src/server/clients.ts:556     STALE_NOTICE
 ```
@@ -399,8 +399,8 @@ relays and a real daemon). `tests/tools/harness.ts` builds many Clients over one
 The panel sends intents, the server answers with full pushes. Intents are validated against a zod
 discriminated union, then dispatched by `type` in `PanelHub.handle`.
 
-The push (`state`) carries the board, its history rows, `session` and `daemon` (`PanelHub.view`
-builds them; the mod's view uses it with no ink geometry). `session` has the
+The push (`state`) carries the board (with ink geometry), its history rows, `session` and `daemon`
+(`PanelHub.push` builds it). The mod's view reads only the `author` field (`PanelHub.author`). `session` has the
 board's `author` (`{ pid, label, mode, pending, awaiting, notice }` or null; `pending` is true while the
 Author's send blocks on this board or, with mod delivery, while it awaits the reply; `awaiting` is
 true only in the second case, for the Release confirm text), `readers` (a count of the
@@ -421,18 +421,17 @@ src/shared/protocol.ts:154    clientMessageSchema
 src/shared/protocol.ts:171    captureRequestSchema
 src/shared/protocol.ts:200    SessionPush
 src/shared/protocol.ts:225    ServerMessage
-src/server/ws.ts:147          handle
-src/server/ws.ts:138          apply
-src/server/ws.ts:154          case "add_node":
-src/server/ws.ts:205          case "board_release": {
-src/server/ws.ts:215          case "board_allow":
-src/server/ws.ts:220          case "daemon_restart": {
+src/server/ws.ts:134          handle
+src/server/ws.ts:141          case "add_node":
+src/server/ws.ts:192          case "board_release": {
+src/server/ws.ts:202          case "board_allow":
+src/server/ws.ts:207          case "daemon_restart": {
 src/server/ws.ts:20           HubDeps
-src/server/ws.ts:285          strip
-src/server/ws.ts:309          daemon
-src/server/ws.ts:333          fanOut
-src/server/ws.ts:363          push
-src/server/ws.ts:372          requestCapture
+src/server/ws.ts:272          strip
+src/server/ws.ts:296          daemon
+src/server/ws.ts:320          fanOut
+src/server/ws.ts:338          push
+src/server/ws.ts:361          requestCapture
 src/server/clients.ts:252     peekLinked
 src/shared/protocol.ts:179    AuthorPush
 src/shared/protocol.ts:213    DaemonPush
@@ -441,10 +440,8 @@ src/ui/ws-client.ts:120       answerCapture
 src/ui/app.ts:91              isServerMessage
 ```
 
-A rejected intent triggers a re-sync push to every panel of the board. `PanelHub.apply` is the
-same handler with no socket, for `POST /api/mod/intent` (author `human`); it re-syncs the same
-way, then throws. On board delete the socket closes with
-code 4010.
+A rejected intent triggers a re-sync push to every panel of the board. On board delete the socket
+closes with code 4010.
 
 Beware: the fan-out. `Clients.notify` runs `fanOut`, which pushes a board only when its strip
 fields (`author`, `readers`, `released_from`) differ from what its panels got last. When
@@ -647,9 +644,9 @@ Tests: `tests/tools/session.test.ts`, `tests/tools/forward-hook.test.ts`, `tests
 
 ADR 0004. A Claude Code mod (a hooks module) beside the transcript. The browser stays the ink
 surface. The mod does three things: mod delivery for session mode, the hook events in place of
-`hooks/forward.sh`, and a pane (the Session thread and composer, the Author strip, the stale-build
-Restart, Layers, Drafts, History). The mod is person-side UI: its intents are authored `human`.
-It uses only the daemon's HTTP routes, never `$.mcp.call`. It names its Client by the Claude Code
+`hooks/forward.sh`, and one status line (`inkwire · <board> · <state>`) with the `/inkwire` command
+(the status and the panel URL; `send` and `discard` for refused replies). The mod is person-side
+UI. It uses only the daemon's HTTP routes, never `$.mcp.call`. It names its Client by the Claude Code
 session id (`Clients.bySessionId`), because the mods API has no pid. A session id that two Clients
 hold names no Client. The mod's own files are under
 `hooks/mod/` (not `.ts` in `src/`); `hooks/mod/register.tsx` is the module.
@@ -668,12 +665,11 @@ src/server/session-mode.ts:157   sessionSend
 src/server/session-mode.ts:287   sessionReply
 src/server/session-mode.ts:365   modPrompt
 src/server/session-mode.ts:395   hookEvent
-src/server/http.ts:289           handleMod
-src/server/http.ts:359           modView
-src/server/http.ts:382           waitForChange
+src/server/http.ts:288           handleMod
+src/server/http.ts:339           modView
+src/server/http.ts:362           waitForChange
 src/server/http.ts:63            ModHub
-src/server/ws.ts:138             apply
-src/server/ws.ts:347             view
+src/server/ws.ts:334             author
 ```
 
 Routes (all take the session id; only the view marks `client.mod.at`):
@@ -686,9 +682,8 @@ Routes (all take the session id; only the view marks `client.mod.at`):
   `/clear` sends the launch id). `200 { key, client, board }`. It answers
   at once when the key is not `since`, else on a change, else after `wait` (at most 25000 ms) with
   the same key. The key is a hash of the body. `client` is `{ pid, label, mode, awaiting, inbox,
-  current_board }` or null; `board` is `{ id, name, state, history, session, daemon }` or null.
-- `POST /api/mod/intent` — `{ session, board, intent }`. `board` must be the Client's current
-  board. `PanelHub.apply` applies it. `200 { ok: true }`, `400 { error }`, `404` for an unknown session.
+  current_board }` or null; `board` is `{ id, name, author }` (`author` is the push's
+  `AuthorPush`, from `PanelHub.author`) or null. An edit of the board does not change the key.
 - `POST /api/mod/take` — `{ session }`. `{ replies: [{ id, prompt }] }`, and the inbox empties.
   `400` for a bad body, `404` for an unknown session.
 
@@ -698,7 +693,7 @@ event does not make the mod live (a mod whose loop stopped cannot take the inbox
 the mod answer the hooks (`modAnswersHooks`). Liveness picks the delivery model at `session_send` time.
 
 Beware: mod delivery. `session_send` with a live mod sets `awaiting` and `delivered` and returns `delivered`. No
-timer, no pending send. A panel or pane reply with no pending send but `awaiting` adds the `you`
+timer, no pending send. A panel reply with no pending send but `awaiting` adds the `you`
 row and puts `{ id, prompt }` in the inbox (`modPrompt`: the reply, `inkwire ctx: <json ids and
 board>`, `Answer with session_send.`). With `awaiting` but no live mod, the reply fails and tells
 the person to type in the terminal. A reply that waits in the inbox while the mod is gone stays
@@ -712,20 +707,27 @@ not change the key.
 Beware: the mod's outbox (`live.ts`). The mod marks a reply in `$.state` before
 `$.prompt.submit`, so a reload never submits it twice. A reply leaves when the submit resolves or
 when `classic.UserPromptSubmit` shows its text. A refused reply, or one that did not start a turn
-within two main turns, waits for the person (Send now, Discard); it is never submitted again by
-itself. The outbox empties when the view shows a mode that is not `inkwire`. The mod opens the
-pane unasked only after a render said the surface docks it (`isFullscreen`).
+within two main turns, waits for the person (`/inkwire send`, `/inkwire discard`); it is never
+submitted again by itself. The outbox empties when the view shows a mode that is not `inkwire`.
+The host refuses `$.prompt.submit` from a `command.run` hook: `/inkwire send` marks the reply new
+again, and a `$.clock.after` timer runs `deliver` after the command returns.
+
+Beware: the status line (`statusText` in `live.ts`, pure). The mod sets it on each view and on each
+outbox change (`refreshStatus`), and only after the first view (`link.checked`). An outbox reply
+wins over the mode: refused, then queued, then `pty`, `waiting on you`, `claude is working`.
+A daemon that answers 404 on `/api/mod/view` (from before ADR 0004) is not a down daemon:
+`fetchView` returns `OLD_DAEMON`, the link has `old`, and the status line says to restart it in
+the panel. `/inkwire` then gives the panel URL with no board.
 
 Mod files (not in `src/`, so no anchors): `register.tsx` (the hooks: `session.start`, `/inkwire`,
-the pane render, an `AbovePrompt` render that draws nothing and learns `isFullscreen`,
 `classic.Stop|SessionStart|UserPromptSubmit|PreToolUse`, `turn.complete`),
-`daemon.ts` (every HTTP call, each one in a race with a timeout), `live.ts` (the long-poll loop,
-take, and `$.prompt.submit` of the outbox), `pane.tsx` (the four tabs), `contract.d.ts` (the state
-contract and copies of the daemon's wire types: change them when the push shapes change),
-`state.ts`. `.claude-plugin/plugin.json` names `contract.d.ts` as its `types`.
+`daemon.ts` (every HTTP call, each one in a race with a timeout; `DEFAULT_PORT`), `live.ts` (the
+long-poll loop, take, `$.prompt.submit` of the outbox, the status line and `inkwireCommand`),
+`contract.d.ts` (the state contract and copies of the daemon's wire types: change them when the
+view shape changes). `.claude-plugin/plugin.json` names `contract.d.ts` as its `types`.
 
-Beware: the mod cannot import `src/shared/` (zod). Keep `InkwireIntent` in `contract.d.ts` a
-subset of `clientIntentSchema`, and the `Inkwire*` push types a subset of the push.
+Beware: the mod cannot import `src/shared/` (zod). Keep the `Inkwire*` types a copy of
+`ModViewBody` in `src/server/http.ts` and of `AuthorPush`.
 
 Tests: `tests/tools/mod.test.ts`, `tests/integration/mod-routes.test.ts`, and
 `tests/integration/mod-link.test.ts` (the mod's HTTP flow through a real relay that carries

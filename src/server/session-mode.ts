@@ -54,7 +54,7 @@ export function sessionMode(
         `no hook event has reached the server, so the Stop hook is not installed. Relaunch with the inkwire plugin: claude --plugin-dir ${root} --permission-mode auto`,
       );
     }
-    // ADR 0004: with a live mod nothing blocks, and the person sees permission prompts beside the pane.
+    // ADR 0004: with a live mod nothing blocks, and the person sees permission prompts in the terminal.
     const mod = clients.hasLiveMod(client);
     const problem = mod ? null : blockingProblem(h);
     if (problem) throw new Error(problem);
@@ -78,7 +78,7 @@ export function sessionMode(
     record(
       clients,
       "session_mode",
-      mod ? "on · the pane delivers replies, flag on. Stop hook armed." : "on · permission mode is auto, flag on. Stop hook armed.",
+      mod ? "on · the inkwire mod delivers replies, flag on. Stop hook armed." : "on · permission mode is auto, flag on. Stop hook armed.",
       { mode: "inkwire", hook: "Stop", delivery },
       boardId,
     );
@@ -175,8 +175,8 @@ export function sessionSend(
   const mod = clients.hasLiveMod(client);
   const problem = mod || !client.hook ? null : blockingProblem(client.hook);
   if (problem) {
-    const note = `the inkwire pane is not running, and this session cannot wait for a reply: ${problem}. Reply in the terminal.`;
-    modeOff(clients, client, "the claude code pane stopped · mode pty", { status: "mode_off", note }, "session_send", () => "the pane stopped and this session cannot block · mode pty");
+    const note = `the inkwire mod is not running, and this session cannot wait for a reply: ${problem}. Reply in the terminal.`;
+    modeOff(clients, client, "the inkwire mod stopped · mode pty", { status: "mode_off", note }, "session_send", () => "the inkwire mod stopped and this session cannot block · mode pty");
     return Promise.resolve({ status: "mode_off", note });
   }
 
@@ -302,7 +302,7 @@ export function sessionReply(
   if (!talker.pending) {
     if (!talker.awaiting) throw new Error("no session_send is pending; claude code is still working");
     if (!clients.hasLiveMod(talker)) {
-      throw new Error("the claude code pane is not running, so it cannot deliver this reply; type it in the terminal");
+      throw new Error("the inkwire mod is not running in Claude Code, so it cannot deliver this reply; type it in the terminal");
     }
   }
   const c = session.collections();

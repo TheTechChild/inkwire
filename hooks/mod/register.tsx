@@ -5,14 +5,14 @@
 //      in place of hooks/forward.sh. forward.sh stays as the fallback when
 //      mods are off or the daemon is older than ADR 0004 (the mod then sends
 //      no hook events); while the mod answers the hooks, the daemon makes it a no-op.
-//   3. It draws the inkwire pane (/inkwire).
+//   3. It shows one status line (inkwire · <board> · <state>) and serves
+//      /inkwire (the status and the browser panel URL; send and discard for
+//      refused replies). The browser panel stays the place to read and reply.
 // It uses only the HTTP surface of the daemon. It writes nothing to stdout.
 import { atom, read, update } from "claude-code";
 import type { Register } from "claude-code";
 import { type Engine, type Verdict, postHook } from "./daemon";
-import { accepted, deliver, noteSurface, startLoop, turnEnded, wake } from "./live";
-import { renderPane } from "./pane";
-import { PANE } from "./state";
+import { accepted, deliver, inkwireCommand, startLoop, turnEnded, wake } from "./live";
 
 const launchAtom = atom({ plugin: "inkwire", key: "launch" } as const, null);
 const permissionAtom = atom({ plugin: "inkwire", key: "permission" } as const, null);
@@ -43,10 +43,12 @@ export const register: Register = (on) => {
     try {
       await $.command.register({
         name: "inkwire",
-        description: "Open the inkwire pane: the Session thread, layers and paths, drafts and history of your board",
+        description: "inkwire status and the browser panel URL; send or discard a refused reply",
+        argumentHint: "[send|discard]",
+        immediate: true,
       });
     } catch {
-      // the command is a convenience: the pane also opens by itself
+      // the command is a convenience: the status line shows the state too
     }
     try {
       // A reload keeps the id the mod knew; only the first load reads it.
@@ -63,27 +65,13 @@ export const register: Register = (on) => {
     return next(e);
   });
 
+  // The answer is text alone: no turn of Claude starts.
   on("command.run", { command: "inkwire" }, async ($, e) => {
-    noteSurface(e.presentation.isFullscreen);
     try {
-      const opened = await $.ui.open({ id: PANE, title: "inkwire", focus: true });
-      wake($);
-      return { text: opened.isPlaced ? "inkwire pane opened." : `inkwire pane waits: ${opened.reason}` };
+      return { text: await inkwireCommand($, e.args) };
     } catch {
-      return { text: "This surface cannot show the inkwire pane. Use the browser panel." };
+      return { text: "inkwire · the mod has no state on this host. Use the browser panel." };
     }
-  });
-
-  on("ui.render", { component: "Pane", requestId: "inkwire" }, async ($, e) => {
-    noteSurface(e.viewport?.isFullscreen);
-    return renderPane($, e);
-  });
-
-  // Draws nothing. It learns whether the surface docks a pane, so the mod
-  // opens the pane unasked only where it is a sidebar.
-  on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
-    noteSurface(e.viewport?.isFullscreen);
-    return next(e);
   });
 
   // Settings hook events. Each posts first, then runs the settings hooks of

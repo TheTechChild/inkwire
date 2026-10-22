@@ -8,9 +8,9 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import type { Store } from "./store.js";
 import type { Screenshots } from "./screenshot.js";
-import type { BoardSession, Sessions } from "./session.js";
+import type { Sessions } from "./session.js";
 import type { Client, Clients } from "./clients.js";
-import type { ServerMessage } from "../shared/protocol.js";
+import type { AuthorPush } from "../shared/protocol.js";
 import * as mutations from "./mutations.js";
 import { ImportError, exportBoard, exportFilename, importBoard } from "./board-file.js";
 import { hookEvent } from "./session-mode.js";
@@ -52,17 +52,16 @@ export interface HttpDeps {
    */
   restart?: () => void;
   /**
-   * The panel hub, for the mod's routes (ADR 0004): its push fields and its
-   * intent handler. With none, /api/mod/* is not found. A getter, because the
-   * hub is made after the handler.
+   * The panel hub, for the mod's routes (ADR 0004): the Author field of its
+   * push. With none, /api/mod/* is not found. A getter, because the hub is
+   * made after the handler.
    */
   hub?: () => ModHub;
 }
 
 /** What the mod's routes need from the panel hub (PanelHub). */
 export interface ModHub {
-  view(session: BoardSession): Omit<Extract<ServerMessage, { type: "state" }>, "type">;
-  apply(session: BoardSession, intent: unknown): void;
+  author(boardId: string): AuthorPush | null;
 }
 
 /** The longest wait of one GET /api/mod/view (ADR 0004). The mod polls again at once. */
@@ -284,8 +283,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HttpDeps)
   res.end("not found");
 }
 
-// The mod's routes (ADR 0004). The mod is person-side UI: its intents are
-// authored human. Agents must not call these routes.
+// The mod's routes (ADR 0004). The mod is person-side UI. Agents must not
+// call these routes.
 async function handleMod(req: IncomingMessage, res: ServerResponse, url: URL, deps: HttpDeps, hub: () => ModHub): Promise<void> {
   const p = url.pathname;
   const { clients } = deps;
@@ -313,26 +312,6 @@ async function handleMod(req: IncomingMessage, res: ServerResponse, url: URL, de
     return;
   }
 
-  if (req.method === "POST" && p === "/api/mod/intent") {
-    const body = await readJson(req);
-    if (!body.ok) return sendJson(res, 400, { error: body.error });
-    const { session: sessionId, board, intent } = body.value as { session?: unknown; board?: unknown; intent?: unknown };
-    if (typeof sessionId !== "string" || !sessionId) return sendJson(res, 400, { error: "session must be a string" });
-    if (typeof board !== "string" || !board) return sendJson(res, 400, { error: "board must be a string" });
-    const client = clients.bySessionId(sessionId);
-    if (!client) return sendJson(res, 404, { error: `no Claude Code session ${sessionId}` });
-    // A stale pane must not act on another board.
-    if (client.currentBoardId !== board) {
-      return sendJson(res, 400, { error: `board ${board} is not the current board of this session (${client.currentBoardId ?? "none"})` });
-    }
-    try {
-      hub().apply(deps.sessions.open(board), intent);
-    } catch (err) {
-      return sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
-    }
-    return sendJson(res, 200, { ok: true });
-  }
-
   if (req.method === "POST" && p === "/api/mod/take") {
     const body = await readJson(req);
     if (!body.ok) return sendJson(res, 400, { error: body.error });
@@ -352,7 +331,8 @@ async function handleMod(req: IncomingMessage, res: ServerResponse, url: URL, de
 interface ModViewBody {
   key: string;
   client: { pid: number; label: string; mode: Client["mode"]; awaiting: boolean; inbox: number; current_board: string | null } | null;
-  board: ({ id: string; name: string } & ReturnType<ModHub["view"]>) | null;
+  /** The current board: only what the mod's status line shows. A change elsewhere on the board does not change the key. */
+  board: { id: string; name: string; author: AuthorPush | null } | null;
 }
 
 /** The mod's view of one Claude Code session; the key is a hash of the rest. */
@@ -362,7 +342,7 @@ function modView(deps: HttpDeps, hub: ModHub, sessionId: string): ModViewBody {
   if (c?.currentBoardId) {
     try {
       const s = deps.sessions.open(c.currentBoardId);
-      if (!s.closed) board = { id: s.boardId, name: s.meta.name, ...hub.view(s) };
+      if (!s.closed) board = { id: s.boardId, name: s.meta.name, author: hub.author(s.boardId) };
     } catch {
       // board deleted under us: no board
     }

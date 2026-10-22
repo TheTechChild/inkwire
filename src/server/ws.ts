@@ -4,7 +4,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { clientMessageSchema, type DaemonPush, type ServerMessage, type SessionPush } from "../shared/protocol.js";
+import { clientMessageSchema, type AuthorPush, type DaemonPush, type ServerMessage, type SessionPush } from "../shared/protocol.js";
 import type { Viewport } from "../shared/types.js";
 import type { Sessions, BoardSession } from "./session.js";
 import type { Clients } from "./clients.js";
@@ -129,19 +129,6 @@ export class PanelHub implements CaptureBroker {
       }
     });
     this.push(session, socket);
-  }
-
-  /**
-   * Apply one intent with no socket, author human: the mod's route (ADR 0004).
-   * A rejected intent re-syncs every panel of the board, as a socket's does, then throws.
-   */
-  apply(session: BoardSession, raw: unknown): void {
-    try {
-      this.handle(session, raw);
-    } catch (err) {
-      this.push(session);
-      throw err;
-    }
   }
 
   private handle(session: BoardSession, raw: unknown): void {
@@ -343,26 +330,28 @@ export class PanelHub implements CaptureBroker {
     }
   }
 
-  /** The push's board fields: with ink geometry for a panel, without it for the mod's view (ADR 0004). */
-  view(session: BoardSession, includeInkGeometry = false): Omit<Extract<ServerMessage, { type: "state" }>, "type"> {
-    return {
-      state: session.state({ includeInkGeometry }),
+  /** The Author field of the push for one board. The mod's view reads it (ADR 0004). */
+  author(boardId: string): AuthorPush | null {
+    return this.strip(boardId).author;
+  }
+
+  push(session: BoardSession, only?: WebSocket): void {
+    const strip = this.strip(session.boardId);
+    const daemon = this.daemon();
+    const message: ServerMessage = {
+      type: "state",
+      state: session.state({ includeInkGeometry: true }),
       history: session.historyRows(),
       session: {
-        ...this.strip(session.boardId),
+        ...strip,
         thread: session.thread,
         highlight: session.highlight
           ? { msg_id: session.highlight.msgId, label: session.highlight.label, nodes: session.highlight.nodes, edges: session.highlight.edges }
           : null,
         trace: session.trace,
       },
-      daemon: this.daemon(),
+      daemon,
     };
-  }
-
-  push(session: BoardSession, only?: WebSocket): void {
-    const strip = this.strip(session.boardId);
-    const message: ServerMessage = { type: "state", ...this.view(session, true) };
     // Only a push to every panel of the board counts as sent: a push to one new socket leaves the others behind.
     if (!only || this.byBoard.get(session.boardId)?.size === 1) this.sentStrip.set(session.boardId, JSON.stringify(strip));
     const targets = only ? [only] : [...(this.byBoard.get(session.boardId) ?? [])];

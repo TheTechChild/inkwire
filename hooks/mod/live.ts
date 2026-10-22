@@ -1,15 +1,12 @@
 // The live view: one long-poll loop on GET /api/mod/view per session, the
-// inbox of replies, the status line, and the first open of the pane.
+// inbox of replies, the status line, and the /inkwire command.
 import { atom, read, update } from "claude-code";
 import type { InkwireOutboxItem, InkwireView } from "./contract";
-import { type Engine, fetchView, port, takeReplies } from "./daemon";
-import { DEFAULT_PORT, PANE } from "./state";
+import { type Engine, fetchView, OLD_DAEMON, port, takeReplies } from "./daemon";
 
 const launchAtom = atom({ plugin: "inkwire", key: "launch" } as const, null);
-const linkAtom = atom({ plugin: "inkwire", key: "link" } as const, { up: false, port: DEFAULT_PORT, checked: false });
+const linkAtom = atom({ plugin: "inkwire", key: "link" } as const, { up: false, old: false, checked: false });
 const loopAtom = atom({ plugin: "inkwire", key: "loop" } as const, "");
-const noteAtom = atom({ plugin: "inkwire", key: "note" } as const, null);
-const openedAtom = atom({ plugin: "inkwire", key: "opened" } as const, false);
 const outboxAtom = atom({ plugin: "inkwire", key: "outbox" } as const, []);
 const turnsAtom = atom({ plugin: "inkwire", key: "turns" } as const, 0);
 const viewAtom = atom({ plugin: "inkwire", key: "view" } as const, null);
@@ -19,8 +16,6 @@ const BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 15000;
 /** The shortest time between two polls, so a fast daemon cannot make a tight loop. */
 const MIN_GAP_MS = 100;
-/** The start of the note for a reply that Claude Code refused. */
-const WAITS = "Your reply waits.";
 /**
  * A submitted reply starts its turn at the latest when the session is idle
  * after the turn that runs now. When this many main turns ended after the
@@ -35,13 +30,6 @@ const LOST_AFTER_TURNS = 2;
 let token = "";
 let generation = 0;
 let lastStatus: string | undefined;
-/** What the surface said last: true when it docks a pane beside the transcript. */
-let docks: boolean | undefined;
-
-/** Records whether the surface docks a pane (RenderViewport.isFullscreen). Undefined says nothing. */
-export function noteSurface(isFullscreen: boolean | undefined): void {
-  if (isFullscreen !== undefined) docks = isFullscreen;
-}
 
 /**
  * Starts the loop for this module. A loop of an older module sees a new token
@@ -100,14 +88,13 @@ async function poll($: Engine, mine: string, gen: number, errors: number): Promi
     const since = (await read($, viewAtom))?.key ?? "";
     const view = await fetchView($, session, since, await launchId($));
     if (!(await isCurrent($, mine, gen))) return;
-    const p = await port($);
-    if (!view) {
-      await setLink($, false, p);
-      await setStatus($, "inkwire · daemon not reachable");
+    if (view === null || view === OLD_DAEMON) {
+      await setLink($, false, view === OLD_DAEMON);
+      await refreshStatus($);
       next = backoff(errors);
       nextErrors = errors + 1;
     } else {
-      await setLink($, true, p);
+      await setLink($, true, false);
       if (view.key !== since) await update($, viewAtom, () => view);
       await afterView($, view);
     }
@@ -126,9 +113,9 @@ async function launchId($: Engine): Promise<string | null> {
   }
 }
 
-async function setLink($: Engine, up: boolean, p: number): Promise<void> {
+async function setLink($: Engine, up: boolean, old: boolean): Promise<void> {
   const link = await read($, linkAtom);
-  if (link.up !== up || link.port !== p || !link.checked) await update($, linkAtom, () => ({ up, port: p, checked: true }));
+  if (link.up !== up || link.old !== old || !link.checked) await update($, linkAtom, () => ({ up, old, checked: true }));
 }
 
 async function setStatus($: Engine, text: string | undefined): Promise<void> {
@@ -141,32 +128,47 @@ async function setStatus($: Engine, text: string | undefined): Promise<void> {
   }
 }
 
-/** The status line text for a view. */
-export function statusText(view: InkwireView): string {
-  if (!view.client) return "inkwire · no client for this session";
-  if (!view.board) return `inkwire · no board · ${view.client.mode}`;
-  return `inkwire · ${view.board.name} · ${view.client.mode}`;
+/**
+ * The status line text. `view` is null when the daemon did not answer, and
+ * OLD_DAEMON when the daemon answered but has no mod routes.
+ * `outbox` is the mod's outbox: a reply that waits there tells more than the mode.
+ */
+export function statusText(view: InkwireView | typeof OLD_DAEMON | null, outbox: readonly InkwireOutboxItem[]): string {
+  if (view === OLD_DAEMON) return "inkwire · daemon is older than the mod · restart it in the panel";
+  if (!view) return "inkwire · daemon not reachable";
+  const { client, board } = view;
+  if (!client) return "inkwire · not linked";
+  if (!board) return "inkwire · no board";
+  let state: string;
+  if (outbox.some((x) => x.drop !== undefined)) state = "reply refused · /inkwire send";
+  else if (outbox.length > 0) state = "reply queued";
+  else if (client.mode !== "inkwire") state = "pty";
+  else if (client.awaiting || (board.author?.pid === client.pid && board.author.pending)) state = "waiting on you";
+  else state = "claude is working";
+  return `inkwire · ${board.name} · ${state}`;
 }
 
-/** What the mod does with each new view: status, first open, inbox. */
-export async function afterView($: Engine, view: InkwireView): Promise<void> {
-  await setStatus($, statusText(view));
-  // Unasked, only where the surface docks the pane beside the transcript: on
-  // the terminal's main screen a pane opens inline above the prompt.
-  if (view.client?.current_board && docks === true && !(await read($, openedAtom))) {
-    await update($, openedAtom, () => true);
-    try {
-      void $.ui.open({ id: PANE, title: "inkwire" }).catch(() => undefined);
-    } catch {
-      // no surface places panes here
-    }
+/** Sets the status line from the state of the mod. Nothing before the first view. */
+async function refreshStatus($: Engine): Promise<void> {
+  try {
+    const link = await read($, linkAtom);
+    if (!link.checked) return;
+    const view = link.up ? await read($, viewAtom) : link.old ? OLD_DAEMON : null;
+    await setStatus($, statusText(view, await read($, outboxAtom)));
+  } catch {
+    // state is not available: the next view tries again
   }
+}
+
+/** What the mod does with each new view: status, inbox. */
+export async function afterView($: Engine, view: InkwireView): Promise<void> {
+  await refreshStatus($);
   // Mode off cleared the inbox of the daemon (ADR 0004): the replies that the
   // mod took go too. A submit that Claude Code queued already cannot come back.
   if (view.client && view.client.mode !== "inkwire") {
     if ((await read($, outboxAtom)).length > 0) {
       await update($, outboxAtom, () => []);
-      await update($, noteAtom, (note) => (note?.startsWith(WAITS) ? null : note));
+      await refreshStatus($);
     }
     return;
   }
@@ -183,20 +185,22 @@ export async function afterView($: Engine, view: InkwireView): Promise<void> {
         ...list,
         ...replies.filter((r) => !list.some((x) => x.id === r.id)).map((r) => ({ id: r.id, prompt: r.prompt })),
       ]);
+      await refreshStatus($);
     }
   }
   await deliver($);
 }
 
 /**
- * Submits replies from the outbox as the person's next prompt. Automatic
- * delivery submits only the replies that were never submitted. With `retry`
- * (the person pressed Send now) it also submits the replies that Claude Code
- * refused. Each reply is marked in $.state before the submit, so a reload of
- * the module never submits it a second time. A reply leaves the outbox when
- * Claude Code takes it (the submit resolves, or UserPromptSubmit shows its text).
+ * Submits replies from the outbox as the person's next prompt: only the
+ * replies that were never submitted. A refused reply goes again only after
+ * /inkwire send makes it new again. Each reply is marked in $.state before
+ * the submit, so a reload of the module never submits it a second time. A
+ * reply leaves the outbox when Claude Code takes it (the submit resolves, or
+ * UserPromptSubmit shows its text). Do not call it from a command.run hook:
+ * the host refuses that submit.
  */
-export async function deliver($: Engine, retry = false): Promise<void> {
+export async function deliver($: Engine): Promise<void> {
   let turns = 0;
   let now = 0;
   try {
@@ -210,9 +214,7 @@ export async function deliver($: Engine, retry = false): Promise<void> {
     await update($, outboxAtom, (list) => {
       claimed.length = 0;
       return list.map((item) => {
-        const fresh = item.sentAt === undefined;
-        const refused = item.drop !== undefined;
-        if (!fresh && !(retry && refused)) return item;
+        if (item.sentAt !== undefined) return item;
         const marked: InkwireOutboxItem = { id: item.id, prompt: item.prompt, sentAt: now, turn: turns };
         claimed.push(marked);
         return marked;
@@ -247,7 +249,7 @@ export async function deliver($: Engine, retry = false): Promise<void> {
 async function markDrop($: Engine, id: string, reason: string): Promise<void> {
   try {
     await update($, outboxAtom, (list) => list.map((x) => (x.id === id ? { ...x, drop: reason } : x)));
-    await update($, noteAtom, () => `${WAITS} Claude Code did not take it: ${reason}`);
+    await refreshStatus($);
   } catch {
     // state is not available
   }
@@ -258,7 +260,7 @@ export async function accepted($: Engine, prompt: string): Promise<void> {
   try {
     if (!(await read($, outboxAtom)).some((x) => x.prompt === prompt)) return;
     await update($, outboxAtom, (list) => list.filter((x) => x.prompt !== prompt));
-    await update($, noteAtom, (note) => (note?.startsWith(WAITS) ? null : note));
+    await refreshStatus($);
   } catch {
     // state is not available
   }
@@ -285,5 +287,58 @@ export async function turnEnded($: Engine): Promise<void> {
  */
 export async function discardOutbox($: Engine): Promise<void> {
   await update($, outboxAtom, (list) => list.filter((x) => x.sentAt !== undefined && x.drop === undefined));
-  await update($, noteAtom, (note) => (note?.startsWith(WAITS) ? null : note));
+  await refreshStatus($);
+}
+
+function replies(n: number): string {
+  return n === 1 ? "1 reply" : `${n} replies`;
+}
+
+/**
+ * The text of /inkwire. It starts no turn of Claude. `args` is what the
+ * person typed after the name: "" (the status and the browser panel URL),
+ * "send" (submit the refused replies again) or "discard" (drop them).
+ */
+export async function inkwireCommand($: Engine, args: string): Promise<string> {
+  const word = args.trim().toLowerCase();
+  const outbox = await read($, outboxAtom);
+  const refused = outbox.filter((x) => x.drop !== undefined);
+  if (word === "send") {
+    if (refused.length === 0) return "inkwire · no refused reply to send";
+    // The host refuses $.prompt.submit from a command.run hook: the submit
+    // would wait on the turn that the hook holds. A timer submits after the
+    // command returns. If the timer is refused, the next view submits.
+    await update($, outboxAtom, (list) => list.map((x) => (x.drop === undefined ? x : { id: x.id, prompt: x.prompt })));
+    await refreshStatus($);
+    try {
+      $.clock.after(0, () => void deliver($));
+    } catch {
+      wake($);
+    }
+    return `inkwire · sent ${replies(refused.length)} again`;
+  }
+  if (word === "discard") {
+    if (refused.length === 0) return "inkwire · no refused reply to discard";
+    await discardOutbox($);
+    return `inkwire · discarded ${replies(refused.length)}`;
+  }
+  if (word !== "") return "Usage: /inkwire (status and panel URL), /inkwire send, /inkwire discard";
+
+  // A view now, not the one the loop holds: the command must not show an old state.
+  let session = "";
+  try {
+    session = await $.session.id();
+  } catch {
+    // no session id: the view has no Client
+  }
+  const view = await fetchView($, session, "", await launchId($));
+  wake($);
+  const lines = [statusText(view, outbox)];
+  // An old daemon has no mod view, so the mod does not know the board: the URL has no board.
+  if (view === OLD_DAEMON) lines.push(`Browser panel: http://127.0.0.1:${await port($)}/`);
+  else if (view?.board) lines.push(`Browser panel: http://127.0.0.1:${await port($)}/?board=${view.board.id}`);
+  if (refused.length > 0) {
+    lines.push(`${replies(refused.length)} refused (${refused[0]!.drop}). /inkwire send submits again; /inkwire discard drops.`);
+  }
+  return lines.join("\n");
 }

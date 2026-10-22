@@ -5,101 +5,36 @@
 // registers with `on` answer $.http.fetch and the other calls.
 import { expect, mock, test } from "claude-code/testing";
 import type { On, SessionStartInput } from "claude-code";
+import type { InkwireView } from "./contract";
+import { statusText } from "./live";
 
 const SESSION = "S1";
 const PORT = "5999";
 
 type Sent = { url: string; method: string; body: unknown };
 
-const BOARD = {
-  id: "b1",
-  name: "checkout flow",
-  state: {
-    board: { id: "b1", name: "checkout flow", project_root: "/repo" },
-    graph: {
-      revision: 7,
-      nodes: [
-        { id: "n1", label: "cart", kind: "service" },
-        { id: "n2", label: "payments", kind: "service" },
-      ],
-      edges: [{ id: "e1", from: "n1", to: "n2", label: "charge", kind: "sync" }],
-    },
-    layers: [
-      {
-        id: "L1",
-        letter: "A",
-        title: "pay path",
-        note: "",
-        nodes: ["n1", "n2"],
-        author: "ai",
-        paths: [{ id: "P1", title: "charge", steps: [{ edge: "e1", caption: "cart asks payments to charge", ref: null }], author: "ai" }],
-      },
-    ],
-    focus: "L1",
-    drafts: [],
-    active_draft: null,
-    notebooks: [],
-    active_notebook: null,
-  },
-  history: [{ id: "s1", index: 1, label: "add cart", author: "human", skipped: false, conflict: false, ahead: false, at: 1 }],
-  session: {
-    author: { pid: 4242, label: "shop", mode: "inkwire", pending: true, notice: null },
-    readers: 1,
-    released_from: null,
-    thread: [
-      { id: "t1", at: 1, type: "call", name: "canvas_add_node", text: "added cart" },
-      { id: "t2", at: 2, type: "call", name: "canvas_add_edge", text: "added edge" },
-      { id: "t3", at: 3, type: "claude", text: "Which way does **refund** go?" },
-    ],
-    highlight: null,
-    trace: null,
-  },
-  daemon: { build_id: "b-1", stale: null },
-};
-
-function view(over: { inbox?: number; pending?: boolean } = {}) {
+function view(over: { inbox?: number; pending?: boolean; mode?: "pty" | "inkwire"; awaiting?: boolean } = {}): InkwireView {
+  const mode = over.mode ?? "inkwire";
+  const pending = over.pending ?? true;
   return {
-    key: `k-${over.inbox ?? 0}-${String(over.pending ?? true)}`,
-    client: { pid: 4242, label: "shop", mode: "inkwire", awaiting: true, inbox: over.inbox ?? 0, current_board: "b1" },
-    board: {
-      ...BOARD,
-      session: { ...BOARD.session, author: { ...BOARD.session.author, pending: over.pending ?? true } },
-    },
+    key: `k-${over.inbox ?? 0}-${String(pending)}-${mode}-${String(over.awaiting ?? pending)}`,
+    client: { pid: 4242, label: "shop", mode, awaiting: over.awaiting ?? pending, inbox: over.inbox ?? 0, current_board: "b1" },
+    board: { id: "b1", name: "checkout flow", author: { pid: 4242, label: "shop", mode, pending, notice: null } },
   };
 }
 
-const PANE = {
-  plugin: "inkwire",
-  component: "Pane",
-  requestId: "inkwire",
-  props: {
-    title: "inkwire",
-    isFocused: true,
-    bodyColumns: 60,
-    placement: "dock",
-    scroll: { offset: 0, bodyRows: 30 },
-    view: {},
-  },
-  viewport: { columns: 140, rows: 40, isFullscreen: true },
-} as const;
-
 /**
  * The engine and the daemon beneath the mod. `daemon` answers each request by
- * its path; `sent` records every request.
+ * its path; `sent` records every request; `statuses` every status line.
  */
 function engine(on: On, daemon: (path: string, body: unknown) => { status: number; text: string } | "down") {
   const sent: Sent[] = [];
-  const opens: unknown[] = [];
   const session = { id: SESSION };
   const statuses: (string | undefined)[] = [];
   const clock = mock.clock(on, { now: 1_000_000 });
   mock.env(on, { INKWIRE_PORT: PORT, CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS: "0" });
   on("session.id", () => ({ value: session.id }));
   on("command.register", () => ({ value: { command: "inkwire" } }));
-  on("ui.open", (_, e) => {
-    opens.push(e);
-    return { value: { isPlaced: true } };
-  });
   on("ui.status", ($, e) => {
     statuses.push(e.text);
     return { value: undefined };
@@ -112,7 +47,7 @@ function engine(on: On, daemon: (path: string, body: unknown) => { status: numbe
     if (answer === "down") throw new Error("connect ECONNREFUSED");
     return { value: { status: answer.status, ok: answer.status < 300, headers: {}, text: answer.text } };
   });
-  return { sent, statuses, clock, opens, session };
+  return { sent, statuses, clock, session };
 }
 
 /** Starts the session and lets the first view come back: the mod then knows the daemon has its routes. */
@@ -120,6 +55,27 @@ async function start($: { session: { start: (input: SessionStartInput) => Promis
   await $.session.start({ cwd: "/repo", surface: "terminal", isInteractive: true });
   await clock.settle();
 }
+
+test("statusText: one short line for each state", async () => {
+  expect(statusText(null, [])).toBe("inkwire · daemon not reachable");
+  expect(statusText("old", [])).toBe("inkwire · daemon is older than the mod · restart it in the panel");
+  expect(statusText({ key: "k", client: null, board: null }, [])).toBe("inkwire · not linked");
+  const v = view();
+  expect(statusText({ ...v, board: null }, [])).toBe("inkwire · no board");
+  expect(statusText(view({ mode: "pty", pending: false }), [])).toBe("inkwire · checkout flow · pty");
+  expect(statusText(view({ pending: false }), [])).toBe("inkwire · checkout flow · claude is working");
+  expect(statusText(view({ pending: true }), [])).toBe("inkwire · checkout flow · waiting on you");
+  // The blocking model: the Author push is pending, the Client does not await.
+  expect(statusText(view({ pending: true, awaiting: false }), [])).toBe("inkwire · checkout flow · waiting on you");
+  // The pending flag of another Author does not wait on this session.
+  const other = view({ pending: true, awaiting: false });
+  other.board!.author!.pid = 7;
+  expect(statusText(other, [])).toBe("inkwire · checkout flow · claude is working");
+  expect(statusText(view({ pending: false }), [{ id: "r1", prompt: "go", sentAt: 1, turn: 0 }])).toBe("inkwire · checkout flow · reply queued");
+  expect(statusText(view({ pending: false }), [{ id: "r1", prompt: "go", sentAt: 1, turn: 0, drop: "Esc" }])).toBe(
+    "inkwire · checkout flow · reply refused · /inkwire send",
+  );
+});
 
 test("Stop: the block of the daemon joins the result of the settings hooks", async ($, on) => {
   const { sent, clock } = engine(on, (path) =>
@@ -171,8 +127,7 @@ test("SessionStart clear: the mod sends the session id it knew before", async ($
   const { sent, clock } = engine(on, (path) => (path === "/api/mod/view" ? { status: 200, text: JSON.stringify(view()) } : { status: 200, text: "ok" }));
   on("classic.SessionStart", () => ({}));
 
-  await $.session.start({ cwd: "/repo", surface: "terminal", isInteractive: true });
-  await clock.settle();
+  await start($, clock);
   await $.classic.SessionStart({ source: "clear", session_id: "S2" });
 
   const hook = sent.find((s) => s.url.includes("/api/hook"));
@@ -195,133 +150,6 @@ test("PreToolUse on session_mode: the mod sends the call with the session id", a
   });
 });
 
-test("the view draws the pane, on the terminal and the desktop", async ($, on) => {
-  const { clock, statuses } = engine(on, (path) => (path === "/api/mod/view" ? { status: 200, text: JSON.stringify(view()) } : "down"));
-
-  await $.session.start({ cwd: "/repo", surface: "terminal", isInteractive: true });
-  await clock.settle();
-  expect(statuses).toContain("inkwire · checkout flow · inkwire");
-
-  for (const surface of ["terminal", "desktop"] as const) {
-    const ui = await $.ui.mount({ ...PANE, surface });
-    expect(await ui.find({ type: "Text", text: /INKWIRE MODE · WAITING ON YOU/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /shop · pid 4242 · inkwire · this session/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /2 calls: canvas_add_node, canvas_add_edge/ })).toBeDefined();
-    expect(await ui.find({ type: "Markdown", text: /refund/ })).toBeDefined();
-    expect(await ui.find({ type: "Input", key: "reply" })).toBeDefined();
-
-    await ui.press({ key: "tab:layers" });
-    expect(await ui.find({ key: "layer:L1" })).toBeDefined();
-    await ui.press({ key: "path:P1" });
-    expect(await ui.find({ type: "Text", text: /cart → payments/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /cart asks payments to charge/ })).toBeDefined();
-    // The pane state stays for the session: close the path and go back.
-    await ui.press({ key: "path:P1" });
-    expect(await ui.find({ type: "Text", text: /cart → payments/ })).toBeUndefined();
-    await ui.press({ key: "tab:session" });
-    await ui.unmount();
-  }
-});
-
-test("the daemon down: the pane says so", async ($, on) => {
-  const { clock } = engine(on, () => "down");
-
-  await $.session.start({ cwd: "/repo", surface: "terminal", isInteractive: true });
-  await clock.settle();
-
-  const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
-  expect(await ui.find({ type: "Text", text: /does not answer on 127\.0\.0\.1:5999/ })).toBeDefined();
-  await ui.unmount();
-});
-
-test("the reply box posts session_reply with the context ids", async ($, on) => {
-  const { sent, clock } = engine(on, (path) => {
-    if (path === "/api/mod/view") return { status: 200, text: JSON.stringify(view()) };
-    if (path === "/api/mod/intent") return { status: 200, text: JSON.stringify({ ok: true }) };
-    return "down";
-  });
-
-  await $.session.start({ cwd: "/repo", surface: "terminal", isInteractive: true });
-  await clock.settle();
-
-  for (const surface of ["terminal", "desktop"] as const) {
-    const ui = await $.ui.mount({ ...PANE, surface });
-    await ui.input({ key: "reply", text: "go left" });
-    await ui.unmount();
-  }
-
-  const intents = sent.filter((s) => s.url.endsWith("/api/mod/intent"));
-  expect(intents).toHaveLength(2);
-  expect(intents[0]?.body).toEqual({
-    session: SESSION,
-    board: "b1",
-    intent: { type: "session_reply", text: "go left", focus: "L1", selection: null, trace: null, draft: null, notebook: null },
-  });
-});
-
-test("the reply box is closed while Claude Code works", async ($, on) => {
-  const { clock } = engine(on, (path) => (path === "/api/mod/view" ? { status: 200, text: JSON.stringify(view({ pending: false })) } : "down"));
-
-  await $.session.start({ cwd: "/repo", surface: "terminal", isInteractive: true });
-  await clock.settle();
-
-  const ui = await $.ui.mount({ ...PANE, surface: "desktop" });
-  expect(await ui.find({ type: "Input", key: "reply" })).toBeUndefined();
-  expect(await ui.find({ type: "Text", text: /CLAUDE CODE IS WORKING/ })).toBeDefined();
-  await ui.unmount();
-});
-
-test("a reply in the inbox becomes the next prompt, as the person's words", async ($, on) => {
-  const submitted: { text: string; asUser: unknown }[] = [];
-  const { sent, clock } = engine(on, (path) => {
-    if (path === "/api/mod/view") return { status: 200, text: JSON.stringify(view({ inbox: 1 })) };
-    if (path === "/api/mod/take") return { status: 200, text: JSON.stringify({ replies: [{ id: "r1", prompt: "go left\ninkwire ctx: {}\nAnswer with session_send." }] }) };
-    return "down";
-  });
-  on("prompt.submit", (_, e) => {
-    submitted.push({ text: e.text, asUser: (e.origin as { asUser?: unknown }).asUser });
-    return { text: e.text };
-  });
-
-  await $.session.start({ cwd: "/repo", surface: "terminal", isInteractive: true });
-  await clock.settle();
-
-  expect(sent.find((s) => s.url.endsWith("/api/mod/take"))?.body).toEqual({ session: SESSION });
-  expect(submitted).toEqual([{ text: "go left\ninkwire ctx: {}\nAnswer with session_send.", asUser: true }]);
-
-  // Accepted: nothing waits in the pane.
-  const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
-  expect(await ui.find({ type: "Text", text: /waits? to go to Claude Code/ })).toBeUndefined();
-  await ui.unmount();
-});
-
-test("a refused reply waits, and goes again from the pane", async ($, on) => {
-  let refuse = true;
-  const submitted: string[] = [];
-  const { clock } = engine(on, (path) => {
-    if (path === "/api/mod/view") return { status: 200, text: JSON.stringify(view({ inbox: 1 })) };
-    if (path === "/api/mod/take") return { status: 200, text: JSON.stringify({ replies: [{ id: "r1", prompt: "go left" }] }) };
-    return "down";
-  });
-  on("prompt.submit", (_, e) => {
-    submitted.push(e.text);
-    return refuse ? { drop: "the person pressed Esc" } : { text: e.text };
-  });
-
-  await $.session.start({ cwd: "/repo", surface: "terminal", isInteractive: true });
-  await clock.settle();
-  expect(submitted).toEqual(["go left"]);
-
-  const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
-  expect(await ui.find({ type: "Text", text: /1 reply waits to go to Claude Code/ })).toBeDefined();
-  refuse = false;
-  await ui.press({ key: "outbox-send" });
-  await clock.settle();
-  expect(submitted).toEqual(["go left", "go left"]);
-  expect(await ui.find({ type: "Text", text: /reply waits/ })).toBeUndefined();
-  await ui.unmount();
-});
-
 test("an old daemon (no mod routes): the mod sends no hook event, so forward.sh alone counts it", async ($, on) => {
   const { sent, clock } = engine(on, () => ({ status: 404, text: "not found" }));
   on("classic.Stop", () => ({}));
@@ -330,6 +158,15 @@ test("an old daemon (no mod routes): the mod sends no hook event, so forward.sh 
   await $.classic.Stop({ stop_hook_active: false, session_id: SESSION });
 
   expect(sent.some((s) => s.url.includes("/api/hook"))).toBe(false);
+});
+
+test("an old daemon (a 404 view): the status line and /inkwire say so, with the panel URL", async ($, on) => {
+  const { clock, statuses } = engine(on, () => ({ status: 404, text: "not found" }));
+  await start($, clock);
+
+  expect(statuses.at(-1)).toBe("inkwire · daemon is older than the mod · restart it in the panel");
+  const result = await $.command.run({ command: "inkwire", args: "" });
+  expect(result.text).toBe(`inkwire · daemon is older than the mod · restart it in the panel\nBrowser panel: http://127.0.0.1:${PORT}/`);
 });
 
 test("the view sends the launch id as the alias after /clear", async ($, on) => {
@@ -346,10 +183,102 @@ test("the view sends the launch id as the alias after /clear", async ($, on) => 
   expect(q.get("alias")).toBe(SESSION);
 });
 
-test("a refused reply is not submitted again by itself; Discard removes it", async ($, on) => {
+test("the status line follows the view", async ($, on) => {
+  let current = view({ pending: false });
+  const { clock, statuses } = engine(on, (path) => (path === "/api/mod/view" ? { status: 200, text: JSON.stringify(current) } : "down"));
+
+  await start($, clock);
+  expect(statuses.at(-1)).toBe("inkwire · checkout flow · claude is working");
+
+  current = view({ pending: true });
+  await clock.advance(30_000);
+  await clock.settle();
+  expect(statuses.at(-1)).toBe("inkwire · checkout flow · waiting on you");
+
+  current = { ...view(), client: null, board: null, key: "none" };
+  await clock.advance(30_000);
+  await clock.settle();
+  expect(statuses.at(-1)).toBe("inkwire · not linked");
+});
+
+test("the daemon down: the status line says so", async ($, on) => {
+  const { clock, statuses } = engine(on, () => "down");
+
+  await start($, clock);
+
+  expect(statuses.at(-1)).toBe("inkwire · daemon not reachable");
+});
+
+test("a reply in the inbox becomes the next prompt, as the person's words", async ($, on) => {
+  const submitted: { text: string; asUser: unknown }[] = [];
+  const { sent, clock, statuses } = engine(on, (path) => {
+    if (path === "/api/mod/view") return { status: 200, text: JSON.stringify(view({ inbox: 1 })) };
+    if (path === "/api/mod/take") return { status: 200, text: JSON.stringify({ replies: [{ id: "r1", prompt: "go left\ninkwire ctx: {}\nAnswer with session_send." }] }) };
+    return "down";
+  });
+  on("prompt.submit", (_, e) => {
+    submitted.push({ text: e.text, asUser: (e.origin as { asUser?: unknown }).asUser });
+    return { text: e.text };
+  });
+
+  await start($, clock);
+
+  expect(sent.find((s) => s.url.endsWith("/api/mod/take"))?.body).toEqual({ session: SESSION });
+  expect(submitted).toEqual([{ text: "go left\ninkwire ctx: {}\nAnswer with session_send.", asUser: true }]);
+  // Accepted: nothing waits in the outbox.
+  expect(statuses.at(-1)).toBe("inkwire · checkout flow · waiting on you");
+  expect(statuses).toContain("inkwire · checkout flow · reply queued");
+});
+
+test("a queued reply shows in the status line, and leaves when UserPromptSubmit shows its text", async ($, on) => {
+  const { clock, statuses } = engine(on, (path) => {
+    if (path === "/api/mod/view") return { status: 200, text: JSON.stringify(view({ inbox: 1 })) };
+    if (path === "/api/mod/take") return { status: 200, text: JSON.stringify({ replies: [{ id: "r1", prompt: "go left" }] }) };
+    return { status: 200, text: "ok" };
+  });
+  // Queued until the session is idle: the submit does not resolve in this test.
+  on("prompt.submit", () => new Promise(() => {}));
+  on("classic.UserPromptSubmit", () => ({}));
+
+  await start($, clock);
+  expect(statuses.at(-1)).toBe("inkwire · checkout flow · reply queued");
+  // A queued reply is not refused: discard does not take it back.
+  expect((await $.command.run({ command: "inkwire", args: "discard" })).text).toBe("inkwire · no refused reply to discard");
+
+  await $.classic.UserPromptSubmit({ prompt: "go left", session_id: SESSION });
+  expect(statuses.at(-1)).toBe("inkwire · checkout flow · waiting on you");
+});
+
+test("a refused reply waits, and /inkwire send submits it again", async ($, on) => {
+  let refuse = true;
+  const submitted: string[] = [];
+  const { clock, statuses } = engine(on, (path) => {
+    if (path === "/api/mod/view") return { status: 200, text: JSON.stringify(view({ inbox: 1 })) };
+    if (path === "/api/mod/take") return { status: 200, text: JSON.stringify({ replies: [{ id: "r1", prompt: "go left" }] }) };
+    return "down";
+  });
+  on("prompt.submit", (_, e) => {
+    submitted.push(e.text);
+    return refuse ? { drop: "the person pressed Esc" } : { text: e.text };
+  });
+
+  await start($, clock);
+  expect(submitted).toEqual(["go left"]);
+  expect(statuses.at(-1)).toBe("inkwire · checkout flow · reply refused · /inkwire send");
+
+  refuse = false;
+  const sent = await $.command.run({ command: "inkwire", args: "send" });
+  await clock.settle();
+  expect(sent.text).toBe("inkwire · sent 1 reply again");
+  expect(submitted).toEqual(["go left", "go left"]);
+  expect(statuses.at(-1)).toBe("inkwire · checkout flow · waiting on you");
+  expect((await $.command.run({ command: "inkwire", args: "send" })).text).toBe("inkwire · no refused reply to send");
+});
+
+test("a refused reply is not submitted again by itself; /inkwire discard removes it", async ($, on) => {
   const submitted: string[] = [];
   let inbox = 1;
-  const { clock } = engine(on, (path) => {
+  const { clock, statuses } = engine(on, (path) => {
     if (path === "/api/mod/view") return { status: 200, text: JSON.stringify(view({ inbox })) };
     if (path === "/api/mod/take") {
       inbox = 0;
@@ -368,77 +297,48 @@ test("a refused reply is not submitted again by itself; Discard removes it", asy
   await clock.settle();
   await $.turn.complete({ answer: "", durationMs: 1, isAborted: false, turnId: "t1", reason: "answer" });
   expect(submitted).toEqual(["go left"]);
+  expect(statuses.at(-1)).toBe("inkwire · checkout flow · reply refused · /inkwire send");
 
-  const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
-  expect(await ui.find({ type: "Text", text: /1 reply waits to go to Claude Code/ })).toBeDefined();
-  await ui.press({ key: "outbox-discard" });
-  expect(await ui.find({ type: "Text", text: /reply waits/ })).toBeUndefined();
-  await ui.unmount();
-});
+  const plain = await $.command.run({ command: "inkwire", args: "" });
+  expect(plain.text).toContain("1 reply refused (a hook refused it)");
 
-test("a queued reply shows no Discard, and leaves when UserPromptSubmit shows its text", async ($, on) => {
-  const { clock } = engine(on, (path) => {
-    if (path === "/api/mod/view") return { status: 200, text: JSON.stringify(view({ inbox: 1 })) };
-    if (path === "/api/mod/take") return { status: 200, text: JSON.stringify({ replies: [{ id: "r1", prompt: "go left" }] }) };
-    return { status: 200, text: "ok" };
-  });
-  // Queued until the session is idle: the submit does not resolve in this test.
-  on("prompt.submit", () => new Promise(() => {}));
-  on("classic.UserPromptSubmit", () => ({}));
-
-  await start($, clock);
-  const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
-  expect(await ui.find({ type: "Text", text: /1 reply is queued/ })).toBeDefined();
-  expect(await ui.find({ key: "outbox-discard" })).toBeUndefined();
-  await $.classic.UserPromptSubmit({ prompt: "go left", session_id: SESSION });
-  expect(await ui.find({ type: "Text", text: /queued/ })).toBeUndefined();
-  await ui.unmount();
+  const discarded = await $.command.run({ command: "inkwire", args: "discard" });
+  expect(discarded.text).toBe("inkwire · discarded 1 reply");
+  expect(statuses.at(-1)).toBe("inkwire · checkout flow · waiting on you");
 });
 
 test("mode off clears the outbox", async ($, on) => {
-  let mode = "inkwire";
-  const { clock } = engine(on, (path) => {
-    if (path === "/api/mod/view") {
-      const v = view({ inbox: mode === "inkwire" ? 1 : 0 });
-      return { status: 200, text: JSON.stringify({ ...v, key: `${v.key}-${mode}`, client: { ...v.client, mode } }) };
-    }
+  let mode: "pty" | "inkwire" = "inkwire";
+  const { clock, statuses } = engine(on, (path) => {
+    if (path === "/api/mod/view") return { status: 200, text: JSON.stringify(view({ inbox: mode === "inkwire" ? 1 : 0, mode, pending: mode === "inkwire" })) };
     if (path === "/api/mod/take") return { status: 200, text: JSON.stringify({ replies: [{ id: "r1", prompt: "go left" }] }) };
     return "down";
   });
   on("prompt.submit", () => ({ drop: "the person pressed Esc" }));
 
   await start($, clock);
-  const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
-  expect(await ui.find({ type: "Text", text: /1 reply waits/ })).toBeDefined();
+  expect(statuses.at(-1)).toBe("inkwire · checkout flow · reply refused · /inkwire send");
   mode = "pty";
   await clock.advance(30_000);
   await clock.settle();
-  expect(await ui.find({ type: "Text", text: /reply waits/ })).toBeUndefined();
-  await ui.unmount();
+  expect(statuses.at(-1)).toBe("inkwire · checkout flow · pty");
 });
 
-test("the pane opens by itself only where the surface docks it", async ($, on) => {
-  const { clock, opens } = engine(on, (path) => (path === "/api/mod/view" ? { status: 200, text: JSON.stringify(view()) } : "down"));
-
-  // The engine's own band beneath the plugins: nothing to draw.
-  on("ui.render", { component: "AbovePrompt" }, ($, e) => {
-    const { Box } = $.ui.resolve(e);
-    return <Box />;
-  });
-
+test("/inkwire: the status line text and the browser panel URL, with no turn", async ($, on) => {
+  const { clock } = engine(on, (path) => (path === "/api/mod/view" ? { status: 200, text: JSON.stringify(view()) } : "down"));
   await start($, clock);
-  // Nothing said that the surface docks a pane: no unasked open.
-  expect(opens).toEqual([]);
 
-  const band = await $.ui.mount({
-    plugin: "inkwire",
-    component: "AbovePrompt",
-    surface: "terminal",
-    props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 140, scroll: { offset: 0, bodyRows: 10 } },
-    viewport: { columns: 160, rows: 40, isFullscreen: true },
-  } as never);
-  await band.unmount();
-  await clock.advance(30_000);
-  await clock.settle();
-  expect(opens).toHaveLength(1);
+  const result = await $.command.run({ command: "inkwire", args: "" });
+
+  expect(result.text).toBe(`inkwire · checkout flow · waiting on you\nBrowser panel: http://127.0.0.1:${PORT}/?board=b1`);
+  expect((await $.command.run({ command: "inkwire", args: "what" })).text).toMatch(/^Usage: \/inkwire/);
+});
+
+test("/inkwire with the daemon down says so", async ($, on) => {
+  const { clock } = engine(on, () => "down");
+  await start($, clock);
+
+  const result = await $.command.run({ command: "inkwire", args: "" });
+
+  expect(result.text).toBe("inkwire · daemon not reachable");
 });

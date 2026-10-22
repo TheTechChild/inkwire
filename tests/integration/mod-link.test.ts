@@ -3,7 +3,9 @@
 // as Claude Code sets it, so the mod finds its Client by session id. Each
 // request has the shape that hooks/mod/daemon.ts sends: no Origin, JSON body.
 // Random port, temp data dir; stop() kills the daemon.
+import WebSocket from "ws";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { ServerMessage } from "../../src/shared/protocol.js";
 import { body, call, freePort, head, postHook, rawRequest, tempDir } from "./daemon-helpers.js";
 import { startRelays, type Relay, type Relays } from "../health/harness.js";
 
@@ -17,14 +19,7 @@ let port: number;
 interface View {
   key: string;
   client: { pid: number; label: string; mode: string; awaiting: boolean; inbox: number; current_board: string | null } | null;
-  board: {
-    id: string;
-    name: string;
-    state: { graph: { nodes: { id: string; label: string }[] }; focus: string | null; active_draft: string | null; active_notebook: string | null };
-    history: unknown[];
-    session: { author: { pid: number; mode: string; pending: boolean; awaiting?: boolean } | null; thread: { type: string; text?: string }[] };
-    daemon: { build_id: string | null };
-  } | null;
+  board: { id: string; name: string; author: { pid: number; mode: string; pending: boolean; awaiting?: boolean } | null } | null;
 }
 
 async function view(since = "", wait = 0): Promise<View> {
@@ -41,14 +36,41 @@ async function modHook(event: Record<string, unknown>, bg = "unset"): Promise<st
   return res.body;
 }
 
-async function intent(board: string, i: Record<string, unknown>) {
-  const res = await rawRequest(port, "POST", "/api/mod/intent", JSON_HEADERS, JSON.stringify({ session: SESSION, board, intent: i }));
-  return { status: res.status, json: JSON.parse(res.body) as { ok?: true; error?: string } };
-}
-
 async function take(session = SESSION) {
   const res = await rawRequest(port, "POST", "/api/mod/take", JSON_HEADERS, JSON.stringify({ session }));
   return { status: res.status, json: JSON.parse(res.body) as { replies?: { id: string; prompt: string }[]; error?: string } };
+}
+
+/** A browser panel on one board: its pushes, a wait for one, and a send of an intent. */
+function panel(board: string): Promise<{ waitFor: (f: (m: ServerMessage) => boolean) => Promise<ServerMessage>; send: (m: unknown) => void; close: () => void }> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?board=${board}`);
+    const messages: ServerMessage[] = [];
+    const waiters: { f: (m: ServerMessage) => boolean; r: (m: ServerMessage) => void }[] = [];
+    socket.on("message", (raw) => {
+      const m = JSON.parse(String(raw)) as ServerMessage;
+      messages.push(m);
+      for (const w of [...waiters]) if (w.f(m)) {
+        waiters.splice(waiters.indexOf(w), 1);
+        w.r(m);
+      }
+    });
+    socket.on("error", reject);
+    socket.on("open", () =>
+      resolve({
+        waitFor: (f) => {
+          const hit = messages.find(f);
+          if (hit) return Promise.resolve(hit);
+          return new Promise((r, j) => {
+            waiters.push({ f, r });
+            setTimeout(() => j(new Error("timed out waiting for a push")), 3000);
+          });
+        },
+        send: (m) => socket.send(JSON.stringify(m)),
+        close: () => socket.close(),
+      }),
+    );
+  });
 }
 
 const json = (res: Awaited<ReturnType<typeof call>>) => JSON.parse(body(res)) as Record<string, unknown>;
@@ -72,15 +94,14 @@ describe("the mod over the full link (ADR 0004)", () => {
     expect(v.board).toBeNull();
   });
 
-  it("a write claims a board; the view then has it, with the push fields", async () => {
+  it("a write claims a board; the view then has it, with the Author push", async () => {
     const res = await call(A.client, "boards_create", { name: "mod link", project_root: tempDir("mod-link-root") });
     expect(res.isError, body(res)).toBeFalsy();
     board = json(res).board_id as string;
     const v = await view();
     expect(v.client?.current_board).toBe(board);
     expect(v.board).toMatchObject({ id: board, name: "mod link" });
-    for (const k of ["state", "history", "session", "daemon"]) expect(v.board).toHaveProperty(k);
-    expect(v.board!.session.author).toMatchObject({ pid: A.pid, mode: "pty", pending: false });
+    expect(v.board!.author).toMatchObject({ pid: A.pid, mode: "pty", pending: false });
   });
 
   it("the key is stable with no change: the long poll waits", async () => {
@@ -91,33 +112,20 @@ describe("the mod over the full link (ADR 0004)", () => {
     expect(Date.now() - t0).toBeGreaterThanOrEqual(350);
   });
 
-  it("the long poll wakes on an MCP write with a new key", async () => {
+  it("the long poll wakes on a rename of the board with a new key", async () => {
     const v = await view();
     const t0 = Date.now();
     const polling = view(v.key, 20_000);
     await new Promise((res) => setTimeout(res, 100));
-    const add = await call(A.client, "canvas_add_node", { board_id: board, label: "from claude", kind: "service", at: [0, 0] });
-    expect(add.isError, body(add)).toBeFalsy();
+    const renamed = await call(A.client, "boards_update", { board_id: board, name: "mod link 2" });
+    expect(renamed.isError, body(renamed)).toBeFalsy();
     const next = await polling;
     expect(Date.now() - t0).toBeLessThan(5000);
     expect(next.key).not.toBe(v.key);
-    expect(next.board!.state.graph.nodes.map((n) => n.label)).toContain("from claude");
+    expect(next.board!.name).toBe("mod link 2");
   });
 
-  it("an intent from the pane applies on the current board, authored human; a stale board is refused", async () => {
-    const ok = await intent(board, { type: "history", action: "undo", scope: "all" });
-    expect(ok).toEqual({ status: 200, json: { ok: true } });
-    expect((await view()).board!.state.graph.nodes).toHaveLength(0);
-    const redo = await intent(board, { type: "history", action: "redo", scope: "all" });
-    expect(redo.status).toBe(200);
-    const stale = await intent("not-this-board", { type: "history", action: "undo", scope: "all" });
-    expect(stale.status).toBe(400);
-    expect(stale.json.error).toContain("not the current board");
-    const bad = await intent(board, { type: "no_such_intent" });
-    expect(bad.status).toBe(400);
-  });
-
-  it("mod delivery: hook via mod → session_mode on → session_send delivered → pane reply → take", async () => {
+  it("mod delivery: hook via mod → session_mode on → session_send delivered → browser reply → take", async () => {
     // The mod's hook events. Permission mode default and bg unset: with a live mod, mode on does not need them.
     expect(await modHook({ hook_event_name: "SessionStart", source: "startup", session_id: SESSION, permission_mode: "default" })).toBe("ok");
     expect(
@@ -144,26 +152,22 @@ describe("the mod over the full link (ADR 0004)", () => {
 
     const waiting = await view();
     expect(waiting.client).toMatchObject({ mode: "inkwire", awaiting: true, inbox: 0 });
-    expect(waiting.board!.session.author).toMatchObject({ pid: A.pid, mode: "inkwire", pending: true, awaiting: true });
+    expect(waiting.board!.author).toMatchObject({ pid: A.pid, mode: "inkwire", pending: true, awaiting: true });
 
-    // The pane's reply, in the exact shape of sendReply in hooks/mod/pane.tsx.
-    const st = waiting.board!.state;
-    const reply = await intent(board, {
-      type: "session_reply",
-      text: "the cache",
-      focus: st.focus,
-      selection: null,
-      trace: null,
-      draft: st.active_draft,
-      notebook: st.active_notebook,
-    });
-    expect(reply).toEqual({ status: 200, json: { ok: true } });
+    // The person's reply from the browser panel's composer.
+    const p = await panel(board);
+    try {
+      await p.waitFor((m) => m.type === "state");
+      p.send({ type: "session_reply", text: "the cache", focus: null, selection: null, trace: null, draft: null, notebook: null });
+      await p.waitFor((m) => m.type === "state" && m.session.author?.pending === false && m.session.thread.some((e) => e.type === "you" && e.text === "the cache"));
+    } finally {
+      p.close();
+    }
 
     const queued = await view();
     expect(queued.client).toMatchObject({ awaiting: false, inbox: 1 });
-    expect(queued.board!.session.author?.pending).toBe(false);
-    expect(queued.board!.session.author?.awaiting).toBe(false);
-    expect(queued.board!.session.thread.some((e) => e.type === "you" && e.text === "the cache")).toBe(true);
+    expect(queued.board!.author?.pending).toBe(false);
+    expect(queued.board!.author?.awaiting).toBe(false);
 
     const got = await take();
     expect(got.status).toBe(200);
@@ -175,11 +179,6 @@ describe("the mod over the full link (ADR 0004)", () => {
     expect(prompt[2]).toBe("Answer with session_send.");
     expect((await take()).json.replies).toEqual([]);
 
-    // A second reply with nothing awaited: Claude Code is still working.
-    const early = await intent(board, { type: "session_reply", text: "more", focus: null, selection: null, trace: null, draft: null, notebook: null });
-    expect(early.status).toBe(400);
-    expect(early.json.error).toContain("still working");
-
     // The mod submits the prompt: UserPromptSubmit. Then a send, and the person types in the terminal: awaiting clears.
     expect(await modHook({ hook_event_name: "UserPromptSubmit", session_id: SESSION, prompt: "the cache" })).toBe("ok");
     expect(json(await call(A.client, "session_send", { text: "ok, the cache" }))).toMatchObject({ status: "delivered" });
@@ -187,14 +186,12 @@ describe("the mod over the full link (ADR 0004)", () => {
     expect(await modHook({ hook_event_name: "UserPromptSubmit", session_id: SESSION, prompt: "typed" })).toBe("ok");
     expect((await view()).client?.awaiting).toBe(false);
 
-    // The pane's Mode off.
-    expect((await intent(board, { type: "session_mode_off" })).status).toBe(200);
+    // Mode off from Claude: the view shows pty.
+    expect(json(await call(A.client, "session_mode", { on: false }))).toMatchObject({ mode: "pty" });
     expect((await view()).client?.mode).toBe("pty");
   });
 
-  it("take and intent for an unknown session get 404", async () => {
+  it("take for an unknown session gets 404", async () => {
     expect((await take("no-such-session")).status).toBe(404);
-    const res = await rawRequest(port, "POST", "/api/mod/intent", JSON_HEADERS, JSON.stringify({ session: "no-such-session", board: "b", intent: { type: "session_mode_off" } }));
-    expect(res.status).toBe(404);
   });
 });

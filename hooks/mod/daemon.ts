@@ -3,8 +3,7 @@
 // of the agent and counts as the agent.
 import { atom, read, update } from "claude-code";
 import type { EngineInterface, HttpResponse } from "claude-code";
-import type { InkwireIntent, InkwireReply, InkwireView } from "./contract";
-import { DEFAULT_PORT } from "./state";
+import type { InkwireReply, InkwireView } from "./contract";
 
 /**
  * True after a GET /api/mod/view of this daemon answered 200: the daemon has
@@ -16,6 +15,12 @@ import { DEFAULT_PORT } from "./state";
 const routesAtom = atom({ plugin: "inkwire", key: "routes" } as const, false);
 
 export type Engine = EngineInterface;
+
+/** The port of the daemon when INKWIRE_PORT is unset. */
+export const DEFAULT_PORT = 4691;
+
+/** What fetchView returns for a daemon that answers 404: it is older than the mod. */
+export const OLD_DAEMON = "old";
 
 /** A hook path waits this long for the daemon at most. */
 export const HOOK_TIMEOUT_MS = 3000;
@@ -112,16 +117,18 @@ export async function postHook($: Engine, event: Record<string, unknown>): Promi
 }
 
 /**
- * The result of one long poll: the view, or null when the daemon did not
- * answer. `alias` is the session id that the mod saw first (the launch id):
+ * The result of one long poll: the view, OLD_DAEMON when the daemon answered
+ * 404 (it is from before ADR 0004 and has no mod routes), or null when the
+ * daemon did not answer. `alias` is the session id that the mod saw first (the launch id):
  * a Client that a hello made after /clear holds it.
  */
-export async function fetchView($: Engine, session: string, since: string, alias: string | null = null): Promise<InkwireView | null> {
+export async function fetchView($: Engine, session: string, since: string, alias: string | null = null): Promise<InkwireView | typeof OLD_DAEMON | null> {
   const q = new URLSearchParams({ session, since, wait: String(VIEW_WAIT_MS) });
   if (alias && alias !== session) q.set("alias", alias);
   const res = await fetchWithin($, `${await baseUrl($)}/api/mod/view?${q.toString()}`, { method: "GET" }, VIEW_WAIT_MS + 10000);
   // A 404 is a daemon with no mod routes; no answer says nothing about the routes.
   if (res && (res.ok || res.status === 404)) await setRoutes($, res.ok);
+  if (res?.status === 404) return OLD_DAEMON;
   if (!res || !res.ok) return null;
   try {
     const view = JSON.parse(res.text) as InkwireView;
@@ -144,20 +151,6 @@ export async function takeReplies($: Engine, session: string): Promise<InkwireRe
   } catch {
     return [];
   }
-}
-
-/** Sends one panel intent, authored by the person. Returns null on success, else the error text. */
-export async function sendIntent($: Engine, session: string, board: string, intent: InkwireIntent): Promise<string | null> {
-  const res = await postJson($, "/api/mod/intent", { session, board, intent }, HOOK_TIMEOUT_MS);
-  if (!res) return "the inkwire daemon did not answer";
-  if (res.ok) return null;
-  try {
-    const body = JSON.parse(res.text) as { error?: unknown };
-    if (typeof body.error === "string") return body.error;
-  } catch {
-    // not JSON: use the status below
-  }
-  return `the daemon refused the action (HTTP ${res.status})`;
 }
 
 async function setRoutes($: Engine, ok: boolean): Promise<void> {
