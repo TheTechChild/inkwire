@@ -4,7 +4,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { clientMessageSchema, type DaemonPush, type ServerMessage, type SessionPush } from "../shared/protocol.js";
+import { clientMessageSchema, type AuthorPush, type DaemonPush, type ServerMessage, type SessionPush } from "../shared/protocol.js";
 import type { Viewport } from "../shared/types.js";
 import type { Sessions, BoardSession } from "./session.js";
 import type { Clients } from "./clients.js";
@@ -282,7 +282,9 @@ export class PanelHub implements CaptureBroker {
               pid,
               label: c?.label ?? `pid ${pid}`,
               mode: c?.mode ?? "pty",
-              pending: c?.pending?.boardId === boardId,
+              // The blocked send, or mod delivery's awaited reply (ADR 0004): the composer opens for both.
+              pending: c?.pending?.boardId === boardId || (!!c?.awaiting && this.clients.talkingOn(boardId) === c),
+              awaiting: !c?.pending && !!c?.awaiting && this.clients.talkingOn(boardId) === c,
               notice: this.clients.noticeByBoard.get(boardId) ?? null,
             },
       readers: this.clients.readerCount(boardId),
@@ -326,6 +328,11 @@ export class PanelHub implements CaptureBroker {
       if (JSON.stringify(this.strip(s.boardId)) !== this.sentStrip.get(s.boardId)) this.push(s);
       else if (daemonChanged) for (const socket of set) this.send(socket, { type: "daemon", daemon });
     }
+  }
+
+  /** The Author field of the push for one board. The mod's view reads it (ADR 0004). */
+  author(boardId: string): AuthorPush | null {
+    return this.strip(boardId).author;
   }
 
   push(session: BoardSession, only?: WebSocket): void {

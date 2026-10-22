@@ -64,6 +64,8 @@ Two requirements, both checked by the server when the mode goes on, and both cov
 - Permission mode `auto` or `bypassPermissions` — nobody is at the terminal to approve prompts. Switching modes inside the session works too; the check runs when `/use-inkwire` does.
 - `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` — otherwise Claude Code moves the blocking call to a background task after two minutes.
 
+With the inkwire mod on (ADR 0004), these two requirements do not apply. `session_send` does not block: it posts the message and the turn ends. Your reply, from the browser composer, goes to Claude Code as the next prompt. You see permission prompts in the terminal. The mod shows one status line under the prompt: `inkwire · <board> · <state>`, where the state is `pty`, `claude is working`, `waiting on you`, `reply queued` or `reply refused · /inkwire send`. Type `/inkwire` for the status and the browser panel URL. If Claude Code refused your reply (for example, you pressed Esc), `/inkwire send` sends it again and `/inkwire discard` drops it. Without the mod (mods off, or an older Claude Code), the blocking model above applies.
+
 The mode is per Claude Code session, and only the board's Author can turn it on. The mode is not persisted: after a reconnect or a daemon restart, the session is in the terminal again. A `session_send` that waits 20 minutes with no answer returns `idle` and flips the mode back.
 
 ## Development

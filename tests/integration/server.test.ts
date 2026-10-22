@@ -743,7 +743,7 @@ describe("session over WS", () => {
       const a = await sessionFor(5101);
       expect((await a.call("canvas_add_node", addNode(board.boardId, "by A"))).isError).toBe(false);
       const authored = await until(panel, (m) => m.session.author !== null);
-      expect(authored.session.author).toEqual({ pid: 5101, label: "repo-5101", mode: "pty", pending: false, notice: null });
+      expect(authored.session.author).toEqual({ pid: 5101, label: "repo-5101", mode: "pty", pending: false, awaiting: false, notice: null });
       expect(authored.session.readers).toBe(0);
 
       const b = await sessionFor(5102);

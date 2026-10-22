@@ -48,6 +48,7 @@ export function openCore(config: Config, http: Server, opts: CoreOptions): Core 
   const sessions = new Sessions(store);
   const clients = new Clients(sessions);
   let screenshots: Screenshots;
+  let hub: PanelHub;
   http.on(
     "request",
     requestHandler({
@@ -58,9 +59,11 @@ export function openCore(config: Config, http: Server, opts: CoreOptions): Core 
       build: opts.build,
       stats: opts.stats,
       restart: opts.restart,
+      // The mod's routes (ADR 0004) read the push fields and apply intents through the hub.
+      hub: () => hub,
     }),
   );
-  const hub = new PanelHub(sessions, clients, { pluginRoot, build: opts.build, restart: opts.restart });
+  hub = new PanelHub(sessions, clients, { pluginRoot, build: opts.build, restart: opts.restart });
   screenshots = new Screenshots(hub, store.imagesDir);
   routeUpgrades(http, { "/ws": (req, socket, head) => hub.handleUpgrade(req, socket, head), ...opts.upgrades });
   const port = () => {

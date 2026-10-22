@@ -235,7 +235,8 @@ export function renderSession(app: App): void {
         `Release ${clientLabel(author)}?`,
         "This Claude Code session stops being the author of this board. It can still read the board. It cannot write the board until you allow it again here, another session claims the board, or it disconnects.",
       ];
-      if (author.pending) lines.push("Its pending session_send returns mode_off.");
+      if (author.awaiting) lines.push("It waits for your reply. The release turns inkwire mode off, so a reply that it did not read yet is lost.");
+      else if (author.pending) lines.push("Its pending session_send returns mode_off.");
       if (!window.confirm(lines.join("\n\n"))) return;
       // The server releases only when this pid is still the Author (race guard).
       app.send({ type: "board_release", pid: author.pid });

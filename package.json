@@ -23,7 +23,9 @@
     "map-anchors": "node scripts/map-anchor-check.mjs --all",
     "map-anchors:test": "node --test scripts/map-anchor-check.test.mjs",
     "build-id:test": "node --test scripts/write-build-id.test.mjs",
-    "daemon:restart": "node scripts/daemon-restart.mjs"
+    "daemon:restart": "node scripts/daemon-restart.mjs",
+    "mod:validate": "claude plugin validate .",
+    "mod:test": "node hooks/run-mod-tests.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

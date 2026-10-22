@@ -24,6 +24,8 @@ export interface RelayOptions {
   entry?: RelayEntry;
   /** Run the relay from this repo copy (a copy with its own dist/build.json). Default: this repo. */
   repo?: string;
+  /** More env for the relay, set after testEnv (for example CLAUDE_CODE_SESSION_ID for the mod, ADR 0004). */
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface Relay {
@@ -78,7 +80,7 @@ const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 export async function startRelay(opts: RelayOptions): Promise<Relay> {
   const entry = opts.entry ?? "src";
   const cwd = opts.repo ?? root;
-  const env = testEnv(opts.port, opts.dataDir, { INKWIRE_IDLE_GRACE_MS: String(opts.graceMs) });
+  const env = { ...testEnv(opts.port, opts.dataDir, { INKWIRE_IDLE_GRACE_MS: String(opts.graceMs) }), ...opts.env };
   // A TERM_PROGRAM that focusTerminal does not map: the hello carries term_program
   // (Open question 3), and session_mode(off) brings no terminal to the front.
   env.TERM_PROGRAM = HEALTH_TERM_PROGRAM;

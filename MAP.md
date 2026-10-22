@@ -37,10 +37,10 @@ src/server/daemon.ts:102     startDaemon
 src/link/probe.ts:49         probeHealth
 src/server/config.ts:18      loadConfig
 src/server/upgrade.ts:11     routeUpgrades
-src/server/http.ts:67        requestHandler
-src/server/http.ts:77        createHttpServer
-src/server/http.ts:81        handle
-src/server/http.ts:260       serveFile
+src/server/http.ts:84        requestHandler
+src/server/http.ts:94        createHttpServer
+src/server/http.ts:98        handle
+src/server/http.ts:424       serveFile
 src/server/origin.ts:12      checkBrowserRequest
 src/server/ws.ts:30          PanelHub
 src/server/ws.ts:84          handleUpgrade
@@ -51,12 +51,14 @@ Env: `INKWIRE_PORT`, `INKWIRE_DATA_DIR`, `INKWIRE_IDLE_GRACE_MS` (daemon only; d
 turns the idle stop off). There is no project-root env (see Project root). HTTP serves the panel
 from `dist/ui/` and the routes `/healthz`, `/api/boards` (each entry has `project_root`, the unset
 mark and `author: { label, pid } | null`), `/api/boards/:id/export`,
-`/api/boards/import`, `/api/capture/:id`, `/api/hook`, and on the daemon `POST /api/daemon/restart`.
+`/api/boards/import`, `/api/capture/:id`, `/api/hook`, the mod's routes `GET /api/mod/view`
+and `POST /api/mod/take` (see The mod), and on the daemon
+`POST /api/daemon/restart`.
 
 Beware: the Origin and Host check (`checkBrowserRequest`, M4.11). Every `POST`, `PUT`, `DELETE`
-and `PATCH`, the `/ws` upgrade (`verifyClient` in `ws.ts`) and the `/mcp` upgrade need `Host`
+and `PATCH`, every `/api/mod/*` request (also `GET`: the view holds the board), the `/ws` upgrade (`verifyClient` in `ws.ts`) and the `/mcp` upgrade need `Host`
 `127.0.0.1:<port>` or `localhost:<port>`, and, when an `Origin` is present, the same origin over
-`http`. A request with no `Origin` passes (the hook's curl, `yarn daemon:restart`). A refusal is a
+`http`. A request with no `Origin` passes (the hook's curl, the mod, `yarn daemon:restart`). A refusal is a
 403 and one stderr line.
 
 Beware: stdout is the MCP transport of the relay. Log to stderr only. Only the spawned smoke test
@@ -95,7 +97,7 @@ src/link/relay-core.ts:255    upClosed
 src/link/relay-core.ts:297    fatal
 src/link/relay-core.ts:49     LOST_TEXT
 src/server/daemon.ts:34       createLinkHost
-src/server/clients.ts:452     restoreCurrentBoard
+src/server/clients.ts:528     restoreCurrentBoard
 ```
 
 Beware: close codes. No hello in 5 s, or a first frame that is not a hello: 4400. A hello of
@@ -134,10 +136,10 @@ health case fails. `lifecycle.test.ts` covers autostart, the race, release on cl
 SIGKILL and reconnect, a stale build, both restarts, the idle grace and the dist relay.
 
 ```
-tests/health/harness.ts:155   startRelays
-tests/health/harness.ts:78    startRelay
-tests/health/harness.ts:114   openPanel
-tests/health/harness.ts:235   distSkipReason
+tests/health/harness.ts:157   startRelays
+tests/health/harness.ts:80    startRelay
+tests/health/harness.ts:116   openPanel
+tests/health/harness.ts:237   distSkipReason
 ```
 
 Beware: the dist-relay case needs `dist/`. `yarn test` does not build, so the case skips (the
@@ -171,9 +173,9 @@ src/server/build-info.ts:18   readBuildInfo
 src/server/build-info.ts:32   isNewerBuild
 src/server/idle.ts:22         IdleTimer
 src/server/restart.ts:22      createRestart
-src/server/http.ts:62         defaultStats
-src/server/clients.ts:472     markStale
-src/server/clients.ts:480     STALE_NOTICE
+src/server/http.ts:79         defaultStats
+src/server/clients.ts:548     markStale
+src/server/clients.ts:556     STALE_NOTICE
 ```
 
 Beware: bind first. `startDaemon` listens on the port before it opens the store. On EADDRINUSE it
@@ -209,9 +211,9 @@ src/server/session.ts:150    refold
 src/server/session.ts:402    schedulePersist
 src/server/session.ts:408    persistNow
 src/server/session.ts:393    onChange
-src/server/session.ts:450    class Sessions
-src/server/session.ts:499    open
-src/server/session.ts:483    onBoards
+src/server/session.ts:452    class Sessions
+src/server/session.ts:501    open
+src/server/session.ts:485    onBoards
 src/server/mutations.ts:49   addNode
 src/server/mutations.ts:125  addEdge
 src/server/mutations.ts:202  deleteElement
@@ -397,8 +399,11 @@ relays and a real daemon). `tests/tools/harness.ts` builds many Clients over one
 The panel sends intents, the server answers with full pushes. Intents are validated against a zod
 discriminated union, then dispatched by `type` in `PanelHub.handle`.
 
-The push (`state`) carries the board, its history rows, `session` and `daemon`. `session` has the
-board's `author` (`{ pid, label, mode, pending, notice }` or null), `readers` (a count of the
+The push (`state`) carries the board (with ink geometry), its history rows, `session` and `daemon`
+(`PanelHub.push` builds it). The mod's view reads only the `author` field (`PanelHub.author`). `session` has the
+board's `author` (`{ pid, label, mode, pending, awaiting, notice }` or null; `pending` is true while the
+Author's send blocks on this board or, with mod delivery, while it awaits the reply; `awaiting` is
+true only in the second case, for the Release confirm text), `readers` (a count of the
 other Clients whose current board it is), `released_from` (`{ pid, label }` or null), and the
 board's `thread`, `highlight` and `trace`. Nothing in it is server-wide. `daemon` is
 `{ build_id, stale }`; `stale` is `{ newer_build_id, built_at, boards, clients }` while a relay
@@ -414,8 +419,8 @@ which is `createRestart` on the daemon), and `session_mode_off` (turns off the b
 src/shared/protocol.ts:15     clientIntentSchema
 src/shared/protocol.ts:154    clientMessageSchema
 src/shared/protocol.ts:171    captureRequestSchema
-src/shared/protocol.ts:195    SessionPush
-src/shared/protocol.ts:220    ServerMessage
+src/shared/protocol.ts:200    SessionPush
+src/shared/protocol.ts:225    ServerMessage
 src/server/ws.ts:134          handle
 src/server/ws.ts:141          case "add_node":
 src/server/ws.ts:192          case "board_release": {
@@ -423,20 +428,20 @@ src/server/ws.ts:202          case "board_allow":
 src/server/ws.ts:207          case "daemon_restart": {
 src/server/ws.ts:20           HubDeps
 src/server/ws.ts:272          strip
-src/server/ws.ts:294          daemon
-src/server/ws.ts:318          fanOut
-src/server/ws.ts:331          push
-src/server/ws.ts:354          requestCapture
-src/server/clients.ts:188     peekLinked
+src/server/ws.ts:296          daemon
+src/server/ws.ts:320          fanOut
+src/server/ws.ts:338          push
+src/server/ws.ts:361          requestCapture
+src/server/clients.ts:252     peekLinked
 src/shared/protocol.ts:179    AuthorPush
-src/shared/protocol.ts:208    DaemonPush
+src/shared/protocol.ts:213    DaemonPush
 src/ui/ws-client.ts:8         connectWs
 src/ui/ws-client.ts:120       answerCapture
 src/ui/app.ts:91              isServerMessage
 ```
 
-A rejected intent triggers a re-sync push to that client. On board delete the socket closes with
-code 4010.
+A rejected intent triggers a re-sync push to every panel of the board. On board delete the socket
+closes with code 4010.
 
 Beware: the fan-out. `Clients.notify` runs `fanOut`, which pushes a board only when its strip
 fields (`author`, `readers`, `released_from`) differ from what its panels got last. When
@@ -554,34 +559,44 @@ Tests: `tests/core/lod.test.ts`.
 ## Session mode and hooks
 
 A flag on each Client moves replies from the terminal into the panel's Session tab. `session_send`
-blocks until the human answers. The plugin's hook script forwards Claude Code events to the server,
+blocks until the human answers, except with mod delivery (ADR 0004, see The mod): while the Client
+has a live mod, it returns `delivered` at once and the reply comes back as the next user prompt. The plugin's hook script forwards Claude Code events to the server,
 which blocks `Stop` while that Client's mode is on. Every function takes `(clients, client, …)`.
 
 ```
-src/server/session-mode.ts:41    sessionMode
-src/server/session-mode.ts:133   sessionSend
-src/server/session-mode.ts:240   sessionReply
-src/server/session-mode.ts:325   hookEvent
-src/server/session-mode.ts:24    BLOCK_CEILING
-src/server/session-mode.ts:25    AUTO_MODES
-src/server/session-mode.ts:116   releaseAuthorship
-src/server/session-mode.ts:385   terminalProgram
-src/server/session-mode.ts:390   focusTerminal
-src/server/clients.ts:15         HookReport
-src/server/http.ts:116           /api/hook
+src/server/session-mode.ts:43    sessionMode
+src/server/session-mode.ts:157   sessionSend
+src/server/session-mode.ts:287   sessionReply
+src/server/session-mode.ts:395   hookEvent
+src/server/session-mode.ts:26    BLOCK_CEILING
+src/server/session-mode.ts:27    AUTO_MODES
+src/server/session-mode.ts:137   releaseAuthorship
+src/server/session-mode.ts:492   terminalProgram
+src/server/session-mode.ts:497   focusTerminal
+src/server/clients.ts:16         HookReport
+src/server/http.ts:135           /api/hook
 src/ui/session.ts:73             setupSession
 src/ui/session.ts:169            renderSession
-src/ui/session.ts:372            messageCard
+src/ui/session.ts:373            messageCard
 src/ui/session.ts:38             stripView
 src/ui/session.ts:67             agentState
-src/ui/session.ts:352            authorRow
+src/ui/session.ts:353            authorRow
 ```
 
 Hook files (not `.ts`): `hooks/hooks.json` wires `Stop`, `PreToolUse` on the `session_mode` tool,
-and `SessionStart` with matcher `compact|clear|resume`. `hooks/forward.sh` finds the Claude Code
+`UserPromptSubmit` (it clears `awaiting` and `delivered` when the mod is gone), and `SessionStart`
+with matcher `compact|clear|resume`. `hooks/forward.sh` finds the Claude Code
 pid (the nearest ancestor whose `comm` or first `args` word is `claude`), POSTs the event to
 `/api/hook?pid=<n>`, and prints the verdict (`block`, `context`, or `ok`). It exits 0 on every
-failure.
+failure. `hooks/hooks.json` also names the mod module (`"modules": ["./mod/register.tsx"]`).
+`forward.sh` stays as the fallback when mods are off.
+
+Hook events can also come from the mod (`/api/hook?via=mod`, no pid). `hookEvent` finds a mod
+event's Client by `session_id`, else by `prev_session_id`, and never makes a Client; it marks
+`client.modHookAt`. A `forward.sh` event with a pid first sets the Client's session id to the
+event's (the pid is the true key). A `forward.sh` event for a Client whose hooks the mod answers
+(`modAnswersHooks`) only rekeys and returns `ok`: no hook report change and no block count,
+because the mod already sent the same event. `UserPromptSubmit` clears `awaiting` and `delivered`.
 
 Beware: session mode is per Client (one flag on each Client record). At most one Client per board
 is in `inkwire` mode, and it is the board's Author (`talkingOn`). `hookEvent` finds the Client by `claude_pid`
@@ -600,8 +615,15 @@ reply (`sessionReply`) goes only to the Client that talks on that board. `sessio
 the board that the Client authors and talks on.
 
 Beware: `session_mode(on)` fails unless a hook event was seen, the permission mode is `auto` or
-`bypassPermissions`, and `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` is `0`. `session_send` times out after
-20 min, returns `idle`, and turns the mode off. The server gives up blocking `Stop` after 3 in a row.
+`bypassPermissions`, and `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` is `0` (`blockingProblem`). With a live mod, only the
+hook event is necessary: nothing blocks. The result has `delivery: "mod" | "block"`. A repeated
+`on` keeps `awaiting`, `delivered` and the inbox. `session_send` times out after
+20 min, returns `idle`, and turns the mode off. Without a live mod, in a session that
+`blockingProblem` refuses, `session_send` does not block: it turns the mode off and returns
+`mode_off`. The server gives up blocking `Stop` after 3 in a row. `Stop` passes while the Client
+is `awaiting` or `delivered` and its mod is live (mod delivery: the turn ends); with no live mod it
+clears both and blocks as usual. Every way out of the mode (`modeOff`, and
+`boardDeleted`) clears `awaiting`, `delivered` and the inbox (`clearMod`).
 
 Beware: `SessionStart` `compact` returns the Client's board context line (`contextLine`), plus
 the mode instruction while the mode is on, so the agent knows its board after compaction.
@@ -616,40 +638,136 @@ pending), then sends `board_release`. While `released_from` is set, **Allow pid 
 named `author` (the M3.5 switch rows) render as their own line (`authorRow`), never folded into
 the tool calls.
 
-Tests: `tests/tools/session.test.ts`, `tests/tools/forward-hook.test.ts`.
+Tests: `tests/tools/session.test.ts`, `tests/tools/forward-hook.test.ts`, `tests/tools/mod.test.ts`.
+
+## The mod
+
+ADR 0004. A Claude Code mod (a hooks module) beside the transcript. The browser stays the ink
+surface. The mod does three things: mod delivery for session mode, the hook events in place of
+`hooks/forward.sh`, and one status line (`inkwire · <board> · <state>`) with the `/inkwire` command
+(the status and the panel URL; `send` and `discard` for refused replies). The mod is person-side
+UI. It uses only the daemon's HTTP routes, never `$.mcp.call`. It names its Client by the Claude Code
+session id (`Clients.bySessionId`), because the mods API has no pid. A session id that two Clients
+hold names no Client. The mod's own files are under
+`hooks/mod/` (not `.ts` in `src/`); `hooks/mod/register.tsx` is the module.
+
+```
+src/server/clients.ts:34         ModReply
+src/server/clients.ts:42         MOD_TTL_MS
+src/server/clients.ts:176        markMod
+src/server/clients.ts:181        markModHook
+src/server/clients.ts:189        hasLiveMod
+src/server/clients.ts:197        modAnswersHooks
+src/server/clients.ts:202        clearMod
+src/server/clients.ts:262        bySessionId
+src/server/session-mode.ts:99    blockingProblem
+src/server/session-mode.ts:157   sessionSend
+src/server/session-mode.ts:287   sessionReply
+src/server/session-mode.ts:365   modPrompt
+src/server/session-mode.ts:395   hookEvent
+src/server/http.ts:288           handleMod
+src/server/http.ts:339           modView
+src/server/http.ts:362           waitForChange
+src/server/http.ts:63            ModHub
+src/server/ws.ts:334             author
+```
+
+Routes (all take the session id; only the view marks `client.mod.at`):
+
+- `POST /api/hook?via=mod&bg=…` — the classic event's JSON plus `prev_session_id?`. The same text
+  verdict as for `forward.sh`. The mod sends it only after a view answered `200`: a daemon from
+  before ADR 0004 answers `404`, and the mod then leaves each event to `forward.sh`.
+- `GET /api/mod/view?session=&alias=&since=&wait=` — long poll. `alias` is the mod's launch id:
+  when no Client has `session`, the Client with `alias` is rekeyed to `session` (a hello after
+  `/clear` sends the launch id). `200 { key, client, board }`. It answers
+  at once when the key is not `since`, else on a change, else after `wait` (at most 25000 ms) with
+  the same key. The key is a hash of the body. `client` is `{ pid, label, mode, awaiting, inbox,
+  current_board }` or null; `board` is `{ id, name, author }` (`author` is the push's
+  `AuthorPush`, from `PanelHub.author`) or null. An edit of the board does not change the key.
+- `POST /api/mod/take` — `{ session }`. `{ replies: [{ id, prompt }] }`, and the inbox empties.
+  `400` for a bad body, `404` for an unknown session.
+
+Beware: liveness. A Client has a live mod while the mod's view loop polled for it in the last
+`MOD_TTL_MS` (45 s); the long poll waits at most 25 s, so a running loop stays live. A mod hook
+event does not make the mod live (a mod whose loop stopped cannot take the inbox); it only makes
+the mod answer the hooks (`modAnswersHooks`). Liveness picks the delivery model at `session_send` time.
+
+Beware: mod delivery. `session_send` with a live mod sets `awaiting` and `delivered` and returns `delivered`. No
+timer, no pending send. A panel reply with no pending send but `awaiting` adds the `you`
+row and puts `{ id, prompt }` in the inbox (`modPrompt`: the reply, `inkwire ctx: <json ids and
+board>`, `Answer with session_send.`). With `awaiting` but no live mod, the reply fails and tells
+the person to type in the terminal. A reply that waits in the inbox while the mod is gone stays
+there until the mod takes it or the mode goes off.
+
+Beware: the long poll listens to `Sessions.onChange` (every `Clients.notify`) and to the current
+board's `onChange`, checks one time per burst (`setImmediate`), and removes its listeners and timer
+when the response closes. A change that the view does not show (for example a hook report) does
+not change the key.
+
+Beware: the mod's outbox (`live.ts`). The mod marks a reply in `$.state` before
+`$.prompt.submit`, so a reload never submits it twice. A reply leaves when the submit resolves or
+when `classic.UserPromptSubmit` shows its text. A refused reply, or one that did not start a turn
+within two main turns, waits for the person (`/inkwire send`, `/inkwire discard`); it is never
+submitted again by itself. The outbox empties when the view shows a mode that is not `inkwire`.
+The host refuses `$.prompt.submit` from a `command.run` hook: `/inkwire send` marks the reply new
+again, and a `$.clock.after` timer runs `deliver` after the command returns.
+
+Beware: the status line (`statusText` in `live.ts`, pure). The mod sets it on each view and on each
+outbox change (`refreshStatus`), and only after the first view (`link.checked`). An outbox reply
+wins over the mode: refused, then queued, then `pty`, `waiting on you`, `claude is working`.
+A daemon that answers 404 on `/api/mod/view` (from before ADR 0004) is not a down daemon:
+`fetchView` returns `OLD_DAEMON`, the link has `old`, and the status line says to restart it in
+the panel. `/inkwire` then gives the panel URL with no board.
+
+Mod files (not in `src/`, so no anchors): `register.tsx` (the hooks: `session.start`, `/inkwire`,
+`classic.Stop|SessionStart|UserPromptSubmit|PreToolUse`, `turn.complete`),
+`daemon.ts` (every HTTP call, each one in a race with a timeout; `DEFAULT_PORT`), `live.ts` (the
+long-poll loop, take, `$.prompt.submit` of the outbox, the status line and `inkwireCommand`),
+`contract.d.ts` (the state contract and copies of the daemon's wire types: change them when the
+view shape changes). `.claude-plugin/plugin.json` names `contract.d.ts` as its `types`.
+
+Beware: the mod cannot import `src/shared/` (zod). Keep the `Inkwire*` types a copy of
+`ModViewBody` in `src/server/http.ts` and of `AuthorPush`.
+
+Tests: `tests/tools/mod.test.ts`, `tests/integration/mod-routes.test.ts`, and
+`tests/integration/mod-link.test.ts` (the mod's HTTP flow through a real relay that carries
+`CLAUDE_CODE_SESSION_ID`). The mod's own tests: `hooks/mod/inkwire.test.tsx`, run with
+`yarn mod:test`; `yarn mod:validate` runs `claude plugin validate .`. Do not run
+`claude plugin test .` at the repo root: it also collects `tests/**`, and those do not load there.
+`hooks/run-mod-tests.mjs` copies the plugin manifest and `hooks/` to a temp dir and runs it there.
 
 ## Clients and authorship
 
 `Clients` (`src/server/clients.ts`, no I/O, clock from `Sessions.now`) keeps one `Client` for each
 Claude Code pid (ADR 0001): `sessionId`, `cwd`, `label`, `termProgram`, `currentBoardId`, `mode`,
-`hook`, `pending`, `blocks`. It also keeps the Author of each board (`authors`, ADR 0002), the
+`hook`, `pending`, `blocks`, and the mod state (`mod`, `awaiting`, `inbox`; see The mod). It also keeps the Author of each board (`authors`, ADR 0002), the
 pid the person released from each board (`releasedFrom`), the panel notice of each board
 (`noticeByBoard`), and the one-time notices of each Client (M3.5). The daemon makes one Client per
 hello pid (`createLinkHost`).
 
 ```
-src/server/clients.ts:32         Client
-src/server/clients.ts:66         class Clients
-src/server/clients.ts:112        ensure
-src/server/clients.ts:145        attach
-src/server/clients.ts:159        detach
-src/server/clients.ts:215        remove
-src/server/clients.ts:229        sweep
-src/server/clients.ts:242        boardDeleted
-src/server/clients.ts:293        talkingOn
-src/server/clients.ts:309        checkWrite
-src/server/clients.ts:341        commitClaim
-src/server/clients.ts:431        release
-src/server/session.ts:477        onDelete
-src/server/session.ts:562        resolve
-src/server/clients.ts:81         releasedFrom
-src/server/clients.ts:327        checkSwitch
-src/server/clients.ts:373        allowAgain
-src/server/clients.ts:381        addNotice
-src/server/clients.ts:285        readerCount
-src/server/clients.ts:176        peek
-src/server/clients.ts:388        takeNotices
-src/server/clients.ts:399        contextLine
+src/server/clients.ts:44         Client
+src/server/clients.ts:92         class Clients
+src/server/clients.ts:138        ensure
+src/server/clients.ts:209        attach
+src/server/clients.ts:223        detach
+src/server/clients.ts:290        remove
+src/server/clients.ts:304        sweep
+src/server/clients.ts:317        boardDeleted
+src/server/clients.ts:369        talkingOn
+src/server/clients.ts:385        checkWrite
+src/server/clients.ts:417        commitClaim
+src/server/clients.ts:507        release
+src/server/session.ts:479        onDelete
+src/server/session.ts:564        resolve
+src/server/clients.ts:107        releasedFrom
+src/server/clients.ts:403        checkSwitch
+src/server/clients.ts:449        allowAgain
+src/server/clients.ts:457        addNotice
+src/server/clients.ts:361        readerCount
+src/server/clients.ts:240        peek
+src/server/clients.ts:464        takeNotices
+src/server/clients.ts:475        contextLine
 src/server/mcp.ts:87             resolve
 src/server/mcp.ts:105            writable
 ```
@@ -853,9 +971,9 @@ src/server/project-root.ts:109  canonicalPath
 src/server/project-root.ts:118  rootOverlaps
 src/server/project-root.ts:130  listBoards
 src/shared/import-root.ts:9     importNeedsRoot
-src/server/session.ts:512       create
-src/server/session.ts:531       uniqueName
-src/server/session.ts:547       clone
+src/server/session.ts:514       create
+src/server/session.ts:533       uniqueName
+src/server/session.ts:549       clone
 src/server/session.ts:234       updateMeta
 src/server/mcp.ts:249           register("boards.list"
 src/server/mcp.ts:302           register("boards.update"
@@ -920,6 +1038,7 @@ build first, because the manifest runs `dist/link/relay.js`. A relay change need
 - `.claude-plugin/plugin.json` — manifest and the `mcpServers` entry (`node ${CLAUDE_PLUGIN_ROOT}/dist/link/relay.js`).
 - `.claude-plugin/marketplace.json` — the marketplace listing.
 - `hooks/hooks.json`, `hooks/forward.sh` — see Session mode and hooks.
+- `hooks/mod/` — the Claude Code mod (`hooks/mod/register.tsx` is the module) — see The mod.
 - `skills/use-inkwire`, `skills/back-to-claude-code`, `skills/trace-path` — `trace-path` is
   model-invocable.
 - `.claude/skills/ship` — dev-only, not part of the plugin.

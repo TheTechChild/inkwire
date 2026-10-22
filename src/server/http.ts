@@ -1,5 +1,7 @@
 // Local HTTP server: serves the panel bundle, stored bitmaps, the capture
-// POST endpoint, and a health probe. 127.0.0.1 only.
+// POST endpoint, the hook endpoint, the mod's routes (ADR 0004), and a health
+// probe. 127.0.0.1 only.
+import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -7,7 +9,8 @@ import path from "node:path";
 import type { Store } from "./store.js";
 import type { Screenshots } from "./screenshot.js";
 import type { Sessions } from "./session.js";
-import type { Clients } from "./clients.js";
+import type { Client, Clients } from "./clients.js";
+import type { AuthorPush } from "../shared/protocol.js";
 import * as mutations from "./mutations.js";
 import { ImportError, exportBoard, exportFilename, importBoard } from "./board-file.js";
 import { hookEvent } from "./session-mode.js";
@@ -48,7 +51,21 @@ export interface HttpDeps {
    * POST /api/daemon/restart is not found.
    */
   restart?: () => void;
+  /**
+   * The panel hub, for the mod's routes (ADR 0004): the Author field of its
+   * push. With none, /api/mod/* is not found. A getter, because the hub is
+   * made after the handler.
+   */
+  hub?: () => ModHub;
 }
+
+/** What the mod's routes need from the panel hub (PanelHub). */
+export interface ModHub {
+  author(boardId: string): AuthorPush | null;
+}
+
+/** The longest wait of one GET /api/mod/view (ADR 0004). The mod polls again at once. */
+export const MOD_VIEW_MAX_WAIT_MS = 25_000;
 
 /** The methods that change state. Each one gets the Origin and Host check (M4.11). */
 const STATE_CHANGING = new Set(["POST", "PUT", "DELETE", "PATCH"]);
@@ -83,7 +100,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HttpDeps)
   const p = url.pathname;
 
   // M4.11: a web page in the person's browser must not change state here.
-  if (STATE_CHANGING.has(req.method ?? "")) {
+  // The mod's routes get the check on every method: the view holds the board.
+  if (STATE_CHANGING.has(req.method ?? "") || p.startsWith("/api/mod/")) {
     const reason = checkBrowserRequest(req);
     if (reason !== null) {
       logRefused(p, req, reason);
@@ -122,11 +140,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HttpDeps)
       // not JSON — treat as an empty event; the verdict is still "ok"
     }
     // forward.sh adds ?pid=<Claude Code pid> when it finds a claude ancestor.
+    // The mod adds ?via=mod and sends no pid; the body can carry prev_session_id (ADR 0004).
+    const via = url.searchParams.get("via") === "mod" ? ("mod" as const) : undefined;
     const pid = Number.parseInt(url.searchParams.get("pid") ?? "", 10);
-    const claude_pid = Number.isInteger(pid) && pid > 0 ? pid : null;
-    const verdict = hookEvent(deps.clients, { ...((input ?? {}) as Record<string, unknown>), claude_pid }, url.searchParams.get("bg") ?? "unset");
+    const claude_pid = !via && Number.isInteger(pid) && pid > 0 ? pid : null;
+    const event = (input !== null && typeof input === "object" ? input : {}) as Record<string, unknown>;
+    const verdict = hookEvent(deps.clients, { ...event, claude_pid, via }, url.searchParams.get("bg") ?? "unset");
     res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
     res.end(verdict.block ? `block\n${verdict.block}` : verdict.context ? `context\n${verdict.context}` : "ok");
+    return;
+  }
+
+  if (p.startsWith("/api/mod/") && deps.hub) {
+    await handleMod(req, res, url, deps, deps.hub);
     return;
   }
 
@@ -255,6 +281,144 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HttpDeps)
 
   res.writeHead(404);
   res.end("not found");
+}
+
+// The mod's routes (ADR 0004). The mod is person-side UI. Agents must not
+// call these routes.
+async function handleMod(req: IncomingMessage, res: ServerResponse, url: URL, deps: HttpDeps, hub: () => ModHub): Promise<void> {
+  const p = url.pathname;
+  const { clients } = deps;
+
+  if (req.method === "GET" && p === "/api/mod/view") {
+    const sessionId = url.searchParams.get("session");
+    const since = url.searchParams.get("since");
+    const waitRaw = url.searchParams.get("wait");
+    const wait = waitRaw === null ? MOD_VIEW_MAX_WAIT_MS : Number(waitRaw);
+    if (!sessionId) return sendJson(res, 400, { error: "session query parameter required" });
+    if (!Number.isFinite(wait) || wait < 0) return sendJson(res, 400, { error: "wait must be a number of ms, 0 or more" });
+    // `alias`: the session id that the mod saw first (the launch id). A Client
+    // that a hello made after /clear holds it: the relay's env does not change.
+    const alias = url.searchParams.get("alias");
+    let mark = clients.bySessionId(sessionId);
+    if (!mark && alias && alias !== sessionId) {
+      mark = clients.bySessionId(alias);
+      if (mark) clients.rekey(mark.pid, sessionId);
+    }
+    // Only the view loop marks liveness: a mod whose loop stopped must fall back to the blocking model.
+    if (mark) clients.markMod(mark);
+    const first = modView(deps, hub(), sessionId);
+    if (first.key !== since || wait === 0) return sendJson(res, 200, first);
+    await waitForChange(res, deps, sessionId, since, Math.min(wait, MOD_VIEW_MAX_WAIT_MS), () => modView(deps, hub(), sessionId));
+    return;
+  }
+
+  if (req.method === "POST" && p === "/api/mod/take") {
+    const body = await readJson(req);
+    if (!body.ok) return sendJson(res, 400, { error: body.error });
+    const sessionId = (body.value as { session?: unknown }).session;
+    if (typeof sessionId !== "string" || !sessionId) return sendJson(res, 400, { error: "session must be a string" });
+    const client = clients.bySessionId(sessionId);
+    if (!client) return sendJson(res, 404, { error: `no Claude Code session ${sessionId}` });
+    const replies = client.inbox;
+    client.inbox = [];
+    if (replies.length) clients.notify();
+    return sendJson(res, 200, { replies });
+  }
+
+  sendJson(res, 404, { error: "not found" });
+}
+
+interface ModViewBody {
+  key: string;
+  client: { pid: number; label: string; mode: Client["mode"]; awaiting: boolean; inbox: number; current_board: string | null } | null;
+  /** The current board: only what the mod's status line shows. A change elsewhere on the board does not change the key. */
+  board: { id: string; name: string; author: AuthorPush | null } | null;
+}
+
+/** The mod's view of one Claude Code session; the key is a hash of the rest. */
+function modView(deps: HttpDeps, hub: ModHub, sessionId: string): ModViewBody {
+  const c = deps.clients.bySessionId(sessionId);
+  let board: ModViewBody["board"] = null;
+  if (c?.currentBoardId) {
+    try {
+      const s = deps.sessions.open(c.currentBoardId);
+      if (!s.closed) board = { id: s.boardId, name: s.meta.name, author: hub.author(s.boardId) };
+    } catch {
+      // board deleted under us: no board
+    }
+  }
+  const client = c
+    ? { pid: c.pid, label: c.label, mode: c.mode, awaiting: c.awaiting, inbox: c.inbox.length, current_board: c.currentBoardId }
+    : null;
+  const key = createHash("sha1").update(JSON.stringify({ client, board })).digest("hex").slice(0, 16);
+  return { key, client, board };
+}
+
+/**
+ * The long poll: answer when the view's key is not `since` any more, else
+ * after `wait` ms with the same key. Any change of Clients or of an open
+ * board can change the view. Listeners and the timer go when the request closes.
+ */
+function waitForChange(
+  res: ServerResponse,
+  deps: HttpDeps,
+  sessionId: string,
+  since: string | null,
+  wait: number,
+  view: () => ModViewBody,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const offs: (() => void)[] = [];
+    let queued = false;
+    let done = false;
+    const finish = (body: ModViewBody | null) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      for (const off of offs) off();
+      if (body && !res.writableEnded && !res.destroyed) sendJson(res, 200, body);
+      resolve();
+    };
+    // One check for a burst of changes (a mutation notifies more than once).
+    const check = () => {
+      if (queued || done) return;
+      queued = true;
+      setImmediate(() => {
+        queued = false;
+        if (done) return;
+        const next = view();
+        if (next.key !== since) finish(next);
+      });
+    };
+    const timer = setTimeout(() => finish(view()), wait);
+    // Clients.notify runs Sessions.notify: a mode, a send, a reply, a claim, a current-board change.
+    offs.push(deps.sessions.onChange(check));
+    const c = deps.clients.bySessionId(sessionId);
+    if (c?.currentBoardId) {
+      try {
+        offs.push(deps.sessions.open(c.currentBoardId).onChange(check));
+      } catch {
+        // board deleted under us: the Clients change wakes the poll
+      }
+    }
+    res.on("close", () => finish(null));
+  });
+}
+
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+async function readJson(req: IncomingMessage): Promise<{ ok: true; value: object } | { ok: false; error: string }> {
+  const body = await readBody(req);
+  try {
+    const value: unknown = JSON.parse(body.toString("utf8"));
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "body must be a JSON object" };
+    return { ok: true, value };
+  } catch {
+    return { ok: false, error: "body is not JSON" };
+  }
 }
 
 function serveFile(res: ServerResponse, file: string): void {
