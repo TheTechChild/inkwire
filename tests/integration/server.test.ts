@@ -1,27 +1,27 @@
 // TESTS.md § 5 — integration against a real HTTP+WS server on an ephemeral
 // port, with `ws` as the fake browser panel.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
 import WebSocket from "ws";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createHttpServer } from "../../src/server/http.js";
-import { PanelHub } from "../../src/server/ws.js";
-import { routeUpgrades } from "../../src/server/upgrade.js";
-import { readBuildInfo, type BuildInfo } from "../../src/server/build-info.js";
-import { createLinkHost } from "../../src/server/daemon.js";
-import { buildMcpServer } from "../../src/server/mcp.js";
-import { hookEvent } from "../../src/server/session-mode.js";
-import { LINK_VERSION, type Hello } from "../../src/link/hello.js";
+import { createHttpServer } from "../../plugin/src/server/http.ts";
+import { PanelHub } from "../../plugin/src/server/ws.ts";
+import { routeUpgrades } from "../../plugin/src/server/upgrade.ts";
+import { readBuildInfo, type BuildInfo } from "../../plugin/src/server/build-info.ts";
+import { createLinkHost } from "../../plugin/src/server/daemon.ts";
+import { buildMcpServer } from "../../plugin/src/server/mcp.ts";
+import { hookEvent } from "../../plugin/src/server/session-mode.ts";
+import { LINK_VERSION, type Hello } from "../../plugin/src/link/hello.ts";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { Screenshots } from "../../src/server/screenshot.js";
-import { Sessions } from "../../src/server/session.js";
-import { Clients } from "../../src/server/clients.js";
-import { Store } from "../../src/server/store.js";
-import * as mutations from "../../src/server/mutations.js";
-import type { ServerMessage } from "../../src/shared/protocol.js";
+import { Screenshots } from "../../plugin/src/server/screenshot.ts";
+import { Sessions } from "../../plugin/src/server/session.ts";
+import { Clients } from "../../plugin/src/server/clients.ts";
+import { Store } from "../../plugin/src/server/store.ts";
+import * as mutations from "../../plugin/src/server/mutations.ts";
+import type { ServerMessage } from "../../plugin/src/shared/protocol.ts";
 
 let dataDir: string;
 let rootDir: string;
@@ -32,7 +32,9 @@ let hub: PanelHub;
 let screenshots: Screenshots;
 let port: number;
 let boardId: string;
-let buildFile: string;
+/** A small source folder: its hash is the boot build (build-info.ts). */
+let srcFile: string;
+let srcDir: string;
 const http = { server: null as ReturnType<typeof createHttpServer> | null };
 /** The fake restart of the hub (M5.2): how many times the panel intent called it. */
 let restarts = 0;
@@ -50,7 +52,10 @@ class PanelClient {
   private unread: ServerMessage[] = [];
   private waiters: ((m: ServerMessage) => void)[] = [];
 
-  private constructor(public socket: WebSocket) {
+  socket: WebSocket;
+
+  private constructor(socket: WebSocket) {
+    this.socket = socket;
     socket.on("message", (raw) => {
       const msg = JSON.parse(String(raw)) as ServerMessage;
       this.messages.push(msg);
@@ -106,10 +111,13 @@ beforeAll(async () => {
   store = new Store(dataDir);
   sessions = new Sessions(store, { debounceMs: 60 });
   clients = new Clients(sessions);
-  buildFile = path.join(dataDir, "build.json");
-  writeFileSync(buildFile, JSON.stringify({ id: "boot0000boot0000", built_at: "2026-10-08T10:00:00.000Z" }));
-  // Read one time, at boot (Decision 10), as daemon.ts does.
-  const build = readBuildInfo(buildFile);
+  srcDir = path.join(dataDir, "src");
+  mkdirSync(path.join(srcDir, "server"), { recursive: true });
+  srcFile = path.join(srcDir, "server", "boot.ts");
+  writeFileSync(srcFile, "export const boot = 0;\n");
+  // Read one time, at boot (Decision 10), as daemon.ts does. built_at is the
+  // last_seen of the build registry: older than the "newer" builds below.
+  const build = { ...readBuildInfo(srcDir), built_at: "2026-10-08T10:00:00.000Z" };
   bootBuild = build;
   http.server = createHttpServer({ store, sessions, clients, screenshots: () => screenshots, build, pid: 4711 });
   hub = new PanelHub(sessions, clients, { focusTerminal: () => {}, build, restart: () => void restarts++ });
@@ -131,15 +139,38 @@ describe("integration", () => {
   it("/healthz names the server, its pid, the boot build and the counts", async () => {
     const res = await fetch(`http://127.0.0.1:${port}/healthz`);
     const body = await res.json();
-    expect(body).toMatchObject({ ok: true, name: "inkwire", pid: 4711, build: { id: "boot0000boot0000" } });
+    expect(body).toMatchObject({ ok: true, name: "inkwire", pid: 4711, build: { id: bootBuild.id, built_at: "2026-10-08T10:00:00.000Z" } });
+    expect(bootBuild.id).toMatch(/^[0-9a-f]{16}$/);
     expect(typeof body.clients).toBe("number");
     expect(typeof body.boards).toBe("number");
   });
 
-  it("/healthz keeps the boot build id after build.json changes (Decision 10)", async () => {
-    writeFileSync(buildFile, JSON.stringify({ id: "rebuilt0rebuilt0", built_at: "2026-10-08T12:00:00.000Z" }));
+  it("/healthz keeps the boot build id after the source changes (Decision 10)", async () => {
+    writeFileSync(srcFile, "export const boot = 1;\n");
+    expect(readBuildInfo(srcDir).id).not.toBe(bootBuild.id);
     const body = await (await fetch(`http://127.0.0.1:${port}/healthz`)).json();
-    expect(body.build).toEqual({ id: "boot0000boot0000", built_at: "2026-10-08T10:00:00.000Z" });
+    expect(body.build).toEqual(bootBuild);
+  });
+
+  it("serves the panel from the source: index.html, the bundled main.js and styles.css", async () => {
+    const base = `http://127.0.0.1:${port}`;
+    const page = await fetch(`${base}/?board=${boardId}`);
+    expect(page.status).toBe(200);
+    expect(page.headers.get("content-type")).toContain("text/html");
+    expect(await page.text()).toContain('src="./main.js"');
+    const js = await fetch(`${base}/main.js`);
+    expect(js.status).toBe(200);
+    expect(js.headers.get("content-type")).toContain("text/javascript");
+    const code = await js.text();
+    // A bundle: no import of a .ts file is left for the browser.
+    expect(code).not.toMatch(/from\s*["'][^"']+\.ts["']/);
+    expect(code).toContain("sourceMappingURL=main.js.map");
+    expect((await fetch(`${base}/main.js.map`)).status).toBe(200);
+    const css = await fetch(`${base}/styles.css`);
+    expect(css.status).toBe(200);
+    expect(css.headers.get("content-type")).toContain("text/css");
+    expect((await fetch(`${base}/main.ts`)).status).toBe(404);
+    expect((await fetch(`${base}/app.ts`)).status).toBe(404);
   });
 
   it("an upgrade to a path with no route is destroyed", async () => {
@@ -506,8 +537,8 @@ describe("integration", () => {
     { zoom: 0.6, lod: "compact" },
     { zoom: 0.35, lod: "dot" },
   ])("renderer parity at zoom $zoom ($lod): geometry is tier-independent, text follows the tier", async ({ zoom, lod }) => {
-    const { renderBoardSvg } = await import("../../src/server/render-svg.js");
-    const { lodFor } = await import("../../src/core/lod.js");
+    const { renderBoardSvg } = await import("../../plugin/src/server/render-svg.ts");
+    const { lodFor } = await import("../../plugin/src/core/lod.ts");
     expect(lodFor(zoom)).toBe(lod);
     const session = sessions.open(boardId);
     if (!session.collections().nodes.some((n) => n.label.startsWith("zq1 "))) {
@@ -566,7 +597,7 @@ describe("session over WS", () => {
   };
 
   it("a composer reply resolves the blocked send, the highlight reaches every panel, → layer creates a human layer", async () => {
-    const { hookEvent, sessionSend } = await import("../../src/server/session-mode.js");
+    const { hookEvent, sessionSend } = await import("../../plugin/src/server/session-mode.ts");
     const session = sessions.open(boardId);
     const n = mutations.addNode(session, "ai", { label: "hot path", kind: "service", at: [0, 0] }).ids[0]!;
     const me = clients.ensure(101);
@@ -605,7 +636,7 @@ describe("session over WS", () => {
   });
 
   it("a panel reply reaches only the Client that talks on the board; /api/hook routes by ?pid=", async () => {
-    const { sessionSend } = await import("../../src/server/session-mode.js");
+    const { sessionSend } = await import("../../plugin/src/server/session-mode.ts");
     // The hook route: ?pid= makes or finds the Client of that Claude Code pid.
     const res = await fetch(`http://127.0.0.1:${port}/api/hook?bg=0&pid=303`, {
       method: "POST",
@@ -795,7 +826,7 @@ describe("session over WS", () => {
     });
 
     it("a mode-off notice (the session_send cancel) reaches the panel as author.notice", async () => {
-      const { sessionSend } = await import("../../src/server/session-mode.js");
+      const { sessionSend } = await import("../../plugin/src/server/session-mode.ts");
       const board = sessions.create("m5 notice", rootDir);
       const a = await sessionFor(5251);
       expect((await a.call("canvas_add_node", addNode(board.boardId, "by A"))).isError).toBe(false);

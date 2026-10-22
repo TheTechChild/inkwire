@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { resizeBox } from "../../src/core/geometry.js";
-import type { Box } from "../../src/shared/types.js";
+import { resizeBox } from "../../plugin/src/core/geometry.ts";
+import type { Box } from "../../plugin/src/shared/types.ts";
 
 const origin: Box = [100, 100, 200, 100];
 const min = [80, 44] as const;

@@ -1,12 +1,12 @@
 // TESTS.md § 1 — property tests over randomly generated histories.
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { Sim } from "../helpers.js";
-import { dropStep, rewindTo, toggleSkip, undo } from "../../src/core/history.js";
-import { fold } from "../../src/core/fold.js";
-import { historySummary } from "../../src/core/state.js";
-import { stableStringify } from "../../src/core/util.js";
-import type { History, Step } from "../../src/shared/types.js";
+import { Sim } from "../helpers.ts";
+import { dropStep, rewindTo, toggleSkip, undo } from "../../plugin/src/core/history.ts";
+import { fold } from "../../plugin/src/core/fold.ts";
+import { historySummary } from "../../plugin/src/core/state.ts";
+import { stableStringify } from "../../plugin/src/core/util.ts";
+import type { History, Step } from "../../plugin/src/shared/types.ts";
 
 // -- generators -------------------------------------------------------------
 

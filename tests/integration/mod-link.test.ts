@@ -5,9 +5,9 @@
 // Random port, temp data dir; stop() kills the daemon.
 import WebSocket from "ws";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { ServerMessage } from "../../src/shared/protocol.js";
-import { body, call, freePort, head, postHook, rawRequest, tempDir } from "./daemon-helpers.js";
-import { startRelays, type Relay, type Relays } from "../health/harness.js";
+import type { ServerMessage } from "../../plugin/src/shared/protocol.ts";
+import { body, call, freePort, head, postHook, rawRequest, tempDir } from "./daemon-helpers.ts";
+import { startRelays, type Relay, type Relays } from "../health/harness.ts";
 
 const SESSION = "mod-link-session";
 const JSON_HEADERS = { "content-type": "application/json" };

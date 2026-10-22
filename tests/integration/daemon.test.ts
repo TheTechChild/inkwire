@@ -1,11 +1,12 @@
-// The daemon over real links (plan M4.4): a spawned `node --import tsx
-// src/server/daemon.ts` on a random port with a temp dir, and SDK Clients over
+// The daemon over real links (plan M4.4): a spawned `node
+// plugin/src/server/daemon.ts` on a random port with a temp dir, and SDK Clients over
 // raw links that act as Claude Code sessions with their own pids.
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { startDaemon, type Daemon } from "../../src/server/daemon.js";
-import { STALE_NOTICE } from "../../src/server/clients.js";
+import { startDaemon, type Daemon } from "../../plugin/src/server/daemon.ts";
+import { readBuildInfo, readRegistry, registerBuild } from "../../plugin/src/server/build-info.ts";
+import { STALE_NOTICE } from "../../plugin/src/server/clients.ts";
 import {
   alive,
   body,
@@ -21,7 +22,7 @@ import {
   waitFor,
   type LinkClient,
   type Spawned,
-} from "./daemon-helpers.js";
+} from "./daemon-helpers.ts";
 
 let port: number;
 let dataDir: string;
@@ -176,8 +177,8 @@ describe("daemon in-process", () => {
     try {
       expect(changes).toContain("new-build");
       off();
-      expect(head(await call(same.client, "boards_list"))).not.toContain("old build");
-      expect(head(await call(older.client, "boards_list"))).not.toContain("old build");
+      expect(head(await call(same.client, "boards_list"))).not.toContain("older build");
+      expect(head(await call(older.client, "boards_list"))).not.toContain("older build");
       expect(d.core.clients.staleBuild).toEqual({ id: "new-build", built_at: "2026-10-08T00:00:00.000Z" });
       expect(head(await call(newer.client, "boards_list"))).toContain(STALE_NOTICE);
       expect(head(await call(newer.client, "boards_list"))).not.toContain(STALE_NOTICE);
@@ -187,15 +188,58 @@ describe("daemon in-process", () => {
     }
   });
 
-  it("reads the build file one time, at boot: /healthz keeps the boot id after the file changes (Decision 10)", async () => {
-    const dir = tempDir("daemon-build");
-    const buildFile = path.join(dir, "build.json");
-    writeFileSync(buildFile, JSON.stringify({ id: "boot0000boot0000", built_at: "2026-10-08T10:00:00.000Z" }));
-    const d = (await startDaemon({ config: { port: 0, dataDir: dir, idleGraceMs: null }, buildFile, exit: () => {} }))!;
+  it("the build registry orders the builds: last_seen wins over the built_at of the hello (Decision 7)", async () => {
+    const dir = tempDir("daemon-registry");
+    const srcDir = path.join(dir, "src");
+    mkdirSync(path.join(srcDir, "server"), { recursive: true });
+    writeFileSync(path.join(srcDir, "server", "boot.ts"), "export const boot = 0;\n");
+    const d = (await startDaemon({ config: { port: 0, dataDir: dir, idleGraceMs: null }, srcDir, exit: () => {} }))!;
+    const bootAt = Date.parse(d.build.built_at!);
+    // Registered by their relays: one build before the daemon's, one after it. A
+    // registry entry needs its daemon entry on disk, else the next register removes
+    // it, and one folder holds one build, so each build has its own folder.
+    const folder = (name: string) => {
+      const other = path.join(dir, name);
+      mkdirSync(path.join(other, "src", "server"), { recursive: true });
+      writeFileSync(path.join(other, "src", "server", "daemon.ts"), "\n");
+      return other;
+    };
+    registerBuild(dir, "before0000000000", folder("before"), { now: new Date(bootAt - 86_400_000) });
+    registerBuild(dir, "after00000000000", folder("after"), { now: new Date(bootAt + 86_400_000) });
+    // The hellos say the reverse.
+    const before = await linkClient(d.port, 7101, { build: { id: "before0000000000", built_at: "2999-01-01T00:00:00.000Z" } });
     try {
-      expect((await health(d.port))?.build).toEqual({ id: "boot0000boot0000", built_at: "2026-10-08T10:00:00.000Z" });
-      writeFileSync(buildFile, JSON.stringify({ id: "rebuilt0rebuilt0", built_at: "2026-10-08T12:00:00.000Z" }));
-      expect((await health(d.port))?.build).toEqual({ id: "boot0000boot0000", built_at: "2026-10-08T10:00:00.000Z" });
+      expect(d.core.clients.staleBuild).toBeNull();
+      const after = await linkClient(d.port, 7102, { build: { id: "after00000000000", built_at: "2000-01-01T00:00:00.000Z" } });
+      try {
+        expect(d.core.clients.staleBuild?.id).toBe("after00000000000");
+        expect(head(await call(after.client, "boards_list"))).toContain(STALE_NOTICE);
+      } finally {
+        await after.close().catch(() => {});
+      }
+    } finally {
+      await before.close().catch(() => {});
+      d.shutdown("test end");
+    }
+  });
+
+  it("reads the build one time, at boot: /healthz keeps the boot id after the source changes (Decision 10)", async () => {
+    const dir = tempDir("daemon-build");
+    const srcDir = path.join(dir, "src");
+    const file = path.join(srcDir, "server", "boot.ts");
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "export const boot = 0;\n");
+    const boot = readBuildInfo(srcDir);
+    const d = (await startDaemon({ config: { port: 0, dataDir: dir, idleGraceMs: null }, srcDir, exit: () => {} }))!;
+    try {
+      // The daemon registers its build at boot: built_at is the last_seen of the registry.
+      const first = readRegistry(dir)[boot.id];
+      expect(first).toEqual({ root: dir, first_seen: expect.any(String), last_seen: expect.any(String), pids: [] });
+      expect((await health(d.port))?.build).toEqual({ id: boot.id, built_at: first!.last_seen });
+      expect(d.build).toEqual({ id: boot.id, built_at: first!.last_seen });
+      writeFileSync(file, "export const boot = 1;\n");
+      expect(readBuildInfo(srcDir).id).not.toBe(boot.id);
+      expect((await health(d.port))?.build).toEqual(d.build);
     } finally {
       d.shutdown("test end");
     }

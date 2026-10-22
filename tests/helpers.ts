@@ -1,8 +1,8 @@
 // A tiny in-memory board that drives mutations through the same
 // append/fold path the server uses. Deterministic: injected clock + id
 // counter.
-import { append, type AppendResult } from "../src/core/history.js";
-import { fold } from "../src/core/fold.js";
+import { append, type AppendResult } from "../plugin/src/core/history.ts";
+import { fold } from "../plugin/src/core/fold.ts";
 import type {
   Author,
   Box,
@@ -12,8 +12,8 @@ import type {
   History,
   NodeEl,
   StrokeEl,
-} from "../src/shared/types.js";
-import { emptyCollections } from "../src/shared/types.js";
+} from "../plugin/src/shared/types.ts";
+import { emptyCollections } from "../plugin/src/shared/types.ts";
 
 export class Sim {
   history: History;

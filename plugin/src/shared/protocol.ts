@@ -1,0 +1,240 @@
+// WebSocket protocol between the panel and the server. Client intents use the
+// same op vocabulary as the MCP tools — one mutation path (SPEC § 1).
+import { z } from "zod";
+import {
+  boxSchema,
+  draftRoleSchema,
+  edgeKindSchema,
+  offeredNodeKindSchema,
+  pointSchema,
+  viewportSchema,
+} from "./schemas.ts";
+
+// Client → server -----------------------------------------------------------
+
+export const clientIntentSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("add_stroke"),
+    points: z.array(pointSchema).min(2),
+  }),
+  z.object({
+    type: z.literal("add_node"),
+    label: z.string(),
+    kind: offeredNodeKindSchema,
+    at: pointSchema,
+    size: pointSchema.optional(),
+  }),
+  z.object({
+    type: z.literal("add_edge"),
+    from: z.string(),
+    to: z.string(),
+    kind: edgeKindSchema.default("sync"),
+  }),
+  z.object({
+    type: z.literal("add_image"),
+    src: z.string(),
+    natural: z.tuple([z.int(), z.int()]),
+    at: pointSchema,
+    size: pointSchema,
+  }),
+  z.object({
+    type: z.literal("update_node"),
+    node_id: z.string(),
+    label: z.string().optional(),
+    kind: offeredNodeKindSchema.optional(),
+    ref: z.string().nullable().optional(),
+    endpoint: z.string().nullable().optional(),
+    /** Field name for the coalescing key, e.g. "label". */
+    field: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("update_edge"),
+    edge_id: z.string(),
+    label: z.string().nullable().optional(),
+    schema: z.string().nullable().optional(),
+    kind: edgeKindSchema.optional(),
+    condition: z.string().nullable().optional(),
+    field: z.string().optional(),
+  }),
+  z.object({ type: z.literal("delete"), id: z.string() }),
+  z.object({
+    type: z.literal("move"),
+    id: z.string(),
+    at: pointSchema,
+    size: pointSchema.optional(),
+  }),
+  z.object({
+    type: z.literal("history"),
+    action: z.enum(["rewind", "skip", "drop", "undo", "redo"]),
+    /** External step index for rewind/skip/drop (0 = base, 1..n = steps). */
+    index: z.int().min(0).optional(),
+    scope: z.enum(["all", "human", "ai"]).default("all"),
+  }),
+  z.object({ type: z.literal("set_viewport"), viewport: viewportSchema }),
+  /** The header's infer_structure action; author is "human" over this transport. */
+  z.object({ type: z.literal("infer"), stroke_ids: z.array(z.string()).optional() }),
+  z.object({ type: z.literal("layers_focus"), layer_id: z.string().nullable() }),
+  /** Rename is the one layer edit the human owns. */
+  z.object({ type: z.literal("layers_update"), layer_id: z.string(), title: z.string().optional() }),
+  z.object({ type: z.literal("layers_delete"), layer_id: z.string() }),
+  /** "→ layer" on a highlight: the one create the human owns. */
+  z.object({
+    type: z.literal("layers_create"),
+    node_ids: z.array(z.string()).min(1),
+    title: z.string().optional(),
+    note: z.string().optional(),
+  }),
+  // Session tab. Context travels as ids; the server builds the chips.
+  z.object({
+    type: z.literal("session_reply"),
+    text: z.string().min(1),
+    focus: z.string().nullable(),
+    selection: z.string().nullable(),
+    /** The scrubber's position, ids only. */
+    trace: z.object({ path: z.string(), hop: z.int().min(1) }).nullable().default(null),
+    /** The active draft, unless the human dropped its chip. */
+    draft: z.string().nullable().default(null),
+    /** The open notebook, unless the human dropped its chip. */
+    notebook: z.string().nullable().default(null),
+  }),
+  /** Turns off the mode of this board's Author; a no-op with no Author or an Author in pty. */
+  z.object({ type: z.literal("session_mode_off") }),
+  /** The person's Release (ADR 0002). Race guard: the server acts only when pid is the board's Author now. */
+  z.object({ type: z.literal("board_release"), pid: z.int() }),
+  /** Allow pid N: the server acts only when the board's released_from is pid. */
+  z.object({ type: z.literal("board_allow"), pid: z.int() }),
+  /** Restart the daemon (Decision 3). The server acts only when build_id is the stale build the panel showed. */
+  z.object({ type: z.literal("daemon_restart"), build_id: z.string() }),
+  /** Toggle a message's highlight as the board's active one; null clears. */
+  z.object({ type: z.literal("highlight_set"), msg_id: z.string().nullable() }),
+  // The trace. Path ids are board-unique, so the server resolves by path_id alone.
+  /** Open the scrubber pinned on a path (from 0 running unless t/running are given); null closes it. */
+  z.object({
+    type: z.literal("trace_set"),
+    path_id: z.string().nullable(),
+    t: z.number().min(0).optional(),
+    running: z.boolean().optional(),
+  }),
+  /** A scrub: seek and pause. Only the seeking panel writes t. */
+  z.object({ type: z.literal("trace_seek"), t: z.number().min(0) }),
+  /** Play, pause, loop. t carries the panel's local position so the server never ticks. */
+  z.object({
+    type: z.literal("trace_run"),
+    running: z.boolean(),
+    loop: z.boolean().optional(),
+    t: z.number().min(0).optional(),
+  }),
+
+  // Drafts. Author "human" over this transport; the server validates marks.
+  z.object({ type: z.literal("drafts_activate"), draft_id: z.string().nullable() }),
+  /** Mark an element on a draft (null draft_id creates one first); null role unmarks. */
+  z.object({
+    type: z.literal("drafts_mark"),
+    draft_id: z.string().nullable(),
+    id: z.string(),
+    role: draftRoleSchema.nullable(),
+  }),
+  z.object({ type: z.literal("drafts_create"), title: z.string().optional(), note: z.string().optional() }),
+  z.object({ type: z.literal("drafts_update"), draft_id: z.string(), title: z.string().optional(), note: z.string().optional() }),
+  z.object({ type: z.literal("drafts_delete"), draft_id: z.string() }),
+
+  // Notebooks. Author "human" over this transport; a notebook mutation writes
+  // no history step and bumps no revision — a notebook is not the board.
+  z.object({ type: z.literal("notebooks_open"), notebook_id: z.string().nullable() }),
+  z.object({ type: z.literal("notebooks_create"), title: z.string().optional(), body: z.string().optional() }),
+  z.object({ type: z.literal("notebooks_update"), notebook_id: z.string(), title: z.string().optional(), body: z.string().optional() }),
+  z.object({ type: z.literal("notebooks_delete"), notebook_id: z.string() }),
+  /** Empty-space context menu's "import notes to notebook" — the one exception:
+   * it deletes note nodes, so it goes through session.mutate() as one step. */
+  z.object({ type: z.literal("notes_migrate") }),
+]);
+
+export type ClientIntent = z.infer<typeof clientIntentSchema>;
+
+export const clientMessageSchema = z.discriminatedUnion("type", [
+  ...clientIntentSchema.options,
+]);
+
+// Server → client -----------------------------------------------------------
+
+export interface HistoryRow {
+  id: string;
+  index: number; // external index, 1..n (base is 0, not listed)
+  label: string;
+  author: "human" | "ai";
+  skipped: boolean;
+  conflict: boolean;
+  ahead: boolean; // past the head
+  at: number;
+}
+
+export const captureRequestSchema = z.object({
+  type: z.literal("capture_request"),
+  capture_id: z.string(),
+  viewport: viewportSchema.nullable(),
+  fit: z.boolean(),
+});
+
+/** The board's Author as the panel shows it (Decision 8: label is the basename of the Client's cwd). */
+export interface AuthorPush {
+  pid: number;
+  label: string;
+  mode: import("./types.ts").SessionMode;
+  /** The Author waits on the person, on this board: a blocked session_send, or mod delivery's awaited reply. */
+  pending: boolean;
+  /**
+   * Mod delivery (ADR 0004): the Author waits for a reply, with no blocked send.
+   * Absent from an older daemon.
+   */
+  awaiting?: boolean;
+  /** Strip body override: a mode-on failure or the idle timeout. */
+  notice: string | null;
+}
+
+/**
+ * The Session tab's slice of server state. Nothing in it is server-wide. The
+ * Thread, the highlight and the trace belong to the board. The Author and the
+ * reader count belong to the board's Clients. A new panel bundle can load from
+ * an older daemon, so the panel treats author, readers and released_from as optional.
+ */
+export interface SessionPush {
+  author: AuthorPush | null;
+  /** The Clients whose current board this is, less the Author. A count only. */
+  readers: number;
+  /** The pid that the person released from this board, until it is allowed again (Open question 2). */
+  released_from: { pid: number; label: string } | null;
+  thread: import("./types.ts").ThreadEntry[];
+  highlight: ({ msg_id: string } & import("./types.ts").Highlight) | null;
+  /** The pinned trace, shared by every panel like focus. Peek is panel-local and never here. */
+  trace: import("./types.ts").Trace | null;
+}
+
+/** The daemon's build, and the newer build a relay brought (Decision 7). Same for every board. */
+export interface DaemonPush {
+  /** The boot build id (Decision 10); null when the server has no build (in-process tests). */
+  build_id: string | null;
+  stale: {
+    newer_build_id: string;
+    /** When the data dir first saw the newer build (the build registry); null when unknown. */
+    built_at: string | null;
+    /** What a restart affects: every open board and every Client with an open link. */
+    boards: { id: string; name: string }[];
+    clients: { label: string; pid: number }[];
+  } | null;
+}
+
+export type ServerMessage =
+  | {
+      type: "state";
+      /** CanvasState with full ink geometry, for rendering. */
+      state: import("./types.ts").CanvasState;
+      history: HistoryRow[];
+      session: SessionPush;
+      daemon: DaemonPush;
+    }
+  /** The daemon field alone, to every panel of every board, when only it changed (a hello or a close while stale). */
+  | { type: "daemon"; daemon: DaemonPush }
+  | { type: "error"; text: string }
+  | z.infer<typeof captureRequestSchema>;
+
+export { boxSchema };

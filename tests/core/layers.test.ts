@@ -1,8 +1,8 @@
 // Layer math: letters, downstream BFS, tiers, and the scoped read.
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { Sim, makeEdge, makeNode } from "../helpers.js";
-import { buildCanvasState } from "../../src/core/state.js";
+import { Sim, makeEdge, makeNode } from "../helpers.ts";
+import { buildCanvasState } from "../../plugin/src/core/state.ts";
 import {
   HOP_MS,
   REST_MS,
@@ -18,8 +18,8 @@ import {
   tiers,
   traceT,
   validateWalk,
-} from "../../src/core/layers.js";
-import type { CanvasState, Collections, Layer, Path } from "../../src/shared/types.js";
+} from "../../plugin/src/core/layers.ts";
+import type { CanvasState, Collections, Layer, Path } from "../../plugin/src/shared/types.ts";
 
 function layer(nodes: string[], over: Partial<Layer> = {}): Layer {
   return { id: "L_1", letter: "A", title: "t", note: "why", nodes, author: "ai", paths: [], ...over };

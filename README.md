@@ -4,21 +4,39 @@ A local MCP server with a shared drawing canvas, for collaborating visually with
 
 ## Quick start
 
-```sh
-yarn install
-yarn build
-```
+Inkwire needs Node 26 or later: Node runs the TypeScript source directly, so there is no build step. Claude Code starts the plugin in the folder of your session, and a version manager can then give the Node of that project's `.nvmrc`. The plugin uses the `node` on PATH when it is Node 26 or later, else `mise x node@26` when [mise](https://mise.jdx.dev) is installed. So if your projects pin an older Node, install mise.
 
-Inkwire ships as a Claude Code plugin: the MCP server, a `Stop` hook, the `/use-inkwire` and `/back-to-claude-code` commands, and the model-invocable `trace-path` skill. Install it once; it then loads in every session:
+Inkwire ships as a Claude Code plugin: the MCP server, a `Stop` hook, the `/use-inkwire` and `/back-to-claude-code` commands, and the model-invocable `trace-path` skill. This repo is also the plugin's marketplace. Install it one time; it then loads in every session:
 
 ```sh
-claude plugin marketplace add /path/to/inkwire
+claude plugin marketplace add TheTechChild/inkwire
 claude plugin install inkwire@inkwire
 ```
 
-Adjust `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` to 0 in your `~/.claude/settings.json`
+Claude Code copies the `plugin/` folder of this repo into its plugin cache and installs the runtime dependencies there from `plugin/package.json` and `plugin/package-lock.json` (with `npm ci --ignore-scripts`). You do not run a build or `yarn install` for the plugin.
 
-For a one-off run without installing, `claude --plugin-dir /path/to/inkwire` does the same for that session. Tool names carry the plugin prefix: `mcp__plugin_inkwire_inkwire__boards_create`.
+For a one-off run without installing, `claude --plugin-dir /path/to/inkwire/plugin` does the same for that session (it uses the `node_modules` of the checkout, so run `yarn install` in the checkout first). On the default data dir, an installed build always comes before a checkout build: when the plugin is also installed, that session uses the daemon of the installed plugin. To run the daemon of the checkout, use `yarn dev:claude`, which has its own port and data dir. Tool names carry the plugin prefix: `mcp__plugin_inkwire_inkwire__boards_create`.
+
+### Updates
+
+The plugin has no version number, so Claude Code uses the commit SHA: each merge to `main` is an update.
+
+- To get updates automatically, turn on auto-update for the `inkwire` marketplace in `/plugin` → **Marketplaces**. Or set `"autoUpdate": true` on the marketplace in `extraKnownMarketplaces` in `~/.claude/settings.json`:
+
+  ```json
+  {
+    "extraKnownMarketplaces": {
+      "inkwire": {
+        "source": { "source": "github", "repo": "TheTechChild/inkwire" },
+        "autoUpdate": true
+      }
+    }
+  }
+  ```
+
+- To update by hand, run `claude plugin marketplace update inkwire`, then `claude plugin update inkwire@inkwire`.
+- After an update, run `/reload-plugins` in a session that is open (or start a new session).
+- A change to the daemon needs one **Restart** in the panel. The daemon does not restart by itself (see [After an update](#after-an-update)).
 
 The Session tab (below) needs two settings. Put them in `~/.claude/settings.json` to make them permanent, or in the `.claude/settings.json` of the project you use inkwire from:
 
@@ -31,7 +49,7 @@ The Session tab (below) needs two settings. Put them in `~/.claude/settings.json
 
 The canvas works without them. This repo's own `.claude/settings.json` already carries both.
 
-Inkwire runs as one daemon. The first Claude Code session starts it, and it stops 30 s after the last session closes. All sessions share the daemon and port 4691. Each session runs a small relay (`dist/link/relay.js`) that connects to the daemon.
+Inkwire runs as one daemon. The first Claude Code session starts it, and it stops 30 s after the last session closes. All sessions share the daemon and port 4691. Each session runs a small relay (`plugin/src/link/relay.ts`) that connects to the daemon.
 
 Then ask Claude to create a board (`boards_create`). `boards_create` needs a `project_root`: the absolute path of the checkout that the board's code refs point into. The tool result contains the panel URL — open it in your browser:
 
@@ -49,9 +67,9 @@ To give the board to a different session, click **Release** in the panel. Then t
 
 For a git worktree, use `boards_clone` with the worktree as the new `project_root`. The session that clones the board becomes the Author of the clone.
 
-## After a rebuild
+## After an update
 
-The daemon does not restart by itself after `yarn build`. When a Claude Code session starts with a newer build, the panel shows a stale-build notice. To use the new build, click **Restart** in the panel, or run `yarn daemon:restart`. When all Claude Code sessions close, the daemon stops after 30 s, and the next session starts the new build. A restart drops the undo history and every pending `session_send` on every board.
+The daemon does not restart by itself after a plugin update or a change to the source. The build id is a hash of the source in `plugin/src/`, of `plugin/package.json` and `plugin/package-lock.json`, and of the fonts, so an update that changes only a dependency is a new build too. A newer build is the build that the last new Claude Code session started (an installed build always comes before a checkout build). So after a downgrade or a pin to an older commit, the older build is the newer one. When a Claude Code session starts with a newer build, the panel shows a stale-build notice. To use the new build, click **Restart** in the panel, or run `yarn daemon:restart`. When all Claude Code sessions close, the daemon stops after 30 s, and the next session starts the new build. A restart drops the undo history and every pending `session_send` on every board.
 
 After a reconnect or a restart, each session keeps its current board. It does not keep its authorship or its `inkwire` mode. The next write claims the board again if the board is free (see [Many sessions](#many-sessions)).
 
@@ -71,26 +89,40 @@ The mode is per Claude Code session, and only the board's Author can turn it on.
 ## Development
 
 ```sh
-yarn dev          # dev daemon (tsx watch) + panel bundle (esbuild watch)
-yarn dev:claude   # Claude Code with this repo as the plugin, on the dev daemon
+yarn install
+yarn dev          # dev daemon from the source; restarts on a server change, bundles the panel again on a panel change
+yarn dev:claude   # Claude Code with plugin/ as the plugin, on the dev daemon
 yarn test         # full vitest suite
-yarn health       # build, then run every MCP tool through a real daemon and relays
+yarn health       # run every MCP tool through a real daemon and relays
 yarn typecheck
+yarn check-plugin   # the marketplace, the manifest, the hooks and the plugin's npm package
+yarn check-install  # install plugin/ as Claude Code does (npm ci) and run it one time
+yarn lock-plugin    # write plugin/package.json and plugin/package-lock.json again
 ```
 
-`yarn dev` runs the dev daemon on port 4692 with `~/.inkwire-dev` and `INKWIRE_IDLE_GRACE_MS=off`, so it does not touch the daemon on 4691 or the data in `~/.inkwire`. Panel URL: `http://127.0.0.1:4692/?board=<id>`.
+Run `yarn lock-plugin` after a change to the root `dependencies` or to `yarn.lock`. The root `dependencies` are the runtime dependencies of the plugin, and `plugin/package.json` pins them to the exact versions that `yarn.lock` resolves. Each package in `plugin/package-lock.json`, also a transitive one, has the version that `yarn.lock` resolves, so the tests run the same packages that users get. `yarn check-plugin` fails in CI when they do not agree. `yarn check-install` copies only the files of `plugin/` that git tracks, as Claude Code does, and stops when `plugin/` has a file that git does not track. `plugin/package.json` is not a Yarn workspace: Yarn ignores it.
 
-`yarn dev:claude` starts Claude Code with `--plugin-dir .` and the dev port and data dir. The relay and the hook use the dev daemon. If `yarn dev` does not run, the relay starts a daemon from `dist/` on 4692. The relay always runs from `dist/`, so after a change to the relay, run `yarn build`.
+`yarn dev` runs the dev daemon on port 4692 with `~/.inkwire-dev`, `INKWIRE_IDLE_GRACE_MS=off` and `INKWIRE_UI_WATCH=1` (reload the page after a panel change), so it does not touch the daemon on 4691 or the data in `~/.inkwire`. Panel URL: `http://127.0.0.1:4692/?board=<id>`.
+
+`yarn dev:claude` starts Claude Code with `--plugin-dir ./plugin` and the dev port and data dir. The relay and the hook use the dev daemon. If `yarn dev` does not run, the relay starts a daemon from the source on 4692. The relay runs from the source, so a change to the relay takes effect in the next Claude Code session.
+
+The daemon bundles the panel (`plugin/src/ui/`) with esbuild in memory when it starts. A change to the panel shows after a daemon restart.
 
 Tests use random ports and temp data dirs. They never use 4691, 4692, `~/.inkwire` or `~/.inkwire-dev`.
 
-Health check: run `yarn health` after a change to the link, the daemon, the gate or any tool. It builds, starts a real daemon and two or more relays on a random port with a temp dir, and runs every MCP tool through the full link. A failed case names the tool or the part of the daemon lifecycle that is broken. `yarn test` skips the one case that needs `dist/` when `dist/build.json` is missing or older than `src/`; `yarn health` never skips it (a stale `dist/` fails it). `yarn health` deletes and rebuilds `dist/`, so do not run it in the checkout that live Claude Code sessions use as the plugin.
+Health check: run `yarn health` after a change to the link, the daemon, the gate or any tool. It starts a real daemon and two or more relays on a random port with a temp dir, and runs every MCP tool through the full link. A failed case names the tool or the part of the daemon lifecycle that is broken.
 
 Configuration (env vars): `INKWIRE_PORT` (default 4691), `INKWIRE_DATA_DIR` (default `~/.inkwire` — SQLite plus an images/ directory), `INKWIRE_IDLE_GRACE_MS` (daemon only; default 30000, `off` turns the idle stop off). There is no project-root env var: each board stores its own `project_root` (set it with `boards_create`, `boards_clone`, `boards_import` or `boards_update`), and every code ref on the board resolves against it.
 
 The design handoff that specifies this project lives in `design_handoff_inkwire/`. See `CLAUDE.md` for architecture notes.
 
 ## Upgrade notes
+
+### To run from source
+
+The plugin root moved from the repo root to `plugin/`, and there is no `dist/` now. If you added the marketplace from a local checkout, remove it (`claude plugin marketplace remove inkwire`) and add it from GitHub (`claude plugin marketplace add TheTechChild/inkwire`), so that updates come with each merge to `main` and you do not need `git pull` and a build. Update the inkwire marketplace and the plugin in Claude Code (`/plugin`). A project `.mcp.json` that starts inkwire with `node .../dist/link/relay.js` must change to `"command": "sh"` with the args `.../plugin/src/link/relay.sh`. After the update, click **Restart** in the panel's stale-build notice, or close all sessions, to start the daemon from the new source.
+
+Claude Code installs each update into a new folder and removes an old folder 14 days later. A running daemon does not need its folder after it starts: it keeps the panel in memory and copies the fonts to `~/.inkwire/fonts/`. Each relay records its build in `~/.inkwire/builds.json`, and the daemon that a relay starts is always the newest recorded build whose folder is still there. If that daemon cannot start, the relay starts the next build. A project `.mcp.json` that starts inkwire must run `sh .../plugin/src/link/relay.sh` (it finds a Node 26), not `node .../relay.ts`.
 
 ### To the shared daemon
 

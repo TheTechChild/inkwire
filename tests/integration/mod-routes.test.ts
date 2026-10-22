@@ -3,12 +3,12 @@
 // /api/mod/take, and the Origin check on them.
 import WebSocket from "ws";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { startDaemon, type Daemon } from "../../src/server/daemon.js";
-import { sessionMode, sessionSend } from "../../src/server/session-mode.js";
-import * as mutations from "../../src/server/mutations.js";
-import type { Client } from "../../src/server/clients.js";
-import type { ServerMessage } from "../../src/shared/protocol.js";
-import { rawRequest, tempDir } from "./daemon-helpers.js";
+import { startDaemon, type Daemon } from "../../plugin/src/server/daemon.ts";
+import { sessionMode, sessionSend } from "../../plugin/src/server/session-mode.ts";
+import * as mutations from "../../plugin/src/server/mutations.ts";
+import type { Client } from "../../plugin/src/server/clients.ts";
+import type { ServerMessage } from "../../plugin/src/shared/protocol.ts";
+import { rawRequest, tempDir } from "./daemon-helpers.ts";
 
 let d: Daemon;
 let port: number;

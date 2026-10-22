@@ -9,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-const script = fileURLToPath(new URL("../../hooks/forward.sh", import.meta.url));
+const script = fileURLToPath(new URL("../../plugin/hooks/forward.sh", import.meta.url));
 const dir = mkdtempSync(path.join(tmpdir(), "inkwire-forward-"));
 const claude = path.join(dir, "claude");
 symlinkSync("/bin/sh", claude);

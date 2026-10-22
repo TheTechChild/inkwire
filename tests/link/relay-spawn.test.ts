@@ -1,5 +1,5 @@
 // The relay as Claude Code runs it (plan M4.6, M4.7): a spawned
-// `node --import tsx src/link/relay.ts` over real stdio pipes, which
+// `node plugin/src/link/relay.ts` over real stdio pipes, which
 // autostarts a detached daemon on a random port with a temp dir.
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -22,9 +22,9 @@ import {
   testEnv,
   waitFor,
   type ToolResult,
-} from "../integration/daemon-helpers.js";
+} from "../integration/daemon-helpers.ts";
 
-const RELAY = ["--import", "tsx", "src/link/relay.ts"];
+const RELAY = ["plugin/src/link/relay.ts"];
 
 interface Relay {
   client: Client;

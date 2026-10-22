@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EDGE_LABEL_CHARS, ZOOM_STEPS, edgeLabel, labelPx, lodFor, monoPx, quantizeZoom, wrapText } from "../../src/core/lod.js";
+import { EDGE_LABEL_CHARS, ZOOM_STEPS, edgeLabel, labelPx, lodFor, monoPx, quantizeZoom, wrapText } from "../../plugin/src/core/lod.ts";
 
 describe("lod", () => {
   it("quantizeZoom picks the nearest step <= z and clamps below the first", () => {

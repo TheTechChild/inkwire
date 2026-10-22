@@ -3,6 +3,9 @@ name: ci
 on:
   workflow_dispatch:
   pull_request:
+  # Each merge to main is a plugin update (ADR 0005): check main too.
+  push:
+    branches: [main]
 
 concurrency:
   group: ${{ github.ref }}
@@ -42,6 +45,8 @@ jobs:
         run: yarn install --immutable
       - name: Lint
         run: yarn lint
+      # tsconfig.json covers plugin/src, tests and scripts (no emit: Node
+      # runs the source).
       - name: Type Check
         run: yarn typecheck
 
@@ -62,3 +67,27 @@ jobs:
         run: yarn install --immutable
       - name: Test
         run: yarn test
+
+  plugin:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v7
+      - name: Enable corepack
+        run: npm install -g corepack && corepack enable
+      - name: Setup env
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: 'yarn'
+      - name: Install deps
+        run: yarn install --immutable
+      # The marketplace, plugin.json, hooks.json, plugin/package.json and
+      # plugin/package-lock.json (no version, exact runtime deps, lockfile v3).
+      - name: Check the plugin
+        run: yarn check-plugin
+      # Copy plugin/, run "npm ci --ignore-scripts" as Claude Code does, then
+      # start the relay from the copy and call one tool.
+      - name: Check the install
+        run: yarn check-install

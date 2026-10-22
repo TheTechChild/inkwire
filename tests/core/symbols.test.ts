@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { blockText, findSymbol } from "../../src/core/symbols.js";
+import { blockText, findSymbol } from "../../plugin/src/core/symbols.ts";
 
 describe("findSymbol", () => {
   it("respects identifier boundaries", () => {

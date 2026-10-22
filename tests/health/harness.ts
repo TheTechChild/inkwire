@@ -4,26 +4,23 @@
 // its own parent pid: the daemon sees one Claude Code session per relay.
 // Never port 4691 or 4692, never ~/.inkwire or ~/.inkwire-dev. stop() closes
 // every relay and kills every daemon pid that the harness saw.
-import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import WebSocket from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { Health } from "../../src/link/probe.js";
-import type { ClientIntent, ServerMessage } from "../../src/shared/protocol.js";
-import { alive, health, killTree, root, testEnv, waitFor } from "../integration/daemon-helpers.js";
-
-/** src: the relay under tsx (the dev shape). dist: `node dist/link/relay.js`, as the plugin runs it. */
-export type RelayEntry = "src" | "dist";
+import type { Health } from "../../plugin/src/link/probe.ts";
+import type { ClientIntent, ServerMessage } from "../../plugin/src/shared/protocol.ts";
+import { alive, health, killTree, root, testEnv, waitFor } from "../integration/daemon-helpers.ts";
 
 export interface RelayOptions {
   port: number;
   dataDir: string;
   /** INKWIRE_IDLE_GRACE_MS of the relay env, which an autostarted daemon inherits. */
   graceMs: number | "off";
-  entry?: RelayEntry;
-  /** Run the relay from this repo copy (a copy with its own dist/build.json). Default: this repo. */
+  /** Run the relay from this repo copy (a copy with other source, so another build id). Default: this repo. */
   repo?: string;
+  /** The cwd of the relay: the project of the session. Default: the repo. */
+  cwd?: string;
   /** More env for the relay, set after testEnv (for example CLAUDE_CODE_SESSION_ID for the mod, ADR 0004). */
   env?: NodeJS.ProcessEnv;
 }
@@ -66,27 +63,30 @@ export interface Relays {
   stop: (waitMs?: number) => Promise<boolean>;
 }
 
-const RELAY_ARGS: Record<RelayEntry, string[]> = {
-  src: ["--import", "tsx", "src/link/relay.ts"],
-  dist: ["dist/link/relay.js"],
-};
+/** The relay entry of a repo, as the plugin manifest runs it: `sh <plugin root>/src/link/relay.sh`, which runs relay.ts with Node 26. */
+export const relayEntry = (repo: string) => path.join(repo, "plugin", "src", "link", "relay.sh");
 
 /** The TERM_PROGRAM of every health relay: not in focusTerminal's table, so it activates no app. */
 export const HEALTH_TERM_PROGRAM = "inkwire-health";
 
 const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
-/** Start one relay under `sh -c 'node …; :'`. The `; :` keeps sh in the foreground, so the relay's ppid stays. */
+/**
+ * Start one relay under `sh -c 'sh relay.sh; :'`. The `; :` keeps sh in the
+ * foreground, so the relay's ppid stays: relay.sh runs node with exec. The node
+ * of the test comes first on PATH.
+ */
 export async function startRelay(opts: RelayOptions): Promise<Relay> {
-  const entry = opts.entry ?? "src";
-  const cwd = opts.repo ?? root;
+  const repo = opts.repo ?? root;
+  const cwd = opts.cwd ?? repo;
   const env = { ...testEnv(opts.port, opts.dataDir, { INKWIRE_IDLE_GRACE_MS: String(opts.graceMs) }), ...opts.env };
   // A TERM_PROGRAM that focusTerminal does not map: the hello carries term_program
   // (Open question 3), and session_mode(off) brings no terminal to the front.
   env.TERM_PROGRAM = HEALTH_TERM_PROGRAM;
+  env.PATH = `${path.dirname(process.execPath)}${path.delimiter}${env.PATH ?? ""}`;
   const transport = new StdioClientTransport({
     command: "/bin/sh",
-    args: ["-c", `${quote(process.execPath)} ${RELAY_ARGS[entry].join(" ")}; :`],
+    args: ["-c", `sh ${quote(relayEntry(repo))}; :`],
     cwd,
     env: env as Record<string, string>,
     stderr: "pipe",
@@ -213,32 +213,4 @@ export async function startRelays(n: number, opts: RelayOptions): Promise<Relays
     await stopAll(0);
     throw err;
   }
-}
-
-/**
- * The newest mtime of any file or directory under dir, dir included. A
- * directory mtime changes on a rename or a delete in it, which file mtimes miss.
- */
-function newestMtime(dir: string): number {
-  let newest = statSync(dir).mtimeMs;
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, e.name);
-    newest = Math.max(newest, e.isDirectory() ? newestMtime(p) : statSync(p).mtimeMs);
-  }
-  return newest;
-}
-
-/**
- * Null when dist/ is a build of the current src/ (dist/build.json is there and
- * newer than every file under src/); else why the dist-relay case must skip.
- * `yarn test` does not build; `yarn health` builds first and sets INKWIRE_HEALTH=1,
- * and there a non-null reason fails the run (lifecycle.test.ts).
- */
-export function distSkipReason(repo: string = root): string | null {
-  const buildFile = path.join(repo, "dist", "build.json");
-  if (!existsSync(buildFile)) return "dist/build.json is missing; run yarn health or yarn build";
-  if (statSync(buildFile).mtimeMs < newestMtime(path.join(repo, "src"))) {
-    return "dist/build.json is older than src/; run yarn health or yarn build";
-  }
-  return null;
 }

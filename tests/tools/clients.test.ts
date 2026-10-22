@@ -4,10 +4,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { Clients, HOOK_ONLY_TTL_MS, type Client, type ReleaseReason } from "../../src/server/clients.js";
-import { hookEvent, sessionMode, sessionSend } from "../../src/server/session-mode.js";
-import { Sessions } from "../../src/server/session.js";
-import { Store } from "../../src/server/store.js";
+import { Clients, HOOK_ONLY_TTL_MS, type Client, type ReleaseReason } from "../../plugin/src/server/clients.ts";
+import { hookEvent, sessionMode, sessionSend } from "../../plugin/src/server/session-mode.ts";
+import { Sessions } from "../../plugin/src/server/session.ts";
+import { Store } from "../../plugin/src/server/store.ts";
 
 const store = new Store(mkdtempSync(path.join(tmpdir(), "inkwire-clients-")));
 let clock = 0;

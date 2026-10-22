@@ -7,8 +7,8 @@ import {
   parseNotebook,
   resolveNotebookRefs,
   toggleTaskLine,
-} from "../../src/core/notebooks.js";
-import type { Draft, EdgeEl, Layer, LayoutMap, NodeEl, Notebook } from "../../src/shared/types.js";
+} from "../../plugin/src/core/notebooks.ts";
+import type { Draft, EdgeEl, Layer, LayoutMap, NodeEl, Notebook } from "../../plugin/src/shared/types.ts";
 
 function notebook(id: string, over: Partial<Notebook> = {}): Notebook {
   return { id, title: "t", body: "", author: "ai", updated: 0, ...over };

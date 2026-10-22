@@ -1,16 +1,17 @@
 // MCP health suite (plan M8): the daemon's lifetime through real relays.
 // Autostart, the autostart race, release on close, /clear, a SIGKILL and the
-// reconnect, a stale build, both restarts, the idle grace, and the dist relay
-// as the plugin runs it. Each case has its own random port and temp data dir;
+// reconnect, a stale build, both restarts, the idle grace, and the relay as
+// the plugin runs it (from another cwd, with no tsx). Each case has its own random port and temp data dir;
 // stop() in finally closes the relays and kills every daemon pid it saw.
 import { execFileSync } from "node:child_process";
-import { copyFileSync, cpSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { OWN_RULE_TOOLS, READ_TOOLS, WRITE_TOOLS } from "../../src/server/mcp.js";
-import { STALE_NOTICE } from "../../src/server/clients.js";
-import { alive, body, call, freePort, head, health, postHook, rawRequest, root, tempDir, waitFor } from "../integration/daemon-helpers.js";
-import { distSkipReason, startRelays, type Relay, type Relays } from "./harness.js";
+import { OWN_RULE_TOOLS, READ_TOOLS, WRITE_TOOLS } from "../../plugin/src/server/mcp.ts";
+import { STALE_NOTICE } from "../../plugin/src/server/clients.ts";
+import { readBuildInfo } from "../../plugin/src/server/build-info.ts";
+import { alive, body, call, freePort, head, health, postHook, rawRequest, root, tempDir, waitFor } from "../integration/daemon-helpers.ts";
+import { startRelays, type Relay, type Relays } from "./harness.ts";
 
 const TOOL_COUNT = WRITE_TOOLS.length + READ_TOOLS.length + OWN_RULE_TOOLS.length;
 
@@ -33,18 +34,21 @@ async function nextDaemon(r: Relays, before: number): Promise<number> {
   return h.pid;
 }
 
-/** A copy of this repo's src with its own dist/build.json: a relay of a newer build. */
-function newerBuildRepo(buildId: string): string {
+/**
+ * A copy of this repo's plugin source and fonts with one more file: another
+ * build id, as a new cache folder of an update. Its relay registers it in the
+ * data dir after this repo's build, so it is the newer build. Returns the copy
+ * and its build id.
+ */
+function newerBuildRepo(): { repo: string; id: string } {
   const repo = tempDir("health-newer");
-  cpSync(path.join(root, "src"), path.join(repo, "src"), { recursive: true });
-  for (const f of ["package.json", "tsconfig.json"]) copyFileSync(path.join(root, f), path.join(repo, f));
+  const src = path.join(repo, "plugin", "src");
+  cpSync(path.join(root, "plugin", "src"), src, { recursive: true });
+  cpSync(path.join(root, "plugin", "assets"), path.join(repo, "plugin", "assets"), { recursive: true });
+  copyFileSync(path.join(root, "package.json"), path.join(repo, "package.json"));
   symlinkSync(path.join(root, "node_modules"), path.join(repo, "node_modules"), "dir");
-  mkdirSync(path.join(repo, "dist"));
-  writeFileSync(
-    path.join(repo, "dist", "build.json"),
-    JSON.stringify({ id: buildId, built_at: new Date(Date.now() + 24 * 3600_000).toISOString() }),
-  );
-  return repo;
+  writeFileSync(path.join(src, "server", "newer-build.ts"), `export const newer = ${process.pid};\n`);
+  return { repo, id: readBuildInfo(src).id };
 }
 
 describe("health: daemon lifecycle", () => {
@@ -163,13 +167,16 @@ describe("health: daemon lifecycle", () => {
       const panel = await r.panel(board);
       await panel.waitFor((m) => m.type === "state");
 
-      // A relay of another build id with a later built_at: the daemon is stale.
-      const newer = `health-newer-${process.pid}`;
-      const N = await r.add({ repo: newerBuildRepo(newer) });
+      // A relay of another build id, registered later in the build registry: the daemon is stale.
+      const own = r.health();
+      const { repo: newerRepo, id: newer } = newerBuildRepo();
+      const N = await r.add({ repo: newerRepo });
       await panel.waitFor((m) => (m.type === "state" || m.type === "daemon") && m.daemon.stale?.newer_build_id === newer);
       expect(head(await call(N.client, "boards_list"))).toContain(STALE_NOTICE);
-      // The stale notice stays after that relay leaves; a restart then starts this repo's build.
+      // The stale notice stays after that relay leaves. A restart then starts the
+      // newest registered build, also when only an old relay (A) is left to start it.
       await N.close();
+      expect((await own)!.build.id).not.toBe(newer);
 
       // 1. The panel's Restart, for the build id the notice showed.
       const first = r.daemonPid;
@@ -177,16 +184,30 @@ describe("health: daemon lifecycle", () => {
       await waitFor(() => !alive(first), 10_000);
       expect((await A.client.listTools()).tools).toHaveLength(TOOL_COUNT);
       const second = await nextDaemon(r, first);
+      expect((await r.health())!.build.id).toBe(newer);
+      // The old relay on the newer daemon is not stale.
+      expect(head(await call(A.client, "boards_list"))).not.toContain(STALE_NOTICE);
       const afterPanel = await call(A.client, "canvas_get_state", { board_id: board });
       expect(afterPanel.isError, body(afterPanel)).toBeFalsy();
       expect(JSON.parse(body(afterPanel)).graph.nodes.map((n: { label: string }) => n.label)).toEqual(["kept"]);
 
-      // 2. POST /api/daemon/restart, as yarn daemon:restart sends it.
+      // Claude Code removes the newer folder while its daemon runs: the panel still comes from memory.
+      // The daemon starts the bundle at boot, but the bundle can take longer than the calls above.
+      // Claude Code removes an old folder much later, so wait for the boot bundle first.
+      expect((await fetch(`http://127.0.0.1:${r.port}/`)).status, "boot bundle").toBe(200);
+      renameSync(path.join(newerRepo, "plugin"), path.join(newerRepo, "plugin-removed"));
+      for (const file of ["/", "/main.js", "/styles.css"]) {
+        expect((await fetch(`http://127.0.0.1:${r.port}${file}`)).status, file).toBe(200);
+      }
+
+      // 2. POST /api/daemon/restart, as yarn daemon:restart sends it. The newer
+      // folder is gone, so the next start falls back to this repo's build.
       const res = await rawRequest(r.port, "POST", "/api/daemon/restart");
       expect(res.status).toBe(202);
       await waitFor(() => !alive(second), 10_000);
       expect((await A.client.listTools()).tools).toHaveLength(TOOL_COUNT);
       await nextDaemon(r, second);
+      expect((await r.health())!.build.id).not.toBe(newer);
       const afterPost = await call(A.client, "canvas_get_state", { board_id: board });
       expect(afterPost.isError, body(afterPost)).toBeFalsy();
       expect(JSON.parse(body(afterPost)).graph.nodes.map((n: { label: string }) => n.label)).toEqual(["kept"]);
@@ -216,33 +237,25 @@ describe("health: daemon lifecycle", () => {
     expect(clean, "every daemon exited by itself").toBe(true);
   }, 30_000);
 
-  // yarn test skips the dist-relay case when dist/ is not a build of src/. yarn health
-  // (INKWIRE_HEALTH=1) builds first, so there the case never skips: a stale dist fails it.
-  const healthRun = process.env.INKWIRE_HEALTH === "1";
-  const distSkip = distSkipReason();
-  it.skipIf(distSkip !== null && !healthRun)(
-    `lifecycle: the dist relay, as the plugin runs it, autostarts the dist daemon and runs tools${distSkip && !healthRun ? ` (skipped: ${distSkip})` : ""}`,
-    async () => {
-      expect(distSkipReason(), "yarn health: dist/ must be a build of the current src/").toBeNull();
-      let r: Relays | null = null;
-      let clean: boolean | undefined;
-      try {
-        r = await startRelays(2, { port: await freePort(), dataDir: tempDir("health-dist"), graceMs: 300, entry: "dist" });
-        const command = execFileSync("ps", ["-o", "command=", "-p", String(r.daemonPid)], { encoding: "utf8" });
-        expect(command).toContain(path.join("dist", "server", "daemon.js"));
-        const [A, B] = r.relays as [Relay, Relay];
-        expect((await A.client.listTools()).tools).toHaveLength(TOOL_COUNT);
-        const board = await createBoard(A, "dist board", tempDir("health-dist-root"));
-        expect((await addNode(A, board, "n")).isError).toBeFalsy();
-        const refused = await addNode(B, board, "x");
-        expect(body(refused)).toContain(`pid ${A.pid}`);
-        const state = await call(B.client, "canvas_get_state", { board_id: board });
-        expect(JSON.parse(body(state)).graph.nodes).toHaveLength(1);
-      } finally {
-        clean = await r?.stop();
-      }
-      expect(clean, "every daemon exited by itself").toBe(true);
-    },
-    30_000,
-  );
+  it("lifecycle: the relay as the plugin runs it (sh <plugin root>/src/link/relay.sh, another cwd) autostarts the source daemon and runs tools", async () => {
+    let r: Relays | null = null;
+    let clean: boolean | undefined;
+    try {
+      r = await startRelays(2, { port: await freePort(), dataDir: tempDir("health-plugin"), graceMs: 300, cwd: tempDir("health-plugin-cwd") });
+      const command = execFileSync("ps", ["-o", "command=", "-p", String(r.daemonPid)], { encoding: "utf8" });
+      expect(command).toContain(path.join(root, "plugin", "src", "server", "daemon.ts"));
+      expect(command).not.toContain("tsx");
+      const [A, B] = r.relays as [Relay, Relay];
+      expect((await A.client.listTools()).tools).toHaveLength(TOOL_COUNT);
+      const board = await createBoard(A, "plugin board", tempDir("health-plugin-root"));
+      expect((await addNode(A, board, "n")).isError).toBeFalsy();
+      const refused = await addNode(B, board, "x");
+      expect(body(refused)).toContain(`pid ${A.pid}`);
+      const state = await call(B.client, "canvas_get_state", { board_id: board });
+      expect(JSON.parse(body(state)).graph.nodes).toHaveLength(1);
+    } finally {
+      clean = await r?.stop();
+    }
+    expect(clean, "every daemon exited by itself").toBe(true);
+  }, 30_000);
 });

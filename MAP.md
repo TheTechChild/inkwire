@@ -8,11 +8,19 @@ Anchors are `path:line  symbol`. A Stop hook (`scripts/map-anchor-check.mjs`, ru
 the symbol moved. Keep them current, and add an entry when you add a task surface.
 
 Anchor declarations in hand-written source only — a function, class, type, constant, `case` or
-`register` line. Never anchor a generated file (`schema/*.generated.json`, `dist/`), and prefer a
+`register` line. Never anchor a generated file (`schema/*.generated.json`), and prefer a
 distinctive identifier over a word that also occurs inside a string: the check is whole-word, so a
 near-miss rename still trips it, but a vague anchor buys little. Describe those files in prose
-instead. The plugin files (`.claude-plugin/`, `hooks/`, `skills/`) and `src/ui/styles.css` are not
-`.ts`, so they are described in prose too.
+instead. The plugin files (`plugin/.claude-plugin/`, `plugin/hooks/`, `plugin/skills/`), the
+marketplace (`.claude-plugin/marketplace.json`) and `plugin/src/ui/styles.css` are not `.ts`, so
+they are described in prose too.
+
+The plugin root is `plugin/`. It holds the manifest, the hooks, the skills, the fonts and the
+source (`plugin/src/`). Node runs the TypeScript source directly (type stripping): there is no
+build step and no `dist/`. Relative imports use the `.ts` extension, and only syntax that Node can
+strip is allowed (`erasableSyntaxOnly`: no `enum`, `namespace` or constructor parameter
+properties). Import each type with `import type`. `tests/`, `scripts/`, `schema/` and the docs stay
+at the repo root.
 
 Product rules and the test list are in `CLAUDE.md`. The authority for behaviour is
 `design_handoff_inkwire/` (local only): `SPEC.md` wins over the prototype.
@@ -20,36 +28,40 @@ Product rules and the test list are in `CLAUDE.md`. The authority for behaviour 
 ## Server bootstrap
 
 `openCore` (`bootstrap.ts`) opens the store, builds `Sessions` and `Clients`, the panel hub and
-the screenshot broker, and attaches the HTTP request handler and `routeUpgrades` to an http server.
-The plugin runs the relay (`dist/link/relay.js`, see The link); the daemon is the one server entry.
-`daemon.ts` `startDaemon` is the daemon entry: it binds the port first, then calls `openCore` in
-the listen callback, and serves one McpServer per relay link (see The link). `routeUpgrades` sends `/ws` to `PanelHub.handleUpgrade`
+the screenshot broker (with the fonts that `installFonts` copies to the data dir), and attaches the
+HTTP request handler and `routeUpgrades` to an http server.
+The plugin runs the relay (`sh plugin/src/link/relay.sh`, which runs `relay.ts` with a Node 26, see
+The link); the daemon is the one server entry.
+`daemon.ts` `startDaemon` is the daemon entry: it hashes and registers its build (see Daemon
+lifetime and builds), binds the port first, then calls `openCore` in the listen callback, and
+serves one McpServer per relay link (see The link). The entry starts the panel bundle at boot, in
+memory (see Panel UI). `routeUpgrades` sends `/ws` to `PanelHub.handleUpgrade`
 and `/mcp` to the link endpoint, and destroys every other upgrade.
 
 The port race is now between two daemons: two relays that start at the same time can each spawn
 one, and the daemon that loses the port exits before it opens the store (see Daemon lifetime and
-builds). On EADDRINUSE the daemon calls `probeHealth` (`src/link/probe.ts`), which tells an
+builds). On EADDRINUSE the daemon calls `probeHealth` (`plugin/src/link/probe.ts`), which tells an
 inkwire (a daemon or an old server) from another process.
 
 ```
-src/server/bootstrap.ts:46   openCore
-src/server/daemon.ts:102     startDaemon
-src/link/probe.ts:49         probeHealth
-src/server/config.ts:18      loadConfig
-src/server/upgrade.ts:11     routeUpgrades
-src/server/http.ts:84        requestHandler
-src/server/http.ts:94        createHttpServer
-src/server/http.ts:98        handle
-src/server/http.ts:424       serveFile
-src/server/origin.ts:12      checkBrowserRequest
-src/server/ws.ts:30          PanelHub
-src/server/ws.ts:84          handleUpgrade
-src/server/mcp.ts:82         buildMcpServer
+plugin/src/server/bootstrap.ts:50  openCore
+plugin/src/server/daemon.ts:114    startDaemon
+plugin/src/link/probe.ts:49        probeHealth
+plugin/src/server/config.ts:18     loadConfig
+plugin/src/server/upgrade.ts:11    routeUpgrades
+plugin/src/server/http.ts:84       requestHandler
+plugin/src/server/http.ts:94       createHttpServer
+plugin/src/server/http.ts:98       handle
+plugin/src/server/http.ts:431      serveFile
+plugin/src/server/origin.ts:12     checkBrowserRequest
+plugin/src/server/ws.ts:30         PanelHub
+plugin/src/server/ws.ts:87         handleUpgrade
+plugin/src/server/mcp.ts:82        buildMcpServer
 ```
 
 Env: `INKWIRE_PORT`, `INKWIRE_DATA_DIR`, `INKWIRE_IDLE_GRACE_MS` (daemon only; default 30000, `off`
 turns the idle stop off). There is no project-root env (see Project root). HTTP serves the panel
-from `dist/ui/` and the routes `/healthz`, `/api/boards` (each entry has `project_root`, the unset
+(`uiFiles`, see Panel UI) and the routes `/healthz`, `/api/boards` (each entry has `project_root`, the unset
 mark and `author: { label, pid } | null`), `/api/boards/:id/export`,
 `/api/boards/import`, `/api/capture/:id`, `/api/hook`, the mod's routes `GET /api/mod/view`
 and `POST /api/mod/take` (see The mod), and on the daemon
@@ -72,7 +84,7 @@ Tests: `tests/integration/server.test.ts`, `tests/integration/daemon-port.test.t
 
 ## The link (relay and daemon)
 
-Each Claude Code session runs the relay (`src/link/relay.ts`), which pipes MCP between stdio and the
+Each Claude Code session runs the relay (`plugin/src/link/relay.ts`), which pipes MCP between stdio and the
 daemon's `/mcp` WebSocket (ADR 0001). The link is a replaceable layer: its whole contract with the
 daemon is a `Link` — an MCP SDK `Transport` (`WsTransport`, one JSON-RPC message per text frame),
 the `hello` value, and a `closed` promise. The first frame must be the hello (`helloSchema`: pid
@@ -81,23 +93,35 @@ reconnect). The daemon's `createLinkHost` makes or fills the Client of the hello
 link, and connects a new McpServer to it. Reconnect lives only in `RelayCore`.
 
 ```
-src/link/hello.ts:14          helloSchema
-src/link/hello.ts:7           LINK_VERSION
-src/link/ws-transport.ts:8    WsTransport
-src/link/endpoint.ts:11       Link
-src/link/endpoint.ts:34       createLinkEndpoint
-src/link/ws-client.ts:7       connectLink
-src/link/relay.ts:14          main
-src/link/relay-core.ts:63     RelayCore
-src/link/relay-core.ts:161    attach
-src/link/relay-core.ts:201    fromDown
-src/link/relay-core.ts:228    fromUp
-src/link/relay-core.ts:246    track
-src/link/relay-core.ts:255    upClosed
-src/link/relay-core.ts:297    fatal
-src/link/relay-core.ts:49     LOST_TEXT
-src/server/daemon.ts:34       createLinkHost
-src/server/clients.ts:528     restoreCurrentBoard
+plugin/src/link/hello.ts:14        helloSchema
+plugin/src/link/hello.ts:7         LINK_VERSION
+plugin/src/link/ws-transport.ts:8  WsTransport
+plugin/src/link/endpoint.ts:11     Link
+plugin/src/link/endpoint.ts:34     createLinkEndpoint
+plugin/src/link/ws-client.ts:7     connectLink
+plugin/src/link/relay.ts:15        main
+plugin/src/link/relay-core.ts:63   RelayCore
+plugin/src/link/relay-core.ts:161  attach
+plugin/src/link/relay-core.ts:201  fromDown
+plugin/src/link/relay-core.ts:228  fromUp
+plugin/src/link/relay-core.ts:246  track
+plugin/src/link/relay-core.ts:255  upClosed
+plugin/src/link/relay-core.ts:297  fatal
+plugin/src/link/relay-core.ts:49   LOST_TEXT
+plugin/src/server/daemon.ts:35     createLinkHost
+plugin/src/server/clients.ts:530   restoreCurrentBoard
+```
+
+Beware: the Node version. `plugin.json` runs `sh plugin/src/link/relay.sh`, not `node relay.ts`:
+Claude Code starts the server in the cwd of the session, and the `node` on PATH can come from the
+`.nvmrc` of that project. `relay.sh` runs the `node` on PATH when it is 26 or later, else `mise x
+node@26 -- node`, else it stops with a message on stderr. Each step uses `exec`, so the relay's
+`ppid` (the hello pid) stays the Claude Code pid. `relay.ts` imports `node-version.ts` first
+(`NODE_MAJOR`), which stops an older Node that can read `.ts` with a clear message.
+Tests: `tests/link/relay-launcher.test.ts`.
+
+```
+plugin/src/link/node-version.ts:7  NODE_MAJOR
 ```
 
 Beware: close codes. No hello in 5 s, or a first frame that is not a hello: 4400. A hello of
@@ -120,62 +144,98 @@ exits 1. The backoff resets only when the link sends a message, so a daemon that
 and closes it at once gets a growing delay. The first connect (`start`) tries a failure that is not
 fatal again for up to 10 s: a daemon that stops between the probe and the connect is replaced.
 
-Beware: the boundary. Nothing outside `src/link/` imports `ws` for MCP; `src/server/ws.ts` (the
+Beware: the boundary. Nothing outside `plugin/src/link/` imports `ws` for MCP; `plugin/src/server/ws.ts` (the
 panel hub) is the one other `ws` user and must not touch `/mcp`. The relay must not import the
 store, `session.ts` or better-sqlite3. `tests/link/boundary.test.ts` enforces all three.
 
 Tests: `tests/link/boundary.test.ts`, `tests/link/endpoint.test.ts`, `tests/link/relay-core.test.ts`,
 `tests/link/relay-spawn.test.ts`, `tests/integration/daemon.test.ts`.
 
-Health suite (`yarn health`, plan M8): `yarn build`, then `tests/health/` with the link, daemon and
-gate tests. `startRelays` (`tests/health/harness.ts`) spawns n relays at one time, each under its own
+Health suite (`yarn health`, plan M8): `tests/health/` with the link, daemon and gate tests. No
+build step: every relay runs from the source. `startRelays` (`tests/health/harness.ts`) spawns n relays at one time, each under its own
 `sh -c` wrapper so each has its own Claude Code pid, on a random port with a temp dir; the first
 relay autostarts the daemon. `tools.test.ts` has one case for each name in `WRITE_TOOLS`,
 `READ_TOOLS` and `OWN_RULE_TOOLS` and checks the set against `tools/list`, so a new tool with no
 health case fails. `lifecycle.test.ts` covers autostart, the race, release on close, `/clear`,
-SIGKILL and reconnect, a stale build, both restarts, the idle grace and the dist relay.
+SIGKILL and reconnect, a stale build (a copy of `plugin/src/` with one more file, so another
+build id), both restarts, the idle grace, and the relay as the plugin runs it (`relayEntry`: `sh
+<plugin root>/src/link/relay.sh`, from a cwd outside the repo, with the test's node first on PATH).
 
 ```
-tests/health/harness.ts:157   startRelays
-tests/health/harness.ts:80    startRelay
-tests/health/harness.ts:116   openPanel
-tests/health/harness.ts:237   distSkipReason
+tests/health/harness.ts:157  startRelays
+tests/health/harness.ts:79   startRelay
+tests/health/harness.ts:116  openPanel
+tests/health/harness.ts:67   relayEntry
 ```
 
-Beware: the dist-relay case needs `dist/`. `yarn test` does not build, so the case skips (the
-reason is in its name) when `dist/build.json` is missing or older than a file or directory under
-`src/` (a directory mtime catches a rename or a delete). `yarn health` builds first and sets
-`INKWIRE_HEALTH=1`, so there the case never skips: a stale `dist/` fails it.
-
-Beware: `yarn health` runs `yarn build`, which deletes and rebuilds `dist/`. Run it in a worktree,
-never in the checkout that live Claude Code sessions use as the plugin.
+Beware: the relay runs with `node` and no loader (no tsx), as the manifest runs it through `relay.sh`. A relative
+import without `.ts`, a type import without `import type`, or syntax that Node cannot strip stops
+the relay at startup. `yarn typecheck` finds all three; `tests/tools/stdio-smoke.test.ts` and the
+health suite find them at run time.
 
 ## Daemon lifetime and builds
 
 The relay finds or starts the daemon (`ensureDaemon`): it probes `/healthz`, and when no inkwire
-answers, it spawns a detached daemon (`daemonEntry`: `src/server/daemon.ts` under tsx,
-`dist/server/daemon.js` from dist) that logs to `<dataDir>/daemon.log`, then polls for 10 s. A
-racing second daemon loses the port before it opens the store and exits 0. `yarn build` writes
-`dist/build.json` (`scripts/write-build-id.mjs`: `{ id, built_at }`, the id hashes `dist/` server,
-core, shared, link and ui, and `built_at` is not in the hash). The daemon reads it one time, at
-boot (`readBuildInfo`), and `/healthz` reports `{ ok, name, pid, build, clients, boards }`. The
-`IdleTimer` stops the daemon `INKWIRE_IDLE_GRACE_MS` after its last link closes (at boot it waits
-at least 10 s). Only the person restarts it: the panel's Restart (the `daemon_restart` intent, accepted only for
-the build id that the stale notice showed) or `POST /api/daemon/restart` (`yarn daemon:restart`,
-`scripts/daemon-restart.mjs`). Both run `createRestart` — persist every board, stop listening, close
-every link, exit 0 — and the relays reconnect and autostart the current build.
+answers, it spawns a detached daemon with the relay's `process.execPath`, which logs to
+`<dataDir>/daemon.log`, then polls for 10 s. A racing second daemon loses the port before it opens
+the store and exits 0. Only the person restarts the daemon: the panel's Restart (the
+`daemon_restart` intent, accepted only for the build id that the stale notice showed) or `POST
+/api/daemon/restart` (`yarn daemon:restart`, `scripts/daemon-restart.mjs`). Both run
+`createRestart` — persist every board, stop listening, close every link, exit 0 — and the relays
+reconnect and autostart the newest build. The `IdleTimer` stops the daemon `INKWIRE_IDLE_GRACE_MS`
+after its last link closes (at boot it waits at least 10 s).
+
+The build is the source. `readBuildInfo` hashes every file under `plugin/src/` server, core,
+shared, link and ui (`BUILD_DIRS`), and `package.json`, `package-lock.json` and `assets/fonts/` of
+the plugin root (`BUILD_ROOT_PARTS`), so a release that changes only a dependency is a new build. It
+hashes relative paths and content, not the folder path, so the same plugin in two cache folders is
+one build. Claude Code installs each update into a new cache folder
+(`~/.claude/plugins/cache/inkwire/inkwire/<sha>/`; no `version` field, so the sha is the version)
+and removes an old folder 14 days later. The order of the builds comes from the build registry,
+`<dataDir>/builds.json` (`REGISTRY_FILE`): build id → `{ root, first_seen, last_seen, pids }`,
+where `root` is the plugin root and `pids` are the Claude Code pids of its relays (the last
+`PIDS_KEPT`). `currentBuild` hashes and registers (`registerBuild`): each relay at its start with
+its `ppid`, and each daemon at boot with `touch: false`. A known build keeps its `first_seen` and
+gets the new root. `last_seen` changes only when a relay of a new pid registers it: a relay that
+starts again in the same Claude Code process, and a daemon, do not change the order. Other entries
+are removed when their daemon entry is gone or when they have the same root (one folder holds one
+build at a time). The `BuildInfo` of a relay or daemon is `{ id, built_at }`, where `built_at` is
+the registry's `last_seen` (the hello keeps the name, so an old daemon reads a new relay's hello).
+The daemon reads its build one time, at boot (Decision 10), and `/healthz` reports `{ ok, name,
+pid, build, clients, boards }`.
+
+"Newer" (`liveBuilds`, `isNewerBuild`): an installed build (`isInstalledRoot`: a root in the
+Claude Code plugin cache) comes before a checkout build, then the later `last_seen`. So a
+`--plugin-dir` run or `yarn start` on the default data dir does not take over the daemon of the
+installed plugin, and a downgrade (a new session of an older installed build) makes the older build
+the newest. The daemon that a relay starts is the first of `daemonRoots`: the registered builds
+whose daemon entry is still on disk, newest first, then the relay's own root (`daemonEntry`), with
+the cwd at that root. `ensureDaemon` calls the relay's `register` first (it puts a lost entry back
+with the relay's own time). When a daemon exits with an error before it answers, `ensureDaemon`
+starts the next root; exit 0 is the loser of a port race, and the poll goes on.
 
 ```
-src/link/autostart.ts:35      ensureDaemon
-src/link/autostart.ts:28      daemonEntry
-src/link/probe.ts:26          probeDaemon
-src/server/build-info.ts:18   readBuildInfo
-src/server/build-info.ts:32   isNewerBuild
-src/server/idle.ts:22         IdleTimer
-src/server/restart.ts:22      createRestart
-src/server/http.ts:79         defaultStats
-src/server/clients.ts:548     markStale
-src/server/clients.ts:556     STALE_NOTICE
+plugin/src/link/autostart.ts:65     ensureDaemon
+plugin/src/link/autostart.ts:44     daemonEntry
+plugin/src/link/autostart.ts:53     daemonRoots
+plugin/src/link/autostart.ts:59     pickDaemonRoot
+plugin/src/link/probe.ts:26         probeDaemon
+plugin/src/server/build-info.ts:109 readBuildInfo
+plugin/src/server/build-info.ts:68  BUILD_DIRS
+plugin/src/server/build-info.ts:71  BUILD_ROOT_PARTS
+plugin/src/server/build-info.ts:74  REGISTRY_FILE
+plugin/src/server/build-info.ts:77  PIDS_KEPT
+plugin/src/server/build-info.ts:90  isInstalledRoot
+plugin/src/server/build-info.ts:160 readRegistry
+plugin/src/server/build-info.ts:263 registerBuild
+plugin/src/server/build-info.ts:305 currentBuild
+plugin/src/server/build-info.ts:329 liveBuilds
+plugin/src/server/build-info.ts:342 isNewerBuild
+plugin/src/server/idle.ts:22        IdleTimer
+plugin/src/server/restart.ts:22     createRestart
+plugin/src/server/http.ts:79        defaultStats
+plugin/src/server/clients.ts:550    markStale
+plugin/src/server/clients.ts:558    STALE_NOTICE
 ```
 
 Beware: bind first. `startDaemon` listens on the port before it opens the store. On EADDRINUSE it
@@ -186,16 +246,30 @@ Beware: `/healthz` with `name: "inkwire"` and no `build` is an old inkwire serve
 before the daemon sends no build). `ensureDaemon` then stops the relay with "port N is held by an old inkwire
 server; close the old Claude Code sessions" and does not reconnect.
 
-Beware: stale builds (Decision 7). A hello whose build id differs and whose `built_at` is later
-sets `clients.staleBuild` and puts `STALE_NOTICE` on that Client's next tool result. Nothing
-restarts by itself. There is no MCP tool for restart; agents must not call the restart route or
-`yarn daemon:restart`.
+Beware: stale builds (Decision 7). A hello whose build id differs and whose build is newer
+(`isNewerBuild`: the order above from the registry; a build that is not registered is a checkout
+build at the hello's `built_at`) sets `clients.staleBuild` and puts `STALE_NOTICE` on that Client's next tool
+result. Nothing restarts by itself. There is no MCP tool for restart; agents must not call the
+restart route or `yarn daemon:restart`.
 
-Beware: `yarn dev` runs the dev daemon on 4692 with `~/.inkwire-dev` and `INKWIRE_IDLE_GRACE_MS=off`.
-Tests use random ports and temp dirs and never bind 4691 or 4692.
+Beware: a running daemon must not read its plugin folder after boot: the folder can be gone. The
+panel comes from memory (see Panel UI) and the fonts from the data dir (see Rendering). Node loads
+every server module at boot, so the source is not read again.
+
+Beware: the registry write is read-modify-write with a rename, under a lock file
+(`builds.json.lock`, made with the `wx` flag; a lock older than 5 s is removed, and after 2 s the
+write goes on with no lock). A `builds.json` that is there but bad is not written over: it moves to
+`builds.json.bad`, and a new registry starts.
+
+Beware: `yarn dev` runs the dev daemon on 4692 with `~/.inkwire-dev`, `INKWIRE_IDLE_GRACE_MS=off`
+and `INKWIRE_UI_WATCH=1`. Tests use random ports and temp dirs and never bind 4691 or 4692.
 
 Tests: `tests/server/idle.test.ts`, `tests/integration/daemon-port.test.ts`,
-`tests/integration/daemon.test.ts`, `tests/link/relay-spawn.test.ts`, `yarn build-id:test`.
+`tests/integration/daemon.test.ts`, `tests/link/relay-spawn.test.ts`, `tests/server/build-info.test.ts`
+(the registry, the lock, the order, a downgrade, a checkout run and the autostart choice),
+`tests/link/autostart.test.ts` (the fallback when the newest daemon cannot start), `tests/server/ui-bundle.test.ts`, and the
+health case for a stale build (`tests/health/lifecycle.test.ts`: a restart starts the newer build,
+and the build before it when the newer folder is gone).
 
 ## The write path
 
@@ -204,20 +278,20 @@ appends to history, refolds, bumps revisions, schedules a 500 ms persist, and no
 MCP handlers pass author `"ai"`, WS handlers pass `"human"`. Authorship is never a tool argument.
 
 ```
-src/server/session.ts:70     class BoardSession
-src/server/session.ts:59     MutationSpec
-src/server/session.ts:166    mutate
-src/server/session.ts:150    refold
-src/server/session.ts:402    schedulePersist
-src/server/session.ts:408    persistNow
-src/server/session.ts:393    onChange
-src/server/session.ts:452    class Sessions
-src/server/session.ts:501    open
-src/server/session.ts:485    onBoards
-src/server/mutations.ts:49   addNode
-src/server/mutations.ts:125  addEdge
-src/server/mutations.ts:202  deleteElement
-src/server/mutations.ts:225  moveElement
+plugin/src/server/session.ts:70     class BoardSession
+plugin/src/server/session.ts:59     MutationSpec
+plugin/src/server/session.ts:166    mutate
+plugin/src/server/session.ts:150    refold
+plugin/src/server/session.ts:402    schedulePersist
+plugin/src/server/session.ts:408    persistNow
+plugin/src/server/session.ts:393    onChange
+plugin/src/server/session.ts:452    class Sessions
+plugin/src/server/session.ts:507    open
+plugin/src/server/session.ts:491    onBoards
+plugin/src/server/mutations.ts:49   addNode
+plugin/src/server/mutations.ts:125  addEdge
+plugin/src/server/mutations.ts:202  deleteElement
+plugin/src/server/mutations.ts:225  moveElement
 ```
 
 `mutations.ts` holds one function per element edit, each building a `MutationSpec` (label, optional
@@ -240,20 +314,20 @@ Tests: `tests/tools/contract.test.ts`, `tests/helpers.ts` (`Sim`).
 The result never holds a dangling edge.
 
 ```
-src/core/fold.ts:65       fold
-src/core/fold.ts:19       applyCollOps
-src/core/fold.ts:37       applyLayoutOps
-src/core/fold.ts:96       applyStep
-src/core/state.ts:80      buildCanvasState
-src/core/state.ts:36      historySummary
-src/core/state.ts:63      strokeSummaries
-src/server/session.ts:361 state
+plugin/src/core/fold.ts:65        fold
+plugin/src/core/fold.ts:19        applyCollOps
+plugin/src/core/fold.ts:37        applyLayoutOps
+plugin/src/core/fold.ts:96        applyStep
+plugin/src/core/state.ts:80       buildCanvasState
+plugin/src/core/state.ts:36       historySummary
+plugin/src/core/state.ts:63       strokeSummaries
+plugin/src/server/session.ts:361  state
 ```
 
 A step whose op missed (add over an existing id, set or del of an absent id) is flagged conflict.
 Dropping the add-B step prunes the edge and flags the step that added it.
 
-Beware: `src/core/` is pure: no I/O, no clock, no randomness. Clock and id-gen are injected.
+Beware: `plugin/src/core/` is pure: no I/O, no clock, no randomness. Clock and id-gen are injected.
 `tests/core/purity.test.ts` enforces it.
 
 Tests: `tests/core/fold.test.ts` (drop-node regression), `tests/core/properties.test.ts` (the eight
@@ -264,17 +338,17 @@ TESTS.md invariants, fast-check).
 Whole-item `set` ops, not field patches. `append` records a step, or coalesces into the tip.
 
 ```
-src/core/history.ts:6     COALESCE_WINDOW_MS
-src/core/history.ts:34    append
-src/core/history.ts:88    rewindTo
-src/core/history.ts:94    toggleSkip
-src/core/history.ts:103   dropStep
-src/core/history.ts:117   undo
-src/core/history.ts:129   redo
-src/core/diff.ts:39       diffCollections
-src/core/diff.ts:49       isEmptyOps
-src/server/session.ts:202 historyOp
-src/server/session.ts:379 historyRows
+plugin/src/core/history.ts:6      COALESCE_WINDOW_MS
+plugin/src/core/history.ts:34     append
+plugin/src/core/history.ts:88     rewindTo
+plugin/src/core/history.ts:94     toggleSkip
+plugin/src/core/history.ts:103    dropStep
+plugin/src/core/history.ts:117    undo
+plugin/src/core/history.ts:129    redo
+plugin/src/core/diff.ts:39        diffCollections
+plugin/src/core/diff.ts:49        isEmptyOps
+plugin/src/server/session.ts:202  historyOp
+plugin/src/server/session.ts:379  historyRows
 ```
 
 Beware: coalescing re-diffs from the tip step's original `before` snapshot. Never concatenate op
@@ -292,13 +366,13 @@ The heuristic turns strokes into nodes (closed shapes) and edges (lines that sna
 `inferFromInk` is the mutation wrapper, used by `canvas_infer_structure` and the `infer` WS intent.
 
 ```
-src/core/infer.ts:36        inferStructure
-src/core/geometry.ts:11     bbox
-src/core/geometry.ts:30     isClosed
-src/core/geometry.ts:46     nearestNode
-src/core/geometry.ts:83     edgeEndpoints
-src/server/mutations.ts:293 inferFromInk
-src/server/mutations.ts:247 addStroke
+plugin/src/core/infer.ts:36         inferStructure
+plugin/src/core/geometry.ts:11      bbox
+plugin/src/core/geometry.ts:30      isClosed
+plugin/src/core/geometry.ts:46      nearestNode
+plugin/src/core/geometry.ts:83      edgeEndpoints
+plugin/src/server/mutations.ts:293  inferFromInk
+plugin/src/server/mutations.ts:247  addStroke
 ```
 
 Thresholds are the constants at the top of `infer.ts` (`SNAP_DIST`, `MIN_NODE_W`, and others).
@@ -316,31 +390,31 @@ board context line and the Client's notices first in the result (M3.5). The hand
 `bindcode.ts`, `board-file.ts`.
 
 ```
-src/server/mcp.ts:82    buildMcpServer
-src/server/mcp.ts:50    WRITE_TOOLS
-src/server/mcp.ts:61    READ_TOOLS
-src/server/mcp.ts:71    OWN_RULE_TOOLS
-src/server/mcp.ts:80    callCtx
-src/server/mcp.ts:87    resolve
-src/server/mcp.ts:105   writable
-src/server/mcp.ts:121   created
-src/server/mcp.ts:141   recordCall
-src/server/mcp.ts:172   register
-src/server/mcp.ts:249   register("boards.list"
-src/server/mcp.ts:255   boards.open
-src/server/mcp.ts:291   register("boards.release"
-src/server/mcp.ts:375   get_state
-src/server/mcp.ts:403   screenshot
-src/server/mcp.ts:422   infer_structure
-src/server/mcp.ts:430   register("canvas.add_node"
-src/server/mcp.ts:486   bind_code
-src/server/mcp.ts:549   lint
-src/server/mcp.ts:566   history.get
-src/server/mcp.ts:578   layers.list
-src/server/mcp.ts:649   paths.create
-src/server/mcp.ts:698   paths.play
-src/server/mcp.ts:719   drafts.create
-src/server/mcp.ts:765   notebooks.create
+plugin/src/server/mcp.ts:82   buildMcpServer
+plugin/src/server/mcp.ts:50   WRITE_TOOLS
+plugin/src/server/mcp.ts:61   READ_TOOLS
+plugin/src/server/mcp.ts:71   OWN_RULE_TOOLS
+plugin/src/server/mcp.ts:80   callCtx
+plugin/src/server/mcp.ts:87   resolve
+plugin/src/server/mcp.ts:105  writable
+plugin/src/server/mcp.ts:121  created
+plugin/src/server/mcp.ts:141  recordCall
+plugin/src/server/mcp.ts:172  register
+plugin/src/server/mcp.ts:249   register("boards.list"
+plugin/src/server/mcp.ts:255   boards.open
+plugin/src/server/mcp.ts:291   register("boards.release"
+plugin/src/server/mcp.ts:375  get_state
+plugin/src/server/mcp.ts:403  screenshot
+plugin/src/server/mcp.ts:422  infer_structure
+plugin/src/server/mcp.ts:430   register("canvas.add_node"
+plugin/src/server/mcp.ts:486  bind_code
+plugin/src/server/mcp.ts:549  lint
+plugin/src/server/mcp.ts:566   history.get
+plugin/src/server/mcp.ts:578   layers.list
+plugin/src/server/mcp.ts:649   paths.create
+plugin/src/server/mcp.ts:698   paths.play
+plugin/src/server/mcp.ts:719   drafts.create
+plugin/src/server/mcp.ts:765   notebooks.create
 ```
 
 Families, in file order: `session_*` (207, 214), `boards_*` (249-372: list, open, delete, release,
@@ -416,28 +490,28 @@ changed, the hub sends the light `{ type: "daemon", daemon }` message in place o
 which is `createRestart` on the daemon), and `session_mode_off` (turns off the board's Author only).
 
 ```
-src/shared/protocol.ts:15     clientIntentSchema
-src/shared/protocol.ts:154    clientMessageSchema
-src/shared/protocol.ts:171    captureRequestSchema
-src/shared/protocol.ts:200    SessionPush
-src/shared/protocol.ts:225    ServerMessage
-src/server/ws.ts:134          handle
-src/server/ws.ts:141          case "add_node":
-src/server/ws.ts:192          case "board_release": {
-src/server/ws.ts:202          case "board_allow":
-src/server/ws.ts:207          case "daemon_restart": {
-src/server/ws.ts:20           HubDeps
-src/server/ws.ts:272          strip
-src/server/ws.ts:296          daemon
-src/server/ws.ts:320          fanOut
-src/server/ws.ts:338          push
-src/server/ws.ts:361          requestCapture
-src/server/clients.ts:252     peekLinked
-src/shared/protocol.ts:179    AuthorPush
-src/shared/protocol.ts:213    DaemonPush
-src/ui/ws-client.ts:8         connectWs
-src/ui/ws-client.ts:120       answerCapture
-src/ui/app.ts:91              isServerMessage
+plugin/src/shared/protocol.ts:15   clientIntentSchema
+plugin/src/shared/protocol.ts:154  clientMessageSchema
+plugin/src/shared/protocol.ts:171  captureRequestSchema
+plugin/src/shared/protocol.ts:200  SessionPush
+plugin/src/shared/protocol.ts:226  ServerMessage
+plugin/src/server/ws.ts:137        handle
+plugin/src/server/ws.ts:141          case "add_node":
+plugin/src/server/ws.ts:195          case "board_release": {
+plugin/src/server/ws.ts:205          case "board_allow":
+plugin/src/server/ws.ts:210          case "daemon_restart": {
+plugin/src/server/ws.ts:20         HubDeps
+plugin/src/server/ws.ts:275        strip
+plugin/src/server/ws.ts:299        daemon
+plugin/src/server/ws.ts:323        fanOut
+plugin/src/server/ws.ts:341        push
+plugin/src/server/ws.ts:364        requestCapture
+plugin/src/server/clients.ts:254   peekLinked
+plugin/src/shared/protocol.ts:179  AuthorPush
+plugin/src/shared/protocol.ts:213  DaemonPush
+plugin/src/ui/ws-client.ts:8       connectWs
+plugin/src/ui/ws-client.ts:120     answerCapture
+plugin/src/ui/app.ts:91            isServerMessage
 ```
 
 A rejected intent triggers a re-sync push to every panel of the board. On board delete the socket
@@ -461,20 +535,20 @@ Tests: `tests/integration/server.test.ts`.
 
 ## The contract
 
-`src/shared/schemas.ts` is the single zod source for elements, `CanvasState`, and every tool's args.
+`plugin/src/shared/schemas.ts` is the single zod source for elements, `CanvasState`, and every tool's args.
 JSON Schema is generated from it into `schema/canvas-state.generated.json` and
 `schema/tools.generated.json` (never hand-edit). The design-authored oracle is
 `tests/fixtures/contract/`.
 
 ```
-src/shared/schemas.ts:26      nodeSchema
-src/shared/schemas.ts:36      edgeSchema
-src/shared/schemas.ts:95      layerSchema
-src/shared/schemas.ts:151     canvasStateSchema
-src/shared/schemas.ts:193     toolArgs
-src/shared/schemas.ts:369     ToolName
-src/shared/types.ts:10        NODE_KINDS
-src/scripts/gen-schemas.ts:11 toJSONSchema
+plugin/src/shared/schemas.ts:26   nodeSchema
+plugin/src/shared/schemas.ts:36   edgeSchema
+plugin/src/shared/schemas.ts:95   layerSchema
+plugin/src/shared/schemas.ts:151  canvasStateSchema
+plugin/src/shared/schemas.ts:193  toolArgs
+plugin/src/shared/schemas.ts:369  ToolName
+plugin/src/shared/types.ts:10     NODE_KINDS
+scripts/gen-schemas.ts:11         toJSONSchema
 ```
 
 Node kinds are the spec's five plus `state` and `lifeline`. `offeredNodeKindSchema` is what tools
@@ -493,23 +567,23 @@ app, `canvas.ts` draws and handles pointer input, `panel.ts` renders the side ta
 shared UI state.
 
 ```
-src/ui/main.ts:17           boot
-src/ui/main.ts:65           showBoardPicker
-src/ui/app.ts:73            KIND_META
-src/ui/app.ts:106           focusLayer
-src/ui/canvas.ts:57         setupCanvas
-src/ui/canvas.ts:628        renderWorld
-src/ui/canvas.ts:565        hitNode
-src/ui/canvas.ts:619        deleteSelection
-src/ui/panel.ts:176         setupPanel
-src/ui/panel.ts:347         renderPanel
-src/ui/panel.ts:374         renderInspector
-src/ui/panel.ts:641         staleStrip
-src/ui/panel.ts:939         renderFooter
-src/ui/panel.ts:620         renderAsideStrip
-src/ui/panel.ts:666         renderLayers
-src/ui/panel.ts:511         renderHistory
-src/ui/panel.ts:108         loadPanelPrefs
+plugin/src/ui/main.ts:17     boot
+plugin/src/ui/main.ts:65     showBoardPicker
+plugin/src/ui/app.ts:73      KIND_META
+plugin/src/ui/app.ts:106     focusLayer
+plugin/src/ui/canvas.ts:57   setupCanvas
+plugin/src/ui/canvas.ts:628  renderWorld
+plugin/src/ui/canvas.ts:565  hitNode
+plugin/src/ui/canvas.ts:619  deleteSelection
+plugin/src/ui/panel.ts:176   setupPanel
+plugin/src/ui/panel.ts:347   renderPanel
+plugin/src/ui/panel.ts:374   renderInspector
+plugin/src/ui/panel.ts:641   staleStrip
+plugin/src/ui/panel.ts:939   renderFooter
+plugin/src/ui/panel.ts:620   renderAsideStrip
+plugin/src/ui/panel.ts:666   renderLayers
+plugin/src/ui/panel.ts:511   renderHistory
+plugin/src/ui/panel.ts:108   loadPanelPrefs
 ```
 
 The aside strip (`renderAsideStrip`) shows the stale-build notice (`staleStrip`, with Restart:
@@ -519,11 +593,34 @@ The board picker (`showBoardPicker`) shows each board's `project_root` (or `root
 Author from `GET /api/boards`. The panel treats `author`, `readers`, `released_from`, `daemon` and
 the picker's `author` as optional: a new bundle can load from an older running daemon.
 
-Styles are in `src/ui/styles.css`; `src/ui/index.html` is the shell. `yarn build` bundles the UI to
-`dist/ui/` with esbuild (`esbuild.ui.mjs`).
+Styles are in `plugin/src/ui/styles.css`; `plugin/src/ui/index.html` is the shell. A browser cannot
+run `.ts`, so the daemon bundles `plugin/src/ui/main.ts` with esbuild in memory
+(`createUiBundle`, no `dist/`), keeps `index.html` and `styles.css` with it, and serves `/`
+(`index.html`), `/main.js`, `/main.js.map` and `/styles.css` from memory only. The daemon entry
+starts the bundle at boot (`Daemon.ui`, passed to the HTTP handler as `ui`); each later call gets
+the same files, and a failed bundle is tried again on the next request. `uiFiles` is the bundle of
+this copy for a server that was given none (in-process tests). esbuild is a runtime dependency, and
+it loads through a dynamic import, so the relay does not load it.
 
-Beware: `src/shared/tokens.ts` holds the canvas colors both renderers read, because resvg cannot
-read CSS variables. Keep it in step with `src/ui/styles.css`.
+`yarn dev` sets `INKWIRE_UI_WATCH=1`: the bundle then uses an esbuild watch context and makes the
+files in memory again after each change to the panel source (`index.html` and `styles.css` have
+their own `fs.watch`). The dev daemon restarts only on a change under `plugin/src/` server, core,
+shared or link. Reload the page to see a panel change. In other daemons, a change to the panel
+shows after a daemon restart.
+
+```
+plugin/src/server/ui-bundle.ts:56  createUiBundle
+plugin/src/server/ui-bundle.ts:148 uiFiles
+```
+
+Beware: no request reads the plugin folder. Claude Code installs each update into a new cache
+folder (`~/.claude/plugins/cache/inkwire/inkwire/<sha>/`) and removes an old folder 14 days later,
+while a daemon of that build can still run. Keep every panel file in the bundle, and read nothing
+from `plugin/` after boot. `tests/server/ui-bundle.test.ts` serves the panel after it renames the
+source folder away.
+
+Beware: `plugin/src/shared/tokens.ts` holds the canvas colors both renderers read, because resvg cannot
+read CSS variables. Keep it in step with `plugin/src/ui/styles.css`.
 
 Beware: a path like `_ds/industry-*/` inside a CSS comment ends the comment at `*/` and silently
 swallows the rules after it.
@@ -538,23 +635,32 @@ panel is connected, the server can ask it for a capture over WS. Level of detail
 wrapping) is shared code in `core/lod.ts`.
 
 ```
-src/server/render-svg.ts:25   renderBoardSvg
-src/server/render-svg.ts:135  fitViewport
-src/server/rasterize.ts:11    rasterizeSvg
-src/server/screenshot.ts:9    CaptureBroker
-src/server/screenshot.ts:26   Screenshots
-src/ui/capture.ts:10          captureBoard
-src/core/lod.ts:18            lodFor
-src/core/lod.ts:48            wrapText
-src/shared/tokens.ts:53       RENDER
+plugin/src/server/render-svg.ts:25   renderBoardSvg
+plugin/src/server/render-svg.ts:135  fitViewport
+plugin/src/server/rasterize.ts:53    rasterizeSvg
+plugin/src/server/screenshot.ts:9    CaptureBroker
+plugin/src/server/screenshot.ts:26   Screenshots
+plugin/src/ui/capture.ts:10          captureBoard
+plugin/src/core/lod.ts:18            lodFor
+plugin/src/core/lod.ts:48            wrapText
+plugin/src/shared/tokens.ts:53       RENDER
 ```
 
-Fonts are in `assets/fonts/`. A capture that the client does not answer within `CLIENT_TIMEOUT_MS`
-falls back to the server render.
+Fonts are in `plugin/assets/fonts/`. At boot, `openCore` calls `installFonts`, which copies them
+to `<dataDir>/fonts/` (it writes a file only when it is missing or its content differs) and gives
+their paths to `Screenshots`; each render loads them from there. The native `@resvg/resvg-js`
+2.6.2 reads fonts from files only (`fontBuffers` is in its WASM build only), so the fonts go to the
+data dir, not to memory. A render never reads the plugin folder, which Claude Code can remove after
+an update. A capture that the client does not answer within `CLIENT_TIMEOUT_MS` falls back to the
+server render.
+
+```
+plugin/src/server/rasterize.ts:25    installFonts
+```
 
 Beware: screenshots ignore focus (layers). Tokens must match in both renderers.
 
-Tests: `tests/core/lod.test.ts`.
+Tests: `tests/core/lod.test.ts`, `tests/server/fonts.test.ts`.
 
 ## Session mode and hooks
 
@@ -564,31 +670,31 @@ has a live mod, it returns `delivered` at once and the reply comes back as the n
 which blocks `Stop` while that Client's mode is on. Every function takes `(clients, client, …)`.
 
 ```
-src/server/session-mode.ts:43    sessionMode
-src/server/session-mode.ts:157   sessionSend
-src/server/session-mode.ts:287   sessionReply
-src/server/session-mode.ts:395   hookEvent
-src/server/session-mode.ts:26    BLOCK_CEILING
-src/server/session-mode.ts:27    AUTO_MODES
-src/server/session-mode.ts:137   releaseAuthorship
-src/server/session-mode.ts:492   terminalProgram
-src/server/session-mode.ts:497   focusTerminal
-src/server/clients.ts:16         HookReport
-src/server/http.ts:135           /api/hook
-src/ui/session.ts:73             setupSession
-src/ui/session.ts:169            renderSession
-src/ui/session.ts:373            messageCard
-src/ui/session.ts:38             stripView
-src/ui/session.ts:67             agentState
-src/ui/session.ts:353            authorRow
+plugin/src/server/session-mode.ts:56   sessionMode
+plugin/src/server/session-mode.ts:165  sessionSend
+plugin/src/server/session-mode.ts:295  sessionReply
+plugin/src/server/session-mode.ts:403  hookEvent
+plugin/src/server/session-mode.ts:27   BLOCK_CEILING
+plugin/src/server/session-mode.ts:28   AUTO_MODES
+plugin/src/server/session-mode.ts:145  releaseAuthorship
+plugin/src/server/session-mode.ts:500  terminalProgram
+plugin/src/server/session-mode.ts:505  focusTerminal
+plugin/src/server/clients.ts:16        HookReport
+plugin/src/server/http.ts:135           /api/hook
+plugin/src/ui/session.ts:73            setupSession
+plugin/src/ui/session.ts:169           renderSession
+plugin/src/ui/session.ts:373           messageCard
+plugin/src/ui/session.ts:38            stripView
+plugin/src/ui/session.ts:67            agentState
+plugin/src/ui/session.ts:353           authorRow
 ```
 
-Hook files (not `.ts`): `hooks/hooks.json` wires `Stop`, `PreToolUse` on the `session_mode` tool,
+Hook files (not `.ts`): `plugin/hooks/hooks.json` wires `Stop`, `PreToolUse` on the `session_mode` tool,
 `UserPromptSubmit` (it clears `awaiting` and `delivered` when the mod is gone), and `SessionStart`
-with matcher `compact|clear|resume`. `hooks/forward.sh` finds the Claude Code
+with matcher `compact|clear|resume`. `plugin/hooks/forward.sh` finds the Claude Code
 pid (the nearest ancestor whose `comm` or first `args` word is `claude`), POSTs the event to
 `/api/hook?pid=<n>`, and prints the verdict (`block`, `context`, or `ok`). It exits 0 on every
-failure. `hooks/hooks.json` also names the mod module (`"modules": ["./mod/register.tsx"]`).
+failure. `plugin/hooks/hooks.json` also names the mod module (`"modules": ["./mod/register.tsx"]`).
 `forward.sh` stays as the fallback when mods are off.
 
 Hook events can also come from the mod (`/api/hook?via=mod`, no pid). `hookEvent` finds a mod
@@ -644,32 +750,32 @@ Tests: `tests/tools/session.test.ts`, `tests/tools/forward-hook.test.ts`, `tests
 
 ADR 0004. A Claude Code mod (a hooks module) beside the transcript. The browser stays the ink
 surface. The mod does three things: mod delivery for session mode, the hook events in place of
-`hooks/forward.sh`, and one status line (`inkwire · <board> · <state>`) with the `/inkwire` command
+`plugin/hooks/forward.sh`, and one status line (`inkwire · <board> · <state>`) with the `/inkwire` command
 (the status and the panel URL; `send` and `discard` for refused replies). The mod is person-side
 UI. It uses only the daemon's HTTP routes, never `$.mcp.call`. It names its Client by the Claude Code
 session id (`Clients.bySessionId`), because the mods API has no pid. A session id that two Clients
 hold names no Client. The mod's own files are under
-`hooks/mod/` (not `.ts` in `src/`); `hooks/mod/register.tsx` is the module.
+`plugin/hooks/mod/` (not `.ts` in `plugin/src/`); `plugin/hooks/mod/register.tsx` is the module.
 
 ```
-src/server/clients.ts:34         ModReply
-src/server/clients.ts:42         MOD_TTL_MS
-src/server/clients.ts:176        markMod
-src/server/clients.ts:181        markModHook
-src/server/clients.ts:189        hasLiveMod
-src/server/clients.ts:197        modAnswersHooks
-src/server/clients.ts:202        clearMod
-src/server/clients.ts:262        bySessionId
-src/server/session-mode.ts:99    blockingProblem
-src/server/session-mode.ts:157   sessionSend
-src/server/session-mode.ts:287   sessionReply
-src/server/session-mode.ts:365   modPrompt
-src/server/session-mode.ts:395   hookEvent
-src/server/http.ts:288           handleMod
-src/server/http.ts:339           modView
-src/server/http.ts:362           waitForChange
-src/server/http.ts:63            ModHub
-src/server/ws.ts:334             author
+plugin/src/server/clients.ts:34        ModReply
+plugin/src/server/clients.ts:42        MOD_TTL_MS
+plugin/src/server/clients.ts:178       markMod
+plugin/src/server/clients.ts:183       markModHook
+plugin/src/server/clients.ts:191       hasLiveMod
+plugin/src/server/clients.ts:199       modAnswersHooks
+plugin/src/server/clients.ts:204       clearMod
+plugin/src/server/clients.ts:264       bySessionId
+plugin/src/server/session-mode.ts:107  blockingProblem
+plugin/src/server/session-mode.ts:165  sessionSend
+plugin/src/server/session-mode.ts:295  sessionReply
+plugin/src/server/session-mode.ts:373  modPrompt
+plugin/src/server/session-mode.ts:403  hookEvent
+plugin/src/server/http.ts:295          handleMod
+plugin/src/server/http.ts:346          modView
+plugin/src/server/http.ts:369          waitForChange
+plugin/src/server/http.ts:63           ModHub
+plugin/src/server/ws.ts:337            author
 ```
 
 Routes (all take the session id; only the view marks `client.mod.at`):
@@ -719,26 +825,27 @@ A daemon that answers 404 on `/api/mod/view` (from before ADR 0004) is not a dow
 `fetchView` returns `OLD_DAEMON`, the link has `old`, and the status line says to restart it in
 the panel. `/inkwire` then gives the panel URL with no board.
 
-Mod files (not in `src/`, so no anchors): `register.tsx` (the hooks: `session.start`, `/inkwire`,
+Mod files (not in `plugin/src/`, so no anchors): `register.tsx` (the hooks: `session.start`, `/inkwire`,
 `classic.Stop|SessionStart|UserPromptSubmit|PreToolUse`, `turn.complete`),
 `daemon.ts` (every HTTP call, each one in a race with a timeout; `DEFAULT_PORT`), `live.ts` (the
 long-poll loop, take, `$.prompt.submit` of the outbox, the status line and `inkwireCommand`),
 `contract.d.ts` (the state contract and copies of the daemon's wire types: change them when the
-view shape changes). `.claude-plugin/plugin.json` names `contract.d.ts` as its `types`.
+view shape changes). `plugin/.claude-plugin/plugin.json` names `contract.d.ts` as its `types`.
 
-Beware: the mod cannot import `src/shared/` (zod). Keep the `Inkwire*` types a copy of
-`ModViewBody` in `src/server/http.ts` and of `AuthorPush`.
+Beware: the mod cannot import `plugin/src/shared/` (zod). Keep the `Inkwire*` types a copy of
+`ModViewBody` in `plugin/src/server/http.ts` and of `AuthorPush`.
 
 Tests: `tests/tools/mod.test.ts`, `tests/integration/mod-routes.test.ts`, and
 `tests/integration/mod-link.test.ts` (the mod's HTTP flow through a real relay that carries
-`CLAUDE_CODE_SESSION_ID`). The mod's own tests: `hooks/mod/inkwire.test.tsx`, run with
-`yarn mod:test`; `yarn mod:validate` runs `claude plugin validate .`. Do not run
-`claude plugin test .` at the repo root: it also collects `tests/**`, and those do not load there.
-`hooks/run-mod-tests.mjs` copies the plugin manifest and `hooks/` to a temp dir and runs it there.
+`CLAUDE_CODE_SESSION_ID`). The mod's own tests: `plugin/hooks/mod/inkwire.test.tsx`, run with
+`yarn mod:test`; `yarn mod:validate` runs `claude plugin validate` on the repo root (the
+marketplace) and on `plugin/`. `yarn mod:test` runs `claude plugin test plugin`, which collects every
+`*.test.ts` and `*.test.tsx` under `plugin/`. Do not run `claude plugin test .` at the repo root: it
+also collects `tests/**`. Keep test files out of `plugin/src/`.
 
 ## Clients and authorship
 
-`Clients` (`src/server/clients.ts`, no I/O, clock from `Sessions.now`) keeps one `Client` for each
+`Clients` (`plugin/src/server/clients.ts`, no I/O, clock from `Sessions.now`) keeps one `Client` for each
 Claude Code pid (ADR 0001): `sessionId`, `cwd`, `label`, `termProgram`, `currentBoardId`, `mode`,
 `hook`, `pending`, `blocks`, and the mod state (`mod`, `awaiting`, `inbox`; see The mod). It also keeps the Author of each board (`authors`, ADR 0002), the
 pid the person released from each board (`releasedFrom`), the panel notice of each board
@@ -746,30 +853,30 @@ pid the person released from each board (`releasedFrom`), the panel notice of ea
 hello pid (`createLinkHost`).
 
 ```
-src/server/clients.ts:44         Client
-src/server/clients.ts:92         class Clients
-src/server/clients.ts:138        ensure
-src/server/clients.ts:209        attach
-src/server/clients.ts:223        detach
-src/server/clients.ts:290        remove
-src/server/clients.ts:304        sweep
-src/server/clients.ts:317        boardDeleted
-src/server/clients.ts:369        talkingOn
-src/server/clients.ts:385        checkWrite
-src/server/clients.ts:417        commitClaim
-src/server/clients.ts:507        release
-src/server/session.ts:479        onDelete
-src/server/session.ts:564        resolve
-src/server/clients.ts:107        releasedFrom
-src/server/clients.ts:403        checkSwitch
-src/server/clients.ts:449        allowAgain
-src/server/clients.ts:457        addNotice
-src/server/clients.ts:361        readerCount
-src/server/clients.ts:240        peek
-src/server/clients.ts:464        takeNotices
-src/server/clients.ts:475        contextLine
-src/server/mcp.ts:87             resolve
-src/server/mcp.ts:105            writable
+plugin/src/server/clients.ts:44   Client
+plugin/src/server/clients.ts:92         class Clients
+plugin/src/server/clients.ts:140  ensure
+plugin/src/server/clients.ts:211  attach
+plugin/src/server/clients.ts:225  detach
+plugin/src/server/clients.ts:292  remove
+plugin/src/server/clients.ts:306  sweep
+plugin/src/server/clients.ts:319  boardDeleted
+plugin/src/server/clients.ts:371  talkingOn
+plugin/src/server/clients.ts:387  checkWrite
+plugin/src/server/clients.ts:419  commitClaim
+plugin/src/server/clients.ts:509  release
+plugin/src/server/session.ts:485  onDelete
+plugin/src/server/session.ts:570  resolve
+plugin/src/server/clients.ts:107  releasedFrom
+plugin/src/server/clients.ts:405  checkSwitch
+plugin/src/server/clients.ts:451  allowAgain
+plugin/src/server/clients.ts:459  addNotice
+plugin/src/server/clients.ts:363  readerCount
+plugin/src/server/clients.ts:242  peek
+plugin/src/server/clients.ts:466  takeNotices
+plugin/src/server/clients.ts:477  contextLine
+plugin/src/server/mcp.ts:87       resolve
+plugin/src/server/mcp.ts:105      writable
 ```
 
 Beware: a hook can make a Client before its link connects. With no `attach` for that pid within
@@ -809,17 +916,17 @@ neighbours as "rim", and the rest as "out". Focus is per board, shared by every 
 persisted.
 
 ```
-src/core/layers.ts:15      Tier
-src/core/layers.ts:42      liveMembers
-src/core/layers.ts:51      tiers
-src/core/layers.ts:74      scopeState
-src/core/layers.ts:28      downstream
-src/server/layers.ts:36    createLayer
-src/server/layers.ts:58    updateLayer
-src/server/layers.ts:82    deleteLayer
-src/server/session.ts:246  updateLayers
-src/server/session.ts:257  setFocus
-src/ui/panel.ts:666        renderLayers
+plugin/src/core/layers.ts:15      Tier
+plugin/src/core/layers.ts:42      liveMembers
+plugin/src/core/layers.ts:51      tiers
+plugin/src/core/layers.ts:74      scopeState
+plugin/src/core/layers.ts:28      downstream
+plugin/src/server/layers.ts:36    createLayer
+plugin/src/server/layers.ts:58    updateLayer
+plugin/src/server/layers.ts:82    deleteLayer
+plugin/src/server/session.ts:246  updateLayers
+plugin/src/server/session.ts:257  setFocus
+plugin/src/ui/panel.ts:666        renderLayers
 ```
 
 Beware: layer members are never pruned when a node is deleted; `liveMembers` filters at read time.
@@ -835,19 +942,19 @@ A path is an ordered walk over a layer's edges with one caption per hop. `openTr
 board's trace, and the panel plays it as a vertical walk in the Layers tab (`renderLayers` mounts `renderWalk`). The `trace-path` skill writes one.
 
 ```
-src/core/layers.ts:139    nextPathId
-src/core/layers.ts:162    validateWalk
-src/core/layers.ts:182    resolveNodesToSteps
-src/core/layers.ts:210    pathsAffected
-src/core/layers.ts:244    traceT
-src/server/layers.ts:108  createPath
-src/server/layers.ts:196  getPath
-src/server/layers.ts:227  openTrace
-src/server/session.ts:338 setTrace
-src/server/session.ts:345 updateTrace
-src/ui/canvas.ts:928      effectiveTrace
-src/ui/canvas.ts:1093     renderTrace
-src/ui/canvas.ts:1172     renderWalk
+plugin/src/core/layers.ts:139     nextPathId
+plugin/src/core/layers.ts:162     validateWalk
+plugin/src/core/layers.ts:182     resolveNodesToSteps
+plugin/src/core/layers.ts:210     pathsAffected
+plugin/src/core/layers.ts:244     traceT
+plugin/src/server/layers.ts:108   createPath
+plugin/src/server/layers.ts:196   getPath
+plugin/src/server/layers.ts:227   openTrace
+plugin/src/server/session.ts:338  setTrace
+plugin/src/server/session.ts:345  updateTrace
+plugin/src/ui/canvas.ts:928       effectiveTrace
+plugin/src/ui/canvas.ts:1093      renderTrace
+plugin/src/ui/canvas.ts:1172      renderWalk
 ```
 
 Each step with a ref carries a server-written `ref_hash`; `paths_update` takes `verify` to restamp hops (see Code binding and lint). The trace rides in `SessionPush`. The WS intents are `trace_set`, `trace_seek`, `trace_run`.
@@ -863,14 +970,14 @@ A draft is a view, like a layer. Creating, marking or activating one changes not
 Marks give a node or edge a role (hue). `active_draft` is per board and shared by every panel.
 
 ```
-src/core/drafts.ts:7       nextDraftId
-src/core/drafts.ts:30      goneMarks
-src/server/drafts.ts:23    createDraft
-src/server/drafts.ts:42    updateDraft
-src/server/drafts.ts:101   markElement
-src/server/session.ts:270  updateDrafts
-src/server/session.ts:278  setActiveDraft
-src/ui/panel.ts:794        renderDrafts
+plugin/src/core/drafts.ts:7       nextDraftId
+plugin/src/core/drafts.ts:30      goneMarks
+plugin/src/server/drafts.ts:23    createDraft
+plugin/src/server/drafts.ts:42    updateDraft
+plugin/src/server/drafts.ts:101   markElement
+plugin/src/server/session.ts:270  updateDrafts
+plugin/src/server/session.ts:278  setActiveDraft
+plugin/src/ui/panel.ts:794        renderDrafts
 ```
 
 Beware: `active_draft` is never persisted. The error hue is shared between draft roles and lint. Draft
@@ -885,18 +992,18 @@ Notebooks are prose panes beside the canvas. They replace note nodes. Bodies use
 subset with `[[ref]]` chips that resolve to nodes.
 
 ```
-src/core/notebooks.ts:59     parseNotebook
-src/core/notebooks.ts:85     refsIn
-src/core/notebooks.ts:94     toggleTaskLine
-src/core/notebooks.ts:111    goneRefs
-src/core/notebooks.ts:142    resolveNotebookRefs
-src/server/notebooks.ts:16   createNotebook
-src/server/notebooks.ts:69   appendToNotebook
-src/server/notebooks.ts:112  migrateNotes
-src/server/session.ts:287    updateNotebooks
-src/ui/notebook.ts:41        setupNotebook
-src/ui/notebook.ts:136       renderNotebook
-src/ui/notebook.ts:338       buildChip
+plugin/src/core/notebooks.ts:59     parseNotebook
+plugin/src/core/notebooks.ts:85     refsIn
+plugin/src/core/notebooks.ts:94     toggleTaskLine
+plugin/src/core/notebooks.ts:111    goneRefs
+plugin/src/core/notebooks.ts:142    resolveNotebookRefs
+plugin/src/server/notebooks.ts:16   createNotebook
+plugin/src/server/notebooks.ts:69   appendToNotebook
+plugin/src/server/notebooks.ts:112  migrateNotes
+plugin/src/server/session.ts:287    updateNotebooks
+plugin/src/ui/notebook.ts:41        setupNotebook
+plugin/src/ui/notebook.ts:136       renderNotebook
+plugin/src/ui/notebook.ts:338       buildChip
 ```
 
 Beware: prose is not a board element. A legacy `note` node is a lint error until `migrateNotes`
@@ -911,15 +1018,15 @@ Tests: `tests/core/notebooks.test.ts`.
 board's `project_root` (see Project root). `lintBoard` reports findings for `canvas_lint`.
 
 ```
-src/server/bindcode.ts:16   splitRef
-src/server/bindcode.ts:42   validateRef
-src/server/bindcode.ts:58   stampRef
-src/server/bindcode.ts:67   refStatus
-src/core/symbols.ts:19      findSymbol
-src/core/symbols.ts:66      blockText
-src/server/lint.ts:11       LintFinding
-src/server/lint.ts:34       lintPath
-src/server/lint.ts:67       lintBoard
+plugin/src/server/bindcode.ts:16  splitRef
+plugin/src/server/bindcode.ts:42  validateRef
+plugin/src/server/bindcode.ts:58  stampRef
+plugin/src/server/bindcode.ts:67  refStatus
+plugin/src/core/symbols.ts:19     findSymbol
+plugin/src/core/symbols.ts:66     blockText
+plugin/src/server/lint.ts:11      LintFinding
+plugin/src/server/lint.ts:34      lintPath
+plugin/src/server/lint.ts:67      lintBoard
 ```
 
 Checks include `note_node`, `ref_missing`, `symbol_missing`, `unbound`, `path_broken`, `path_ref_changed`, `path_ref_unverified`, `path_hop_unbound`, `draft_mark_gone` and `notebook_ref_gone`. Add a check inside `lintBoard`; the path checks live in `lintPath`, which `paths_play` also calls.
@@ -941,12 +1048,12 @@ A board exports to a versioned JSON file with bitmaps embedded, and imports back
 Mermaid export is a pure function.
 
 ```
-src/shared/board-file.ts:19   BOARD_FILE_VERSION
-src/shared/board-file.ts:21   boardFileSchema
-src/server/board-file.ts:21   exportBoard
-src/server/board-file.ts:80   importBoard
-src/server/board-file.ts:19   ImportError
-src/core/mermaid.ts:22        exportMermaid
+plugin/src/shared/board-file.ts:19  BOARD_FILE_VERSION
+plugin/src/shared/board-file.ts:21  boardFileSchema
+plugin/src/server/board-file.ts:21  exportBoard
+plugin/src/server/board-file.ts:80  importBoard
+plugin/src/server/board-file.ts:19  ImportError
+plugin/src/core/mermaid.ts:22       exportMermaid
 ```
 
 Beware: raise `BOARD_FILE_VERSION` when the board shape changes, and keep old versions importable.
@@ -962,25 +1069,25 @@ otherwise, and on any git failure). When the root is gone and `main_root` exists
 it with a warning; ref writes and lint refuse until `boards_update` sets a new root.
 
 ```
-src/server/project-root.ts:20   checkRootArg
-src/server/project-root.ts:32   mainRootOf
-src/server/project-root.ts:71   boardRoot
-src/server/project-root.ts:84   writeRoot
-src/server/project-root.ts:91   readRoot
-src/server/project-root.ts:109  canonicalPath
-src/server/project-root.ts:118  rootOverlaps
-src/server/project-root.ts:130  listBoards
-src/shared/import-root.ts:9     importNeedsRoot
-src/server/session.ts:514       create
-src/server/session.ts:533       uniqueName
-src/server/session.ts:549       clone
-src/server/session.ts:234       updateMeta
-src/server/mcp.ts:249           register("boards.list"
-src/server/mcp.ts:302           register("boards.update"
-src/server/mcp.ts:318           register("boards.create"
-src/server/mcp.ts:330           register("boards.clone"
-src/server/mcp.ts:345           register("boards.import"
-src/server/board-file.ts:60     importRoot
+plugin/src/server/project-root.ts:20   checkRootArg
+plugin/src/server/project-root.ts:32   mainRootOf
+plugin/src/server/project-root.ts:71   boardRoot
+plugin/src/server/project-root.ts:84   writeRoot
+plugin/src/server/project-root.ts:91   readRoot
+plugin/src/server/project-root.ts:109  canonicalPath
+plugin/src/server/project-root.ts:118  rootOverlaps
+plugin/src/server/project-root.ts:130  listBoards
+plugin/src/shared/import-root.ts:9     importNeedsRoot
+plugin/src/server/session.ts:520       create
+plugin/src/server/session.ts:539       uniqueName
+plugin/src/server/session.ts:555       clone
+plugin/src/server/session.ts:234       updateMeta
+plugin/src/server/mcp.ts:249           register("boards.list"
+plugin/src/server/mcp.ts:302           register("boards.update"
+plugin/src/server/mcp.ts:318           register("boards.create"
+plugin/src/server/mcp.ts:330           register("boards.clone"
+plugin/src/server/mcp.ts:345           register("boards.import"
+plugin/src/server/board-file.ts:60     importRoot
 ```
 
 The five board tools: `boards_list` (overlap filter: the root equals, contains, or is inside the
@@ -992,7 +1099,7 @@ share `uniqueName`: an exact name that exists on any board gets the lowest free 
 result says `name_check: "OK"` or gives a `warning`. `GET /api/boards` lists every board (the panel
 has no cwd); `POST /api/boards/import?project_root=` gives a 400 that the panel answers with a prompt
 for the root, then retries. Only the root errors prompt (`importNeedsRoot` in
-`src/shared/import-root.ts`): a file that is not valid fails without a prompt.
+`plugin/src/shared/import-root.ts`): a file that is not valid fails without a prompt.
 
 Reads: `paths_get` and `paths_play` give a `warnings` entry for an unset, gone or fallback root.
 `canvas_get_board` gives the fallback warning as a second text content block (`warning: …`) after
@@ -1016,10 +1123,10 @@ SQLite (`store.ts`) stores board content and bitmaps. `BoardSession` saves with 
 History is not stored.
 
 ```
-src/server/store.ts:35    class Store
-src/server/store.ts:110   load
-src/server/store.ts:164   save
-src/server/store.ts:198   saveImage
+plugin/src/server/store.ts:35    class Store
+plugin/src/server/store.ts:110  load
+plugin/src/server/store.ts:164  save
+plugin/src/server/store.ts:198  saveImage
 ```
 
 One data dir for each daemon, and one daemon for each port. Every Claude Code session on that port
@@ -1032,15 +1139,62 @@ port race exits before it opens the DB.
 
 ## The plugin
 
-Inkwire ships as a Claude Code plugin and as its own one-plugin marketplace. None of this is `.ts`;
-build first, because the manifest runs `dist/link/relay.js`. A relay change needs `yarn build`.
+Inkwire ships as a Claude Code plugin and as its own one-plugin marketplace. None of this is `.ts`.
+The plugin root is `plugin/`: the marketplace entry has the source `./plugin`, and Claude Code
+copies only that folder. There is no build step: the manifest runs the relay from the source. The
+manifest and the marketplace entry have no `version`, so Claude Code uses the commit SHA, and each
+merge to `main` that changes `plugin/` is an update.
 
-- `.claude-plugin/plugin.json` — manifest and the `mcpServers` entry (`node ${CLAUDE_PLUGIN_ROOT}/dist/link/relay.js`).
-- `.claude-plugin/marketplace.json` — the marketplace listing.
-- `hooks/hooks.json`, `hooks/forward.sh` — see Session mode and hooks.
-- `hooks/mod/` — the Claude Code mod (`hooks/mod/register.tsx` is the module) — see The mod.
-- `skills/use-inkwire`, `skills/back-to-claude-code`, `skills/trace-path` — `trace-path` is
+- `plugin/.claude-plugin/plugin.json` — manifest and the `mcpServers` entry (`sh ${CLAUDE_PLUGIN_ROOT}/src/link/relay.sh`, which runs `relay.ts` with a Node 26; see The link).
+- `.claude-plugin/marketplace.json` — the marketplace listing (at the repo root, not in `plugin/`).
+- `plugin/hooks/hooks.json`, `plugin/hooks/forward.sh` — see Session mode and hooks.
+- `plugin/hooks/mod/` — the Claude Code mod (`plugin/hooks/mod/register.tsx` is the module) — see The mod.
+- `plugin/skills/use-inkwire`, `plugin/skills/back-to-claude-code`, `plugin/skills/trace-path` — `trace-path` is
   model-invocable.
+- `plugin/package.json`, `plugin/package-lock.json` — the runtime deps that Claude Code installs
+  in the cache folder (`npm ci --ignore-scripts`: exact registry versions, no install scripts).
+  `yarn lock-plugin` writes both from the root `dependencies` at the versions that `yarn.lock`
+  resolves, also for each transitive package. They are not a Yarn workspace: the root `package.json` has no `workspaces`, so Yarn
+  ignores them. In dev, `plugin/node_modules` does not exist and Node finds the packages in the
+  root `node_modules`.
 - `.claude/skills/ship` — dev-only, not part of the plugin.
 - `.claude/settings.json` — the Session tab's two requirements for this repo
   (`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0`, permission mode `auto`).
+
+The checks of the plugin are scripts at the repo root (ADR 0005). `checkPlugin` (`yarn
+check-plugin`, a CI job) fails on a `version`, a marketplace source other than `./plugin`, plugin
+deps that are not the root runtime deps at exact `yarn.lock` versions (`runtimeDependencies`,
+`yarnResolutions`), a lockfile that is not v3 or does not match, a lock entry (also a transitive
+one) at a version that `yarn.lock` does not resolve for its name (`yarnVersionsByName`), a file that `plugin.json` or
+`hooks.json` names and that is missing (a hook script must also be executable), and a
+`plugin/node_modules` or `plugin/dist`. `yarn lock-plugin` writes the two files
+(`pluginPackageJson`, then npm in a temp folder: `writeLockfile`) and runs the check. npm makes
+the lockfile from a yarn v1 lockfile that `yarnV1Lockfile` writes from `yarn.lock` (npm reads a
+yarn v1 lockfile, not the Yarn 4 format), with no old `package-lock.json`, so npm takes Yarn's
+version of each package.
+`yarn check-install` (also a CI job) copies the files of `plugin/` that git tracks
+(`trackedPluginFiles`; it stops when `plugin/` has a file that git does not track and does not
+ignore) to a temp folder outside the repo, runs `npm ci --ignore-scripts` there (60 s limit),
+starts the relay with the command of `plugin.json` (`manifestCommand`) from the copy with a clean
+env, a random port and a temp data dir, calls `boards_create`, checks that the daemon runs from the copy and gets
+`/`, `/main.js` and `/styles.css`.
+
+```
+scripts/check-plugin.ts:162    checkPlugin
+scripts/plugin-package.ts:130   runtimeDependencies
+scripts/plugin-package.ts:55   yarnResolutions
+scripts/plugin-package.ts:81   yarnVersionsByName
+scripts/plugin-package.ts:104  yarnV1Lockfile
+scripts/check-install.ts:72    trackedPluginFiles
+scripts/check-install.ts:85    manifestCommand
+scripts/plugin-package.ts:154   pluginPackageJson
+scripts/lock-plugin.ts:24      writeLockfile
+scripts/check-install.ts:100    main
+```
+
+Tests: `tests/scripts/check-plugin.test.ts` (each rule on a temp copy of the files).
+
+Beware: a runtime import of a package that is only in the root `devDependencies` passes the type
+check and every test (the root `node_modules` has it) but fails in the installed plugin. Put it in
+`dependencies` and run `yarn lock-plugin`. A native package must ship prebuilt binaries
+(`better-sqlite3`, `@resvg/resvg-js` and `esbuild` do): Claude Code runs no install scripts.

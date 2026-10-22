@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
-import { Store } from "../../src/server/store.js";
+import { Store } from "../../plugin/src/server/store.ts";
 
 const OLD_SCHEMA = `CREATE TABLE boards (
   id          TEXT PRIMARY KEY,

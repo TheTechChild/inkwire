@@ -6,13 +6,13 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { buildMcpServer } from "../../src/server/mcp.js";
-import { Screenshots } from "../../src/server/screenshot.js";
-import { hookEvent, sessionMode, sessionReply } from "../../src/server/session-mode.js";
-import { Sessions } from "../../src/server/session.js";
-import { Clients, type Client as InkwireClient } from "../../src/server/clients.js";
-import { Store } from "../../src/server/store.js";
-import { toolBody } from "../helpers.js";
+import { buildMcpServer } from "../../plugin/src/server/mcp.ts";
+import { Screenshots } from "../../plugin/src/server/screenshot.ts";
+import { hookEvent, isInstalledRoot, noHookError, sessionMode, sessionReply } from "../../plugin/src/server/session-mode.ts";
+import { Sessions } from "../../plugin/src/server/session.ts";
+import { Clients, type Client as InkwireClient } from "../../plugin/src/server/clients.ts";
+import { Store } from "../../plugin/src/server/store.ts";
+import { toolBody } from "../helpers.ts";
 
 let client: Client;
 let store: Store;
@@ -82,8 +82,20 @@ describe("session_mode", () => {
   it("on fails with an install hint until a hook event proves the plugin is there", async () => {
     const r = await call("session_mode", { on: true });
     expect(r.res.isError).toBe(true);
+    expect(r.text).toContain("claude plugin install inkwire@inkwire");
+    // A checkout (/repo) also gets the --plugin-dir hint.
     expect(r.text).toContain("--plugin-dir /repo");
     expect(me.mode).toBe("pty");
+  });
+
+  it("the no-hook hint names --plugin-dir only for a checkout, not for an installed plugin", () => {
+    const installed = "/Users/x/.claude/plugins/cache/inkwire/inkwire/0123abcd";
+    expect(isInstalledRoot(installed)).toBe(true);
+    expect(isInstalledRoot("/Users/x/projects/inkwire/plugin")).toBe(false);
+    expect(noHookError(installed)).toContain("Install and enable the inkwire plugin");
+    expect(noHookError(installed)).not.toContain("--plugin-dir");
+    expect(noHookError(undefined)).not.toContain("--plugin-dir");
+    expect(noHookError("/Users/x/projects/inkwire/plugin")).toContain("claude --plugin-dir /Users/x/projects/inkwire/plugin --permission-mode auto");
   });
 
   it("on fails with a relaunch hint unless permission mode is auto and backgrounding is off", async () => {

@@ -3,10 +3,10 @@
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { OWN_RULE_TOOLS, READ_TOOLS, WRITE_TOOLS } from "../../src/server/mcp.js";
-import { exportBoard } from "../../src/server/board-file.js";
-import { sessionMode, sessionReply } from "../../src/server/session-mode.js";
-import { Harness } from "./harness.js";
+import { OWN_RULE_TOOLS, READ_TOOLS, WRITE_TOOLS } from "../../plugin/src/server/mcp.ts";
+import { exportBoard } from "../../plugin/src/server/board-file.ts";
+import { sessionMode, sessionReply } from "../../plugin/src/server/session-mode.ts";
+import { Harness } from "./harness.ts";
 
 let h: Harness;
 
