@@ -57,6 +57,10 @@ function run(cmd: string, args: string[], env: Record<string, string>): Promise<
     const child = spawn(cmd, args, { env: { ...process.env, ...env }, stdio: ["pipe", "ignore", "ignore"] });
     child.on("error", reject);
     child.on("exit", (code) => resolve({ pid: child.pid!, code }));
+    // The child can exit before it reads stdin (an outer shell that does not read it, or a curl
+    // that fails first). The write then fails with EPIPE. That is harmless: the tests check the
+    // exit code and the hits.
+    child.stdin.on("error", () => {});
     child.stdin.end('{"hook_event_name":"Stop"}');
   });
 }
