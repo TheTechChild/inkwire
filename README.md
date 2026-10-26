@@ -4,10 +4,17 @@ A local MCP server with a shared drawing canvas, for collaborating visually with
 
 ## Quick start
 
+Inkwire uses [mise](https://mise.jdx.dev) for its tool versions. `mise.toml` pins node and yarn. Clone the repo, install the tools and the dependencies, then build:
+
 ```sh
+gh repo clone TheTechChild/inkwire
+cd inkwire
+mise install
 yarn install
 yarn build
 ```
+
+The repo does not contain `dist/`, and the plugin runs from `dist/`. Run `yarn build` before you install the plugin, and again after each `git pull`.
 
 Inkwire ships as a Claude Code plugin: the MCP server, a `Stop` hook, the `/use-inkwire` and `/back-to-claude-code` commands, and the model-invocable `trace-path` skill. Install it once; it then loads in every session:
 
@@ -15,8 +22,6 @@ Inkwire ships as a Claude Code plugin: the MCP server, a `Stop` hook, the `/use-
 claude plugin marketplace add /path/to/inkwire
 claude plugin install inkwire@inkwire
 ```
-
-Adjust `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` to 0 in your `~/.claude/settings.json`
 
 For a one-off run without installing, `claude --plugin-dir /path/to/inkwire` does the same for that session. Tool names carry the plugin prefix: `mcp__plugin_inkwire_inkwire__boards_create`.
 
