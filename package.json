@@ -24,8 +24,8 @@
     "check-plugin": "node scripts/check-plugin.ts",
     "check-install": "node scripts/check-install.ts",
     "daemon:restart": "node scripts/daemon-restart.mjs",
-    "mod:validate": "claude plugin validate . && claude plugin validate plugin",
-    "mod:test": "claude plugin test plugin"
+    "plugin:validate": "claude plugin validate . && claude plugin validate plugin",
+    "plugin:test": "claude plugin test plugin"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
