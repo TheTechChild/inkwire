@@ -838,8 +838,8 @@ Beware: the mod cannot import `plugin/src/shared/` (zod). Keep the `Inkwire*` ty
 Tests: `tests/tools/mod.test.ts`, `tests/integration/mod-routes.test.ts`, and
 `tests/integration/mod-link.test.ts` (the mod's HTTP flow through a real relay that carries
 `CLAUDE_CODE_SESSION_ID`). The mod's own tests: `plugin/hooks/mod/inkwire.test.tsx`, run with
-`yarn mod:test`; `yarn mod:validate` runs `claude plugin validate` on the repo root (the
-marketplace) and on `plugin/`. `yarn mod:test` runs `claude plugin test plugin`, which collects every
+`yarn plugin:test`; `yarn plugin:validate` runs `claude plugin validate` on the repo root (the
+marketplace) and on `plugin/`. `yarn plugin:test` runs `claude plugin test plugin`, which collects every
 `*.test.ts` and `*.test.tsx` under `plugin/`. Do not run `claude plugin test .` at the repo root: it
 also collects `tests/**`. Keep test files out of `plugin/src/`.
 

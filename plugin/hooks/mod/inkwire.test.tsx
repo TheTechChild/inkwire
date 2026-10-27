@@ -1,4 +1,4 @@
-// Tests of the inkwire mod. Run them with `yarn mod:test`: it copies the
+// Tests of the inkwire mod. Run them with `yarn plugin:test`: it copies the
 // plugin manifest and hooks/ to a temp folder and runs `claude plugin test`
 // there, because `claude plugin test .` also collects the vitest files in
 // tests/. Each test stands for the engine and the daemon: the hooks the test
