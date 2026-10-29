@@ -240,7 +240,7 @@ export function setupPanel(app: App): void {
     });
   }
 
-  // The settings menu on the brand: undo / redo, export / import, theme.
+  // The settings menu on the brand: undo / redo, infer structure, screenshot / export / import, theme.
   setupAppMenu();
 
   // Undo / redo — they act through history intents, scoped.
@@ -253,7 +253,10 @@ export function setupPanel(app: App): void {
     closeAppMenu();
   });
 
-  el("btn-screenshot").addEventListener("click", () => void downloadScreenshot(app));
+  el("btn-screenshot").addEventListener("click", () => {
+    closeAppMenu(); // before the capture, so the menu is not in the flash
+    void downloadScreenshot(app);
+  });
 
   // Board file export (a download the server names) and import (a new board).
   el("btn-export").addEventListener("click", () => {
@@ -272,7 +275,10 @@ export function setupPanel(app: App): void {
     closeAppMenu();
   });
   importFile.addEventListener("change", () => void importBoardFile(importFile.files?.[0]));
-  el("btn-infer").addEventListener("click", () => app.send({ type: "infer" }));
+  el("btn-infer").addEventListener("click", () => {
+    app.send({ type: "infer" });
+    closeAppMenu();
+  });
   el("btn-resetview").addEventListener("click", () => {
     app.view = { x: 40, y: 20, zoom: 1 };
     app.send({ type: "set_viewport", viewport: app.view });
