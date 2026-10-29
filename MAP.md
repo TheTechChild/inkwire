@@ -636,8 +636,10 @@ wrapping) is shared code in `core/lod.ts`.
 
 ```
 plugin/src/server/render-svg.ts:25   renderBoardSvg
-plugin/src/server/render-svg.ts:135  fitViewport
-plugin/src/server/rasterize.ts:53    rasterizeSvg
+plugin/src/server/render-svg.ts:150  fitViewport
+plugin/src/server/rasterize.ts:54    rasterizeSvg
+plugin/src/server/rasterize.ts:73   rasterizeIsolated
+plugin/src/server/render-svg.ts:138  arrowHead
 plugin/src/server/screenshot.ts:9    CaptureBroker
 plugin/src/server/screenshot.ts:26   Screenshots
 plugin/src/ui/capture.ts:10          captureBoard
@@ -655,8 +657,14 @@ an update. A capture that the client does not answer within `CLIENT_TIMEOUT_MS` 
 server render.
 
 ```
-plugin/src/server/rasterize.ts:25    installFonts
+plugin/src/server/rasterize.ts:26    installFonts
 ```
+
+Beware: the daemon never runs resvg itself. `Screenshots` calls `rasterizeIsolated`, which runs
+`rasterizeSvg` in a child process (`rasterize-child.ts`): a Rust panic in resvg aborts the whole
+process, and no try/catch stops it. A failed render is an error of the tool call. The server render
+draws arrowheads as plain paths (`arrowHead`), never SVG markers: resvg 2.6.2 panics on a marker
+whose edge ends far outside the image.
 
 Beware: screenshots ignore focus (layers). Tokens must match in both renderers.
 
@@ -1022,8 +1030,8 @@ plugin/src/server/bindcode.ts:16  splitRef
 plugin/src/server/bindcode.ts:42  validateRef
 plugin/src/server/bindcode.ts:58  stampRef
 plugin/src/server/bindcode.ts:67  refStatus
-plugin/src/core/symbols.ts:19     findSymbol
-plugin/src/core/symbols.ts:66     blockText
+plugin/src/core/symbols.ts:24     findSymbol
+plugin/src/core/symbols.ts:91     blockText
 plugin/src/server/lint.ts:11      LintFinding
 plugin/src/server/lint.ts:34      lintPath
 plugin/src/server/lint.ts:67      lintBoard
@@ -1031,7 +1039,7 @@ plugin/src/server/lint.ts:67      lintBoard
 
 Checks include `note_node`, `ref_missing`, `symbol_missing`, `unbound`, `path_broken`, `path_ref_changed`, `path_ref_unverified`, `path_hop_unbound`, `draft_mark_gone` and `notebook_ref_gone`. Add a check inside `lintBoard`; the path checks live in `lintPath`, which `paths_play` also calls.
 
-`findSymbol` (pure) finds the declaration line and an indentation-plus-bracket-depth block end; `validateRef` returns `line` and `end`; `stampRef` returns the `blockText` hash for a ref (null when the symbol is gone). `refStatus` is the one step check (`ok`, `ref_missing`, `symbol_missing`, `changed`, `unverified`) shared by lint, `paths_get` and `paths_play`.
+`findSymbol` (pure) finds a dotted symbol (`Class.method`) part by part, each part inside the block of the part before, then as a whole; it finds the declaration line and an indentation-plus-bracket-depth block end; `validateRef` returns `line` and `end`; `stampRef` returns the `blockText` hash for a ref (null when the symbol is gone). `refStatus` is the one step check (`ok`, `ref_missing`, `symbol_missing`, `changed`, `unverified`) shared by lint, `paths_get` and `paths_play`.
 
 Beware: every ref operation takes its root from the board: `writeRoot` for `bind_code` with a ref, path stamps, `verify` and `canvas_lint` (these fail on an unset or gone root, and refuse the main-checkout fallback); `readRoot` for `paths_get` and `paths_play` (these stay readable, with `ref_status: null` and a warning). `resolveRef` throws on a `''` root as a backstop. `lintPath` takes a null root and then skips the ref checks.
 
@@ -1050,13 +1058,15 @@ Mermaid export is a pure function.
 ```
 plugin/src/shared/board-file.ts:19  BOARD_FILE_VERSION
 plugin/src/shared/board-file.ts:21  boardFileSchema
-plugin/src/server/board-file.ts:21  exportBoard
-plugin/src/server/board-file.ts:80  importBoard
-plugin/src/server/board-file.ts:19  ImportError
+plugin/src/server/board-file.ts:22  exportBoard
+plugin/src/server/board-file.ts:81  importBoard
+plugin/src/server/board-file.ts:20  ImportError
 plugin/src/core/mermaid.ts:22       exportMermaid
 ```
 
 Beware: raise `BOARD_FILE_VERSION` when the board shape changes, and keep old versions importable.
+
+Import stamps each path step that has a ref and no `ref_hash` against the board's root (as `paths_create` does); a stamp in the file stays.
 
 Tests: `tests/core/mermaid.test.ts`, `tests/integration/server.test.ts`.
 
@@ -1087,7 +1097,7 @@ plugin/src/server/mcp.ts:302           register("boards.update"
 plugin/src/server/mcp.ts:318           register("boards.create"
 plugin/src/server/mcp.ts:330           register("boards.clone"
 plugin/src/server/mcp.ts:345           register("boards.import"
-plugin/src/server/board-file.ts:60     importRoot
+plugin/src/server/board-file.ts:61     importRoot
 ```
 
 The five board tools: `boards_list` (overlap filter: the root equals, contains, or is inside the

@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { bbox, edgeEndpoints } from "../core/geometry.ts";
 import { edgeLabel, labelPx, lodFor, monoPx, wrapText } from "../core/lod.ts";
-import type { Collections, Viewport } from "../shared/types.ts";
+import type { Collections, Point, Viewport } from "../shared/types.ts";
 import { DARK, RENDER, type ThemeTokens } from "../shared/tokens.ts";
 
 export interface RenderOptions {
@@ -41,12 +41,6 @@ export function renderBoardSvg(opts: RenderOptions): string {
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" font-family="${RENDER.fontBody}, sans-serif">`,
   );
   parts.push(`<rect width="${width}" height="${height}" fill="${t.bg}"/>`);
-  parts.push(
-    `<defs><marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">` +
-      `<path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="${t.accent700}" stroke-width="1.4"/></marker>` +
-      `<marker id="arwai" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">` +
-      `<path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="${t.accent}" stroke-width="1.4"/></marker></defs>`,
-  );
   parts.push(`<g transform="translate(${vp.x} ${vp.y}) scale(${vp.zoom})">`);
 
   // Images under everything else.
@@ -75,8 +69,10 @@ export function renderBoardSvg(opts: RenderOptions): string {
     const { p1, p2, mid } = edgeEndpoints(fromBox, toBox, RENDER.edgeGap);
     const dash = e.kind === "async" || ai ? ` stroke-dasharray="6 4"` : "";
     parts.push(
-      `<path d="M ${p1[0]} ${p1[1]} L ${p2[0]} ${p2[1]}" fill="none" stroke="${stroke}" stroke-width="1.4"${dash} marker-end="url(#${ai ? "arwai" : "arw"})"/>`,
+      `<path d="M ${p1[0]} ${p1[1]} L ${p2[0]} ${p2[1]}" fill="none" stroke="${stroke}" stroke-width="1.4"${dash}/>`,
     );
+    const head = arrowHead(p1, p2);
+    if (head) parts.push(`<path class="arrow" d="${head}" fill="none" stroke="${stroke}" stroke-width="1.4"/>`);
     const labelText = edgeLabel(e);
     if (labelText && lod !== "dot") {
       const size = monoPx(vp.zoom, 11);
@@ -130,6 +126,25 @@ export function renderBoardSvg(opts: RenderOptions): string {
 
   parts.push("</g></svg>");
   return parts.join("\n");
+}
+
+// The panel's arrow marker (viewBox 10, markerWidth 7, stroke 1.4: about 0.98
+// board units per marker unit), drawn as a plain path. resvg 2.6.2 panics on a
+// marker whose edge ends far outside the image, and the panic aborts the process.
+const ARROW_BACK = 8.8;
+const ARROW_SIDE = 3.9;
+
+/** The open arrowhead at p2 of the segment p1 → p2; null for a zero-length edge. */
+export function arrowHead(p1: Point, p2: Point): string | null {
+  const dx = p2[0] - p1[0];
+  const dy = p2[1] - p1[1];
+  const len = Math.hypot(dx, dy);
+  if (!(len > 0)) return null;
+  const ux = dx / len;
+  const uy = dy / len;
+  const bx = p2[0] - ux * ARROW_BACK;
+  const by = p2[1] - uy * ARROW_BACK;
+  return `M ${bx - uy * ARROW_SIDE} ${by + ux * ARROW_SIDE} L ${p2[0]} ${p2[1]} L ${bx + uy * ARROW_SIDE} ${by - ux * ARROW_SIDE}`;
 }
 
 export function fitViewport(c: Collections, width: number, height: number): Viewport {

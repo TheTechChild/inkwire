@@ -2,7 +2,7 @@
 // itself; the panel POSTs the PNG back. Fallback: server-side SVG render.
 import { randomBytes } from "node:crypto";
 import { renderBoardSvg } from "./render-svg.ts";
-import { rasterizeSvg } from "./rasterize.ts";
+import { rasterizeIsolated } from "./rasterize.ts";
 import type { BoardSession } from "./session.ts";
 import type { Viewport } from "../shared/types.ts";
 
@@ -77,6 +77,6 @@ export class Screenshots {
       fit,
       imagesDir: this.imagesDir,
     });
-    return { png: rasterizeSvg(svg, this.fontFiles), source: "server", viewport: vp };
+    return { png: await rasterizeIsolated(svg, this.fontFiles), source: "server", viewport: vp };
   }
 }

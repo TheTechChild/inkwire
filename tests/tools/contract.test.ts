@@ -585,7 +585,7 @@ describe("paths", () => {
       { target_id: "P2", check: "path_hop_unbound", level: "warn", message: "path P2 hop 2: no ref on the hop or on either node" },
     ]);
     expect(findings.filter((f: { target_id: string }) => f.target_id === "P3")).toEqual([
-      { target_id: "P3", check: "path_symbol_missing", level: "warn", message: "path P3 hop 1: symbol gone" },
+      { target_id: "P3", check: "path_symbol_missing", level: "warn", message: "path P3 hop 1: symbol not found in auth.ts:gone" },
     ]);
 
     const del = (await call("canvas_delete", { id: r })).json();
@@ -1184,6 +1184,33 @@ describe("project root (ADR 0003)", () => {
     sessions.delete(src.boardId);
     expect(await imp()).toMatchObject({ name: "dup import", name_check: "OK" });
     cwdNow = projectRoot;
+  });
+
+  it("boards_import stamps a path step that has a ref and no ref_hash, and keeps a stamp the file carries", async () => {
+    const src = (await call("boards_create", { name: "import stamp", project_root: projectRoot })).json().board_id;
+    const { e, layer } = await seed(src);
+    await call("paths_create", { layer_id: layer, title: "p", steps: [{ edge: e, ref: "auth.ts:verifyToken" }] });
+    const file = exportBoard(sessions.open(src), store, Date.now());
+    const stamped = file.layers![0]!.paths[0]!.steps[0]!.ref_hash;
+    expect(stamped).toBeTruthy();
+    const dir = tmp("inkwire-import-stamp-");
+    const imp = async (f: unknown) => {
+      writeFileSync(path.join(dir, "b.inkwire.json"), JSON.stringify(f));
+      return sessions.open((await call("boards_import", { path: path.join(dir, "b.inkwire.json") })).json().board_id);
+    };
+    // A hand-built file: no stamps. Each step with a found symbol is stamped; a missing symbol is not.
+    const bare = structuredClone(file);
+    const p0 = bare.layers![0]!.paths[0]!;
+    p0.steps = [{ edge: e, caption: "", ref: "auth.ts:verifyToken" }];
+    const second = { ...p0, id: "P9", steps: [{ edge: e, caption: "", ref: "auth.ts:notThere" }] };
+    bare.layers![0]!.paths.push(second);
+    const fresh = await imp(bare);
+    expect(fresh.layers[0]!.paths[0]!.steps[0]!.ref_hash).toBe(stamped);
+    expect(fresh.layers[0]!.paths[1]!.steps[0]!).not.toHaveProperty("ref_hash");
+    // An exported stamp stays, even when the code differs now: the hop stays flagged.
+    const stale = structuredClone(file);
+    stale.layers![0]!.paths[0]!.steps[0]!.ref_hash = "000000000000";
+    expect((await imp(stale)).layers[0]!.paths[0]!.steps[0]!.ref_hash).toBe("000000000000");
   });
 
   it("boards_clone naming: default · basename, copy for the same root, then the lowest free (N)", async () => {
