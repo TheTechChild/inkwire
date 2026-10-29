@@ -44,8 +44,8 @@ export interface App {
   panel: { open: boolean; width: number };
   /** Notebook tab: read/edit mode. Persisted locally, inside the same inkwire.panel blob as `panel`. */
   notebook: { edit: boolean };
-  /** Tab strip: the tab order for this board, and whether drag-to-reorder is locked.
-   * The order is persisted per board, the lock once for every board. */
+  /** Tab strip: the tab order for this board (persisted per board), and whether the
+   * order is locked. Always locked at load; a held drag unlocks it for this page. */
   tabs: { order: Tab[]; locked: boolean };
   /** Transient: the T tool (or a fresh notebooks_create) wants the caret at the
    * end of the body textarea on the next render that finds one. Never persisted. */

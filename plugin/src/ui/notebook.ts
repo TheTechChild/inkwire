@@ -141,6 +141,8 @@ export function renderNotebook(app: App): void {
 function renderTabs(app: App, state: CanvasState): void {
   const list = el("nb-tablist");
   list.replaceChildren();
+  // The row of notebooks shows only when there is a notebook to switch to.
+  el("nb-tabs").hidden = state.notebooks.length === 0;
   for (const nb of state.notebooks) {
     const btn = document.createElement("button");
     btn.className = nb.id === state.active_notebook ? "nb-tab on" : "nb-tab";
@@ -155,7 +157,7 @@ function renderTabs(app: App, state: CanvasState): void {
 
 function renderHead(active: Notebook | null): void {
   el("nb-id").textContent = active?.id ?? "";
-  el("nb-by").textContent = active?.author ?? "";
+  el("nb-by").textContent = active ? `by ${active.author === "ai" ? "claude" : "you"}` : "";
   const title = el<HTMLInputElement>("nb-title");
   title.value = active?.title ?? "";
   title.disabled = !active;

@@ -576,14 +576,14 @@ plugin/src/ui/canvas.ts:628  renderWorld
 plugin/src/ui/canvas.ts:565  hitNode
 plugin/src/ui/canvas.ts:619  deleteSelection
 plugin/src/ui/panel.ts:205   setupPanel
-plugin/src/ui/panel.ts:492   renderPanel
-plugin/src/ui/panel.ts:520   renderInspector
-plugin/src/ui/panel.ts:788   staleStrip
-plugin/src/ui/panel.ts:1086  renderFooter
-plugin/src/ui/panel.ts:767   renderAsideStrip
-plugin/src/ui/panel.ts:813   renderLayers
-plugin/src/ui/panel.ts:657   renderHistory
-plugin/src/ui/panel.ts:110   loadPanelPrefs
+plugin/src/ui/panel.ts:543   renderPanel
+plugin/src/ui/panel.ts:571   renderInspector
+plugin/src/ui/panel.ts:839   staleStrip
+plugin/src/ui/panel.ts:1137  renderFooter
+plugin/src/ui/panel.ts:818   renderAsideStrip
+plugin/src/ui/panel.ts:864   renderLayers
+plugin/src/ui/panel.ts:708   renderHistory
+plugin/src/ui/panel.ts:111   loadPanelPrefs
 ```
 
 The aside strip (`renderAsideStrip`) shows the stale-build notice (`staleStrip`, with Restart:
@@ -593,7 +593,7 @@ The board picker (`showBoardPicker`) shows each board's `project_root` (or `root
 Author from `GET /api/boards`. The panel treats `author`, `readers`, `released_from`, `daemon` and
 the picker's `author` as optional: a new bundle can load from an older running daemon.
 
-Icons are SVG in `plugin/src/ui/icons.ts` (`ICONS`, `icon(name)`; `hydrateIcons` fills `<span data-icon>` slots in `index.html`). Every icon has the same 24×24 frame and 2px line; `--icon-size` in `styles.css` sets one size per context (14 header, 12 panel, 10 chip). Do not use a font glyph as an icon: each glyph draws at its own size, and `tests/ui/icons.test.ts` fails on one. Styles are in `plugin/src/ui/styles.css`; `plugin/src/ui/index.html` is the shell. A browser cannot
+Icons are SVG in `plugin/src/ui/icons.ts` (`ICONS`, `icon(name)`; `hydrateIcons` fills `<span data-icon>` slots in `index.html`). Every icon has the same 24×24 frame and 2px line; `--icon-size` in `styles.css` sets one size per context (14 header, 12 panel, 10 chip). Do not use a font glyph as an icon: each glyph draws at its own size, and `tests/ui/icons.test.ts` fails on one. Panel text uses only the type scale in `styles.css` (`--text-xs` 11 to `--text-xl` 18); the canvas node and edge text keeps its own zoom floors. Styles are in `plugin/src/ui/styles.css`; `plugin/src/ui/index.html` is the shell. A browser cannot
 run `.ts`, so the daemon bundles `plugin/src/ui/main.ts` with esbuild in memory
 (`createUiBundle`, no `dist/`), keeps `index.html` and `styles.css` with it, and serves `/`
 (`index.html`), `/main.js`, `/main.js.map` and `/styles.css` from memory only. The daemon entry
@@ -934,7 +934,7 @@ plugin/src/server/layers.ts:58    updateLayer
 plugin/src/server/layers.ts:82    deleteLayer
 plugin/src/server/session.ts:246  updateLayers
 plugin/src/server/session.ts:257  setFocus
-plugin/src/ui/panel.ts:813        renderLayers
+plugin/src/ui/panel.ts:864        renderLayers
 ```
 
 Beware: layer members are never pruned when a node is deleted; `liveMembers` filters at read time.
@@ -985,7 +985,7 @@ plugin/src/server/drafts.ts:42    updateDraft
 plugin/src/server/drafts.ts:101   markElement
 plugin/src/server/session.ts:270  updateDrafts
 plugin/src/server/session.ts:278  setActiveDraft
-plugin/src/ui/panel.ts:941        renderDrafts
+plugin/src/ui/panel.ts:992        renderDrafts
 ```
 
 Beware: `active_draft` is never persisted. The error hue is shared between draft roles and lint. Draft
@@ -1011,7 +1011,7 @@ plugin/src/server/notebooks.ts:112  migrateNotes
 plugin/src/server/session.ts:287    updateNotebooks
 plugin/src/ui/notebook.ts:42        setupNotebook
 plugin/src/ui/notebook.ts:109       renderNotebook
-plugin/src/ui/notebook.ts:303       buildChip
+plugin/src/ui/notebook.ts:305       buildChip
 ```
 
 Beware: prose is not a board element. A legacy `note` node is a lint error until `migrateNotes`
