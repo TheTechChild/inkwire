@@ -5,7 +5,7 @@ import type { Corner } from "../core/geometry.ts";
 import type { Box, CanvasState, Layer, NodeKind, Point } from "../shared/types.ts";
 
 export type Tool = "select" | "pen" | "box" | "arrow" | "text" | "erase";
-export type Tab = "layers" | "drafts" | "session" | "history" | "state" | "tools";
+export type Tab = "layers" | "drafts" | "session" | "history" | "state" | "tools" | "notebook";
 export type Scope = "all" | "human" | "ai";
 
 export interface Selection {
@@ -42,9 +42,11 @@ export interface App {
   drag: Drag | null;
   /** Side panel: shown or collapsed, and its width in px. Persisted locally. */
   panel: { open: boolean; width: number };
-  /** Notebook pane: shown or collapsed, its width in px, and read/edit mode.
-   * Persisted locally, inside the same inkwire.panel blob as `panel`. */
-  notebook: { open: boolean; width: number; edit: boolean };
+  /** Notebook tab: read/edit mode. Persisted locally, inside the same inkwire.panel blob as `panel`. */
+  notebook: { edit: boolean };
+  /** Tab strip: the tab order for this board, and whether drag-to-reorder is locked.
+   * The order is persisted per board, the lock once for every board. */
+  tabs: { order: Tab[]; locked: boolean };
   /** Transient: the T tool (or a fresh notebooks_create) wants the caret at the
    * end of the body textarea on the next render that finds one. Never persisted. */
   nbCaretToEnd: boolean;
@@ -94,6 +96,11 @@ export function isServerMessage(raw: unknown): raw is ServerMessage {
 
 export function clampZoom(z: number): number {
   return Math.min(2.4, Math.max(0.35, z));
+}
+
+/** True when the person can see the notebook: the side panel is open on the Notebook tab. */
+export function notebookOpen(app: App): boolean {
+  return app.panel.open && app.tab === "notebook";
 }
 
 /** The layer the server says is focused, or null. Focus is shared across panels. */

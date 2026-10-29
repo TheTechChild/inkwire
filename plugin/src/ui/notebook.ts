@@ -1,4 +1,4 @@
-// Notebook pane (handoff "Notebooks"): tab strip, head, read/edit body, foot.
+// Notebook tab of the side panel (handoff "Notebooks"): notebook strip, head, read/edit body, foot.
 // Markdown lives on the server (Notebook.body); this module only parses it for
 // display (core/notebooks.js parseNotebook) and resolves [[id]] refs to chips
 // against the live push state — refs are never rewritten by anything here.
@@ -6,9 +6,10 @@ import { markCounts } from "../core/drafts.ts";
 import { nextNotebookId, parseNotebook, toggleTaskLine } from "../core/notebooks.ts";
 import { abortHold, beginHold, clearNbHover, holdFired, nbHoverRef, roleHue, setNbHover, startPeek } from "./canvas.ts";
 import type { App } from "./app.ts";
-import { el, focusLayer } from "./app.ts";
-import { bindResizer, clampNbWidth, savePanelPrefs, toast } from "./panel.ts";
+import { el, focusLayer, notebookOpen } from "./app.ts";
+import { savePanelPrefs, showNotebook, toast } from "./panel.ts";
 import { DRAFT_ROLES } from "../shared/types.ts";
+import { icon } from "./icons.ts";
 import type { CanvasState, Draft, Notebook } from "../shared/types.ts";
 
 // Tracks the human's own last-sent edit, so a server push while typing can be
@@ -39,20 +40,10 @@ function sendNbBody(app: App, id: string, body: string): void {
 }
 
 export function setupNotebook(app: App): void {
-  el("btn-notebook").addEventListener("click", () => {
-    app.notebook.open = !app.notebook.open;
-    savePanelPrefs(app);
-    app.render();
-  });
-  el("nb-rail").addEventListener("click", () => {
-    app.notebook.open = true;
-    savePanelPrefs(app);
-    app.render();
-  });
   el("btn-nb-new").addEventListener("click", () => {
     const id = app.push ? nextNotebookId(app.push.state.notebooks) : "N1";
     app.send({ type: "notebooks_create" });
-    app.notebook.open = true;
+    showNotebook(app, true);
     app.notebook.edit = true;
     savePanelPrefs(app);
     toast(`notebooks_create · ${id} · title it, then write`);
@@ -92,16 +83,6 @@ export function setupNotebook(app: App): void {
     savePanelPrefs(app);
     app.render();
   });
-  bindResizer(
-    el("nb-resizer"),
-    () => app.notebook.width,
-    (w) => (app.notebook.width = w),
-    clampNbWidth,
-    // Just the CSS var while dragging — a full renderNotebook would rebuild
-    // every chip and block on each pointermove tick, same idea as applyPanel.
-    () => applyNotebookWidth(app),
-    () => savePanelPrefs(app),
-  );
   // A node/edge chip's mouseleave can't be trusted to clear the hover — the
   // mouseenter that set it just rebuilt every chip (see buildChip). Whatever
   // is actually under the pointer wins instead, checked on real movement.
@@ -117,17 +98,9 @@ export function setupNotebook(app: App): void {
   renderNotebook(app);
 }
 
-function applyNotebookWidth(app: App): void {
-  // --nb-col is read on #body's grid-template-columns (styles.css), not on
-  // #notebook — #notebook is a CHILD of #body, so a property inherits
-  // downward and setting it here would never reach the ancestor that reads
-  // it. Same target applyPanel uses for --panel-w (panel.ts).
-  el("body").style.setProperty("--nb-col", app.notebook.open ? `${app.notebook.width}px` : "28px");
-}
-
 function openNotebook(app: App, id: string): void {
   app.send({ type: "notebooks_open", notebook_id: id });
-  app.notebook.open = true;
+  showNotebook(app, true);
   app.notebook.edit = false;
   savePanelPrefs(app);
   app.render();
@@ -136,17 +109,9 @@ function openNotebook(app: App, id: string): void {
 export function renderNotebook(app: App): void {
   const state = app.push?.state;
   if (!state) return;
-  const pane = el("nb-pane");
-  const rail = el("nb-rail");
+  const pane = el("pane-notebook");
   const active = state.notebooks.find((n) => n.id === state.active_notebook) ?? null;
-
-  applyNotebookWidth(app);
-  pane.hidden = !app.notebook.open;
-  rail.hidden = app.notebook.open;
-  if (!app.notebook.open) {
-    el("nb-rail-title").textContent = active ? `${active.id} · ${active.title || "untitled"}` : "notebook";
-    return;
-  }
+  if (!notebookOpen(app)) return;
 
   // Caret guard (the drafts flavour, panel.ts renderDrafts): never rebuild under
   // the user's caret in the title or the body — unless its notebook is already
@@ -244,7 +209,7 @@ function renderBlocks(app: App, state: CanvasState, nb: Notebook): void {
       const check = document.createElement("button");
       check.className = b.done ? "nb-check done" : "nb-check";
       check.title = "toggle — written back into the markdown";
-      check.textContent = b.done ? "✓" : "";
+      check.innerHTML = b.done ? icon("check") : "";
       check.addEventListener("click", () => {
         // Look up the body fresh, not the `nb` closed over at render time —
         // an append landing between render and click (the agent, or the

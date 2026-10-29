@@ -10,10 +10,11 @@ import { liveMembers, pathsAffected, tiers, traceT } from "../core/layers.ts";
 import type { PathBreak } from "../core/layers.ts";
 import { edgeLabel, lodFor, monoPx, quantizeZoom } from "../core/lod.ts";
 import type { App, Tool } from "./app.ts";
-import { KIND_META, clampZoom, el, focusLayer, focusedLayer } from "./app.ts";
+import { KIND_META, clampZoom, el, focusLayer, focusedLayer, notebookOpen } from "./app.ts";
 import { DRAFT_ROLES } from "../shared/types.ts";
 import type { Box, CanvasState, Draft, DraftRole, EdgeEl, Layer, LayoutMap, Path, PathStep, Point, Trace } from "../shared/types.ts";
-import { savePanelPrefs, toast } from "./panel.ts";
+import { savePanelPrefs, showNotebook, toast } from "./panel.ts";
+import { icon } from "./icons.ts";
 
 /** Role → its hue token (handoff "Drafts" § "Design tokens"), for the JS-computed
  * colors that CSS attribute selectors can't reach (a chip count or legend item that
@@ -113,7 +114,7 @@ export function setupCanvas(app: App): void {
     if (meta && k === "e") {
       e.preventDefault();
       app.notebook.edit = !app.notebook.edit;
-      app.notebook.open = true;
+      showNotebook(app, true);
       savePanelPrefs(app);
       app.render();
       return;
@@ -139,8 +140,7 @@ export function setupCanvas(app: App): void {
     }
     // n is free — not in the tool map above.
     if (!meta && k === "n") {
-      app.notebook.open = !app.notebook.open;
-      savePanelPrefs(app);
+      showNotebook(app, !notebookOpen(app));
       app.render();
     }
     if (e.key === "Escape") {
@@ -254,7 +254,7 @@ export function setupCanvas(app: App): void {
           } else {
             app.send({ type: "notebooks_create", body: prefix });
           }
-          app.notebook.open = true;
+          showNotebook(app, true);
           app.notebook.edit = true;
           app.nbCaretToEnd = true;
           savePanelPrefs(app);
@@ -456,7 +456,7 @@ function renderMenu(app: App): void {
     row.dataset.role = role;
     row.innerHTML = `<i class="line-sample" data-draft="${role}"></i><span class="name"></span><span class="check"></span>`;
     (row.children[1] as HTMLElement).textContent = role;
-    (row.children[2] as HTMLElement).textContent = current === role ? "✓" : "";
+    (row.children[2] as HTMLElement).innerHTML = current === role ? icon("check") : "";
     row.addEventListener("click", () => markVia(app, m.id, role));
     menu.appendChild(row);
   }
@@ -1144,7 +1144,12 @@ export function renderTrace(app: App): void {
   if (!sc || info.peek) return;
   const atEnd = info.t >= info.nGood;
   const play = sc.querySelector<HTMLElement>(".play")!;
-  play.textContent = info.running ? "❚❚" : atEnd ? "↺" : "▸";
+  const state = info.running ? "pause" : atEnd ? "replay" : "play";
+  // Set only on a change: the walk renders each frame, and new markup each time would restart hover.
+  if (play.dataset.icon !== state) {
+    play.dataset.icon = state;
+    play.innerHTML = icon(state);
+  }
   play.title = info.running ? "pause" : atEnd ? "play again" : "play";
   const k = Math.floor(info.t);
   const last = info.nodeIds.length - 1; // the last playable node: below n on a broken path
