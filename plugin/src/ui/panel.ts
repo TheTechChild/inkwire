@@ -11,14 +11,15 @@ import { clientLabel, renderSession, stripView } from "./session.ts";
 import type { DaemonPush } from "../shared/protocol.ts";
 import { importNeedsRoot } from "../shared/import-root.ts";
 import { icon } from "./icons.ts";
+import type { IconName } from "./icons.ts";
 
-const TOOLS: [Tool, string, string][] = [
-  ["select", "select", "V"],
-  ["pen", "pen", "P"],
-  ["box", "node", "B"],
-  ["arrow", "edge", "A"],
-  ["text", "text", "T"],
-  ["erase", "erase", "E"],
+const TOOLS: [Tool, string, string, IconName][] = [
+  ["select", "select", "V", "select"],
+  ["pen", "pen", "P", "pen"],
+  ["box", "node", "B", "node"],
+  ["arrow", "edge", "A", "edge"],
+  ["text", "text", "T", "text"],
+  ["erase", "erase", "E", "erase"],
 ];
 
 const TABS: [Tab, string][] = [
@@ -105,31 +106,30 @@ const clampPanelWidth = (w: number): number => Math.min(720, Math.max(260, Math.
 // The tab order of each board, keyed by board id: each board needs other tabs first.
 const TAB_ORDER_KEY = "inkwire.tabs";
 
-/** Side-panel prefs (plus the rim setting, the notebook's read/edit mode and the tab lock)
+/** Side-panel prefs (plus the rim setting and the notebook's read/edit mode)
  * from localStorage; defaults when absent or unreadable. All live in this same blob. */
-export function loadPanelPrefs(): App["panel"] & { rim: boolean; dim: boolean; notebook: App["notebook"]; tabsLocked: boolean } {
+export function loadPanelPrefs(): App["panel"] & { rim: boolean; dim: boolean; notebook: App["notebook"] } {
   try {
     const raw = localStorage.getItem(PANEL_KEY);
     if (raw) {
-      const p = JSON.parse(raw) as { open?: unknown; width?: unknown; rim?: unknown; dim?: unknown; notebook?: { edit?: unknown }; tabsLocked?: unknown };
+      const p = JSON.parse(raw) as { open?: unknown; width?: unknown; rim?: unknown; dim?: unknown; notebook?: { edit?: unknown } };
       return {
         open: p.open !== false,
         width: clampPanelWidth(Number(p.width) || PANEL_DEFAULT_WIDTH),
         rim: p.rim !== false,
         dim: p.dim !== false,
         notebook: { edit: p.notebook?.edit === true },
-        tabsLocked: p.tabsLocked !== false,
       };
     }
   } catch {
     // storage unavailable — fall through to defaults
   }
-  return { open: true, width: PANEL_DEFAULT_WIDTH, rim: true, dim: true, notebook: { edit: false }, tabsLocked: true };
+  return { open: true, width: PANEL_DEFAULT_WIDTH, rim: true, dim: true, notebook: { edit: false } };
 }
 
 export function savePanelPrefs(app: App): void {
   try {
-    localStorage.setItem(PANEL_KEY, JSON.stringify({ ...app.panel, rim: app.rim, dim: app.dim, notebook: app.notebook, tabsLocked: app.tabs.locked }));
+    localStorage.setItem(PANEL_KEY, JSON.stringify({ ...app.panel, rim: app.rim, dim: app.dim, notebook: app.notebook }));
   } catch {
     // storage unavailable — prefs live for this page only
   }
@@ -218,11 +218,11 @@ export function setupPanel(app: App): void {
 
   // Header: tool palette.
   const toolSeg = el("toolseg");
-  for (const [id, label, key] of TOOLS) {
+  for (const [id, label, key, glyph] of TOOLS) {
     const opt = document.createElement("label");
     opt.className = "seg-opt";
     opt.title = `${label} (${key})`;
-    opt.innerHTML = `<input type="radio" name="tool" value="${id}"><span>${label}</span><span class="keycap">${key}</span>`;
+    opt.innerHTML = `<input type="radio" name="tool" value="${id}">${icon(glyph)}<span>${label}</span><span class="keycap">${key}</span>`;
     opt.querySelector("input")!.addEventListener("change", () => {
       app.tool = id;
       app.pendingFrom = null;
@@ -287,7 +287,7 @@ export function setupPanel(app: App): void {
   for (const view of ["scoped", "board"] as const) {
     const opt = document.createElement("label");
     opt.className = "seg-opt";
-    opt.style.cssText = "flex:1;justify-content:center;padding:6px 4px;font-family:var(--font-mono);font-size:10.5px";
+    opt.style.cssText = "flex:1;justify-content:center;padding:6px 4px;font-family:var(--font-mono);font-size: var(--text-xs)";
     opt.innerHTML = `<input type="radio" name="stateview"><span>${view}</span>`;
     opt.querySelector("input")!.addEventListener("change", () => {
       app.stateView = view;
@@ -364,80 +364,131 @@ export function toast(text: string, isError = false): void {
   }, 6000);
 }
 
-/** Build the tab strip in this board's order, after the close arrow and the lock. While the
- * lock is open, a tab drags to a new place; the order is saved for this board. */
+// A press held this long, then moved, unlocks the tab order and drags the tab.
+const HOLD_MS = 400;
+// A pointer must move this far before a press counts as a drag.
+const DRAG_PX = 4;
+
+/** Build the tab strip in this board's order, after the edge button. The edge button is
+ * built once, so its arrow-to-lock change can animate. */
 function renderTabStrip(app: App): void {
   const tabs = el("tabs");
-  tabs.replaceChildren();
-  tabs.classList.toggle("unlocked", !app.tabs.locked);
+  if (!tabs.querySelector(".panel-close")) tabs.appendChild(edgeButton(app));
+  for (const o of tabs.querySelectorAll(".seg-opt")) o.remove();
   const labels = new Map(TABS);
-  const close = document.createElement("button");
-  close.className = "panel-close";
-  close.title = "hide the side panel";
-  close.innerHTML = icon("chevron-right");
-  close.addEventListener("click", () => setPanelOpen(app, false));
-  tabs.appendChild(close);
-  tabs.appendChild(lockButton(app));
-  let dragged: Tab | null = null;
   for (const id of app.tabs.order) {
     const opt = document.createElement("label");
     opt.className = "seg-opt";
     opt.dataset.tab = id;
-    opt.draggable = !app.tabs.locked;
+    opt.title = `${labels.get(id)?.toLowerCase() ?? id} — hold, then drag to move the tab`;
     opt.innerHTML = `<input type="radio" name="tab" value="${id}"${id === app.tab ? " checked" : ""}><span></span>`;
     opt.querySelector("span")!.textContent = labels.get(id) ?? id;
     opt.querySelector("input")!.addEventListener("change", () => switchTab(app, id));
-    opt.addEventListener("dragstart", (e) => {
-      dragged = id;
-      e.dataTransfer?.setData("text/plain", id);
-      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-      opt.classList.add("dragging");
-    });
-    opt.addEventListener("dragend", () => {
-      dragged = null;
-      opt.classList.remove("dragging");
-      for (const o of tabs.querySelectorAll(".drop-before, .drop-after")) o.classList.remove("drop-before", "drop-after");
-    });
-    opt.addEventListener("dragover", (e) => {
-      if (!dragged || dragged === id) return;
-      e.preventDefault();
-      const after = dropAfter(opt, e.clientX);
-      opt.classList.toggle("drop-before", !after);
-      opt.classList.toggle("drop-after", after);
-    });
-    opt.addEventListener("dragleave", () => opt.classList.remove("drop-before", "drop-after"));
-    opt.addEventListener("drop", (e) => {
-      e.preventDefault();
-      if (!dragged || dragged === id) return;
-      const order = app.tabs.order.filter((t) => t !== dragged);
-      order.splice(order.indexOf(id) + (dropAfter(opt, e.clientX) ? 1 : 0), 0, dragged);
-      app.tabs.order = order;
-      saveTabOrder(app);
-      renderTabStrip(app);
-    });
+    bindTabDrag(app, opt, id);
     tabs.appendChild(opt);
   }
+  setReorder(app, !app.tabs.locked);
 }
 
-/** The lock of the tab order: closed, the tabs stay where they are; open, a tab drags to a new place. */
-function lockButton(app: App): HTMLButtonElement {
-  const lock = document.createElement("button");
-  lock.className = "tab-lock";
-  lock.title = app.tabs.locked ? "tab order is locked — click to drag tabs into a new order" : "drag a tab to move it — click to lock the order";
-  lock.setAttribute("aria-pressed", String(app.tabs.locked));
-  lock.innerHTML = icon(app.tabs.locked ? "lock" : "unlock");
-  lock.addEventListener("click", () => {
-    app.tabs.locked = !app.tabs.locked;
-    savePanelPrefs(app);
-    renderTabStrip(app);
+/** The button at the start of the tab strip. Locked, it is the arrow that closes the panel;
+ * while the tabs can move, it is a green open lock, and a click locks the order. */
+function edgeButton(app: App): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.className = "panel-close";
+  btn.innerHTML = `<span class="morph arrow">${icon("chevron-right")}</span><span class="morph lock">${icon("unlock")}</span>`;
+  btn.addEventListener("click", () => {
+    if (app.tabs.locked) setPanelOpen(app, false);
+    else setReorder(app, false);
   });
-  return lock;
+  return btn;
 }
 
-/** True when a drop at clientX lands after the tab (on its right half). */
-function dropAfter(opt: HTMLElement, clientX: number): boolean {
-  const r = opt.getBoundingClientRect();
-  return clientX > r.left + r.width / 2;
+/** Turn tab reordering on or off: the edge button changes between arrow and lock (CSS animates it). */
+function setReorder(app: App, on: boolean): void {
+  app.tabs.locked = !on;
+  const tabs = el("tabs");
+  tabs.classList.toggle("unlocked", on);
+  const btn = tabs.querySelector<HTMLElement>(".panel-close");
+  if (btn) btn.title = on ? "tabs can move — click to lock the order" : "hide the side panel";
+}
+
+/** Drag one tab with the pointer. Locked, a press must be held for HOLD_MS before it moves:
+ * that unlocks the order. Unlocked, a press that moves drags at once. A press that does not
+ * move stays a click and selects the tab. */
+function bindTabDrag(app: App, opt: HTMLElement, id: Tab): void {
+  let dragged = false; // the last press was a drag: its click must not select the tab
+  opt.addEventListener("click", (e) => {
+    if (!dragged) return;
+    dragged = false;
+    e.preventDefault();
+  });
+  opt.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    const tabs = el("tabs");
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startAt = e.timeStamp;
+    let dragging = false;
+    // The held press shows that it is ready to move.
+    const holdTimer = app.tabs.locked ? window.setTimeout(() => opt.classList.add("held"), HOLD_MS) : null;
+    const move = (ev: PointerEvent) => {
+      if (!dragging) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_PX) return;
+        if (app.tabs.locked) {
+          if (ev.timeStamp - startAt < HOLD_MS) return end(); // a quick move is not a drag
+          setReorder(app, true);
+        }
+        dragging = true;
+        opt.setPointerCapture(ev.pointerId);
+        opt.classList.add("dragging");
+      }
+      opt.style.transform = `translateX(${ev.clientX - startX}px)`;
+      markDrop(tabs, opt, dropIndex(tabs, opt, ev.clientX));
+    };
+    const up = (ev: PointerEvent) => {
+      if (dragging) {
+        dragged = true;
+        const order = app.tabs.order.filter((t) => t !== id);
+        order.splice(dropIndex(tabs, opt, ev.clientX), 0, id);
+        app.tabs.order = order;
+        saveTabOrder(app);
+        renderTabStrip(app);
+      }
+      end();
+    };
+    const end = () => {
+      if (holdTimer !== null) window.clearTimeout(holdTimer);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", end);
+      opt.classList.remove("held", "dragging");
+      opt.style.transform = "";
+      markDrop(tabs, opt, null);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", end);
+  });
+}
+
+/** Where the dragged tab lands: the number of other tabs whose middle is left of clientX. */
+function dropIndex(tabs: HTMLElement, dragged: HTMLElement, clientX: number): number {
+  let i = 0;
+  for (const o of tabs.querySelectorAll<HTMLElement>(".seg-opt")) {
+    if (o === dragged) continue;
+    const r = o.getBoundingClientRect();
+    if (clientX > r.left + r.width / 2) i++;
+  }
+  return i;
+}
+
+/** Show the drop line before the tab at index (after the last tab when index is the count); null clears it. */
+function markDrop(tabs: HTMLElement, dragged: HTMLElement, index: number | null): void {
+  const others = [...tabs.querySelectorAll<HTMLElement>(".seg-opt")].filter((o) => o !== dragged);
+  others.forEach((o, i) => {
+    o.classList.toggle("drop-before", index === i);
+    o.classList.toggle("drop-after", index === others.length && i === others.length - 1);
+  });
 }
 
 // The tab the person was on before the Notebook tab, for the N key and the notebook chip.
@@ -671,7 +722,7 @@ function renderHistory(app: App): void {
   for (const [id, label] of SCOPES) {
     const opt = document.createElement("label");
     opt.className = "seg-opt";
-    opt.style.cssText = "flex:1;justify-content:center;padding:6px 4px;font-family:var(--font-mono);font-size:10.5px";
+    opt.style.cssText = "flex:1;justify-content:center;padding:6px 4px;font-family:var(--font-mono);font-size: var(--text-xs)";
     opt.innerHTML = `<input type="radio" name="scope"><span>${label}</span>`;
     const input = opt.querySelector("input")!;
     input.checked = app.scope === id;

@@ -17,7 +17,7 @@ if (!boardId) {
 
 function boot(id: string): void {
   hydrateIcons(document);
-  const { rim, dim, notebook, tabsLocked, ...panel } = loadPanelPrefs();
+  const { rim, dim, notebook, ...panel } = loadPanelPrefs();
   const app: App = {
     boardId: id,
     push: null,
@@ -32,7 +32,7 @@ function boot(id: string): void {
     drag: null,
     panel,
     notebook,
-    tabs: { order: loadTabOrder(id), locked: tabsLocked },
+    tabs: { order: loadTabOrder(id), locked: true },
     nbCaretToEnd: false,
     rim,
     dim,
@@ -101,7 +101,7 @@ async function showBoardPicker(): Promise<void> {
       a.style.cssText = "display:block;padding:10px 0;border-bottom:1px solid var(--color-divider)";
       a.textContent = `${b.name} — ${b.nodes} nodes · ${b.edges} edges (${b.id})`;
       const meta = document.createElement("div");
-      meta.style.cssText = "font-family:var(--font-mono);font-size:11px;color:var(--color-neutral-600);margin-top:4px";
+      meta.style.cssText = "font-family:var(--font-mono);font-size: var(--text-sm);color:var(--color-neutral-600);margin-top:4px";
       const root = b.root === "unset" ? "root: unset" : (b.project_root ?? "");
       const author = b.author === undefined ? "" : b.author ? `author ${clientLabel(b.author)}` : "no author";
       meta.textContent = [root, author].filter(Boolean).join(" · ");
