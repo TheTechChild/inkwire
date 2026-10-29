@@ -7,9 +7,10 @@ import { markCounts } from "../core/drafts.ts";
 import type { AuthorPush } from "../shared/protocol.ts";
 import type { ThreadEntry } from "../shared/types.ts";
 import type { App } from "./app.ts";
-import { el, focusedLayer } from "./app.ts";
+import { el, focusedLayer, notebookOpen } from "./app.ts";
 import { traceInfo } from "./canvas.ts";
-import { fmtTime, savePanelPrefs, toast } from "./panel.ts";
+import { fmtTime, savePanelPrefs, showNotebook, toast } from "./panel.ts";
+import { icon } from "./icons.ts";
 
 type Agent = "off" | "waiting" | "working";
 
@@ -147,7 +148,7 @@ function ctxChips(app: App): Chip[] {
   }
   // The open notebook rides along as an id, like the active draft — never its body.
   const activeNotebook = state.active_notebook ? state.notebooks.find((n) => n.id === state.active_notebook) : undefined;
-  if (activeNotebook && app.notebook.open && !app.dropped.notebook) {
+  if (activeNotebook && notebookOpen(app) && !app.dropped.notebook) {
     out.push({ key: "notebook", id: activeNotebook.id, label: `${activeNotebook.id} · ${activeNotebook.title || "untitled"}`, title: "the open notebook — sent as an id" });
   }
   out.push({ key: "rev", id: null, label: `rev ${state.graph.revision}`, title: "graph.revision the message is written against" });
@@ -266,7 +267,7 @@ export function renderSession(app: App): void {
     app.push?.state.notebooks
       .map((n) => `${n.id}:${n.title}:${(n.body.match(/- \[( |x)\]/g) ?? []).length}:${(n.body.match(/- \[x\]/g) ?? []).length}`)
       .join(",") ?? "";
-  const key = `${entries.length}:${entries.at(-1)?.id ?? ""}:${s?.highlight?.msg_id ?? ""}:${s?.trace?.path_id ?? ""}:${app.push?.state.layers.flatMap((l) => l.paths.map((p) => p.id)).join(",") ?? ""}:${app.push?.state.active_draft ?? ""}:${draftsFingerprint}:${agent}:${JSON.stringify(app.open)}:${app.push?.state.active_notebook ?? ""}:${notebooksFingerprint}:${app.notebook.open}`;
+  const key = `${entries.length}:${entries.at(-1)?.id ?? ""}:${s?.highlight?.msg_id ?? ""}:${s?.trace?.path_id ?? ""}:${app.push?.state.layers.flatMap((l) => l.paths.map((p) => p.id)).join(",") ?? ""}:${app.push?.state.active_draft ?? ""}:${draftsFingerprint}:${agent}:${JSON.stringify(app.open)}:${app.push?.state.active_notebook ?? ""}:${notebooksFingerprint}:${notebookOpen(app)}`;
   if (key !== threadKey) {
     threadKey = key;
     thread.replaceChildren();
@@ -309,7 +310,7 @@ export function renderSession(app: App): void {
     chip.appendChild(label);
     if (c.key !== "rev") {
       const x = document.createElement("button");
-      x.textContent = "✕";
+      x.innerHTML = icon("close");
       x.title = "don't send this";
       x.addEventListener("click", () => {
         app.dropped[c.key as "focus" | "sel" | "trace" | "draft" | "notebook"] = true;
@@ -352,7 +353,7 @@ function fold(entries: ThreadEntry[]): ThreadEntry[][] {
 /** An author switch reads as a line of its own in the thread, never folded into the tool calls. */
 function authorRow(e: Extract<ThreadEntry, { type: "call" }>): HTMLElement {
   const div = card(e.id, "author-row");
-  div.innerHTML = `<span class="glyph">◇</span><span class="text"></span><span class="time"></span>`;
+  div.innerHTML = `<span class="glyph">${icon("diamond-outline")}</span><span class="text"></span><span class="time"></span>`;
   (div.children[1] as HTMLElement).textContent = e.text;
   (div.children[2] as HTMLElement).textContent = fmtTime(e.at);
   div.title = "the author of this board changed";
@@ -404,7 +405,7 @@ function messageCard(app: App, m: ThreadEntry): HTMLElement {
     const chip = document.createElement("button");
     chip.className = active ? "hl-chip on" : "hl-chip";
     chip.title = "show these elements on the canvas — esc clears";
-    chip.innerHTML = `<span class="diamond">◆</span><span class="label"></span><span class="count"></span>`;
+    chip.innerHTML = `<span class="diamond">${icon("diamond")}</span><span class="label"></span><span class="count"></span>`;
     (chip.children[1] as HTMLElement).textContent = hl.label;
     (chip.children[2] as HTMLElement).textContent = `${hl.nodes.length} nodes · ${hl.edges.length} edges`;
     chip.addEventListener("click", () => {
@@ -416,7 +417,7 @@ function messageCard(app: App, m: ThreadEntry): HTMLElement {
     if (hl.nodes.length > 0) {
       const toLayer = document.createElement("button");
       toLayer.className = "btn btn-ghost to-layer";
-      toLayer.textContent = "→ layer";
+      toLayer.innerHTML = `${icon("arrow-right")}<span>layer</span>`;
       toLayer.title = "keep this highlight as a layer";
       toLayer.addEventListener("click", () => {
         const letter = nextLetter(app.push?.state.layers ?? []);
@@ -437,7 +438,7 @@ function messageCard(app: App, m: ThreadEntry): HTMLElement {
     chip.className = active ? "path-chip on" : "path-chip";
     chip.title = path ? "play this path on the canvas — opens the scrubber" : "this path no longer exists";
     chip.disabled = !path;
-    chip.innerHTML = `<span class="glyph">▸</span><span class="ref"></span><span class="label"></span><span class="count"></span>`;
+    chip.innerHTML = `<span class="glyph">${icon("play")}</span><span class="ref"></span><span class="label"></span><span class="count"></span>`;
     (chip.children[1] as HTMLElement).textContent = `${layer?.letter ?? "?"} · ${path_id}`;
     (chip.children[2] as HTMLElement).textContent = path?.title ?? "deleted";
     (chip.children[3] as HTMLElement).textContent = path ? `${path.steps.length} hops` : "";
@@ -453,7 +454,7 @@ function messageCard(app: App, m: ThreadEntry): HTMLElement {
     chip.className = active ? "draft-msg-chip on" : "draft-msg-chip";
     chip.title = draft ? "show this draft on the canvas — esc clears" : "this draft no longer exists";
     chip.disabled = !draft;
-    chip.innerHTML = `<span class="glyph">▣</span><span class="ref"></span><span class="title"></span><span class="counts"><span class="removed"></span><span class="changed"></span><span class="added"></span></span>`;
+    chip.innerHTML = `<span class="glyph">${icon("draft")}</span><span class="ref"></span><span class="title"></span><span class="counts"><span class="removed"></span><span class="changed"></span><span class="added"></span></span>`;
     (chip.children[1] as HTMLElement).textContent = draftId;
     (chip.children[2] as HTMLElement).textContent = draft?.title ?? "deleted";
     const counts = chip.children[3]!;
@@ -470,12 +471,12 @@ function messageCard(app: App, m: ThreadEntry): HTMLElement {
   if (m.type === "claude" && m.notebook) {
     const nbId = m.notebook;
     const nb = app.push?.state.notebooks.find((n) => n.id === nbId);
-    const open = !!nb && app.push?.state.active_notebook === nbId && app.notebook.open;
+    const open = !!nb && app.push?.state.active_notebook === nbId && notebookOpen(app);
     const chip = document.createElement("button");
     chip.className = open ? "nb-msg-chip on" : "nb-msg-chip";
-    chip.title = nb ? (open ? "close the notebook pane" : `open ${nb.id} in the notebook pane`) : "this notebook no longer exists";
+    chip.title = nb ? (open ? "close the notebook tab" : `open ${nb.id} in the notebook tab`) : "this notebook no longer exists";
     chip.disabled = !nb;
-    chip.innerHTML = `<span class="glyph">▤</span><span class="ref"></span><span class="title"></span><span class="count"></span>`;
+    chip.innerHTML = `<span class="glyph">${icon("notebook")}</span><span class="ref"></span><span class="title"></span><span class="count"></span>`;
     (chip.children[1] as HTMLElement).textContent = nbId;
     (chip.children[2] as HTMLElement).textContent = nb?.title || "deleted";
     if (nb) {
@@ -486,10 +487,10 @@ function messageCard(app: App, m: ThreadEntry): HTMLElement {
     chip.addEventListener("click", () => {
       if (!nb) return;
       if (open) {
-        app.notebook.open = false;
+        showNotebook(app, false);
       } else {
         app.send({ type: "notebooks_open", notebook_id: nb.id });
-        app.notebook.open = true;
+        showNotebook(app, true);
         app.notebook.edit = false;
       }
       savePanelPrefs(app);
@@ -510,7 +511,7 @@ function callRow(app: App, calls: ThreadEntry[]): HTMLElement {
   btn.title = open ? "collapse" : "expand to see each call";
   const names = [...new Set(calls.map((c) => (c.type === "call" ? c.name : "")))].join(" · ");
   btn.innerHTML = `<span class="caret"></span><span class="count"></span><span class="names"></span>`;
-  (btn.children[0] as HTMLElement).textContent = open ? "▾" : "▸";
+  (btn.children[0] as HTMLElement).innerHTML = icon(open ? "chevron-down" : "chevron-right");
   (btn.children[1] as HTMLElement).textContent = `# ${calls.length} tools called`;
   (btn.children[2] as HTMLElement).textContent = names;
   btn.addEventListener("click", () => {

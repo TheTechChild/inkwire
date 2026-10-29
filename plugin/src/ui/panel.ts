@@ -1,8 +1,8 @@
-// Right panel (inspector + four tabs), header controls, and the footer.
+// Right panel (inspector + the tab strip and its panes), header controls, and the footer.
 import { captureBoard } from "./capture.ts";
 import { abortHold, beginHold, deleteSelection, holdFired, renderWalk, startPeek, togglePlay, traceInfo } from "./canvas.ts";
 import type { App, Scope, Tab, Tool } from "./app.ts";
-import { KIND_META, el, focusLayer, focusedLayer } from "./app.ts";
+import { KIND_META, el, focusLayer, focusedLayer, notebookOpen } from "./app.ts";
 import { liveMembers, scopeState } from "../core/layers.ts";
 import { markCounts } from "../core/drafts.ts";
 import { NODE_KINDS, EDGE_KINDS, DRAFT_ROLES } from "../shared/types.ts";
@@ -10,6 +10,7 @@ import type { DraftRole, NodeKind } from "../shared/types.ts";
 import { clientLabel, renderSession, stripView } from "./session.ts";
 import type { DaemonPush } from "../shared/protocol.ts";
 import { importNeedsRoot } from "../shared/import-root.ts";
+import { icon } from "./icons.ts";
 
 const TOOLS: [Tool, string, string][] = [
   ["select", "select", "V"],
@@ -27,7 +28,9 @@ const TABS: [Tab, string][] = [
   ["history", "HISTORY"],
   ["state", "STATE"],
   ["tools", "TOOLS"],
+  ["notebook", "NOTEBOOK"],
 ];
+const TAB_IDS = TABS.map(([id]) => id);
 
 const SCOPES: [Scope, string][] = [
   ["all", "ALL"],
@@ -99,43 +102,65 @@ const MCP_TOOLS: [string, string, string, (app: App) => void | null][] = [
 const PANEL_KEY = "inkwire.panel";
 const PANEL_DEFAULT_WIDTH = 372;
 const clampPanelWidth = (w: number): number => Math.min(720, Math.max(260, Math.round(w)));
-const NB_DEFAULT_WIDTH = 360;
-export const clampNbWidth = (w: number): number => Math.min(560, Math.max(260, Math.round(w)));
+// The tab order of each board, keyed by board id: each board needs other tabs first.
+const TAB_ORDER_KEY = "inkwire.tabs";
 
-/** Side-panel prefs (plus the rim setting and the notebook pane's own prefs) from
- * localStorage; defaults when absent or unreadable. The notebook substate lives
- * inside this same blob — not a second key. */
-export function loadPanelPrefs(): App["panel"] & { rim: boolean; dim: boolean; notebook: App["notebook"] } {
+/** Side-panel prefs (plus the rim setting, the notebook's read/edit mode and the tab lock)
+ * from localStorage; defaults when absent or unreadable. All live in this same blob. */
+export function loadPanelPrefs(): App["panel"] & { rim: boolean; dim: boolean; notebook: App["notebook"]; tabsLocked: boolean } {
   try {
     const raw = localStorage.getItem(PANEL_KEY);
     if (raw) {
-      const p = JSON.parse(raw) as { open?: unknown; width?: unknown; rim?: unknown; dim?: unknown; notebook?: { open?: unknown; width?: unknown; edit?: unknown } };
-      const nb = p.notebook ?? {};
+      const p = JSON.parse(raw) as { open?: unknown; width?: unknown; rim?: unknown; dim?: unknown; notebook?: { edit?: unknown }; tabsLocked?: unknown };
       return {
         open: p.open !== false,
         width: clampPanelWidth(Number(p.width) || PANEL_DEFAULT_WIDTH),
         rim: p.rim !== false,
         dim: p.dim !== false,
-        notebook: { open: nb.open === true, width: clampNbWidth(Number(nb.width) || NB_DEFAULT_WIDTH), edit: nb.edit === true },
+        notebook: { edit: p.notebook?.edit === true },
+        tabsLocked: p.tabsLocked !== false,
       };
     }
   } catch {
     // storage unavailable — fall through to defaults
   }
-  return { open: true, width: PANEL_DEFAULT_WIDTH, rim: true, dim: true, notebook: { open: false, width: NB_DEFAULT_WIDTH, edit: false } };
+  return { open: true, width: PANEL_DEFAULT_WIDTH, rim: true, dim: true, notebook: { edit: false }, tabsLocked: true };
 }
 
 export function savePanelPrefs(app: App): void {
   try {
-    localStorage.setItem(PANEL_KEY, JSON.stringify({ ...app.panel, rim: app.rim, dim: app.dim, notebook: app.notebook }));
+    localStorage.setItem(PANEL_KEY, JSON.stringify({ ...app.panel, rim: app.rim, dim: app.dim, notebook: app.notebook, tabsLocked: app.tabs.locked }));
   } catch {
     // storage unavailable — prefs live for this page only
   }
 }
 
-/** One drag-to-resize handle for a left-edge, pointer-captured pane — shared by
- * the aside resizer and the notebook resizer (handoff "Notebooks"): same sign
- * (drag left grows the pane), same pointer-capture block, different width. */
+/** This board's tab order: the stored order, without ids that are no longer tabs,
+ * then any tab it does not name (a tab added after the order was saved) in TABS order. */
+export function loadTabOrder(boardId: string): Tab[] {
+  let stored: unknown[] = [];
+  try {
+    const all = JSON.parse(localStorage.getItem(TAB_ORDER_KEY) ?? "{}") as Record<string, unknown>;
+    if (Array.isArray(all[boardId])) stored = all[boardId];
+  } catch {
+    // storage unavailable or unreadable — the default order
+  }
+  const order = stored.filter((id, i): id is Tab => TAB_IDS.includes(id as Tab) && stored.indexOf(id) === i);
+  return [...order, ...TAB_IDS.filter((id) => !order.includes(id))];
+}
+
+function saveTabOrder(app: App): void {
+  try {
+    const all = JSON.parse(localStorage.getItem(TAB_ORDER_KEY) ?? "{}") as Record<string, unknown>;
+    all[app.boardId] = app.tabs.order;
+    localStorage.setItem(TAB_ORDER_KEY, JSON.stringify(all));
+  } catch {
+    // storage unavailable — the order lives for this page only
+  }
+}
+
+/** One drag-to-resize handle for a left-edge, pointer-captured pane (the aside):
+ * drag left grows the pane. */
 export function bindResizer(
   handle: HTMLElement,
   getWidth: () => number,
@@ -168,19 +193,20 @@ export function bindResizer(
 export function applyPanel(app: App): void {
   el("app").classList.toggle("panel-closed", !app.panel.open);
   el("body").style.setProperty("--panel-w", `${app.panel.width}px`);
-  const btn = el("btn-panel");
-  btn.textContent = app.panel.open ? "panel ▸" : "◂ panel";
-  btn.title = app.panel.open ? "hide the side panel" : "show the side panel";
+}
+
+function setPanelOpen(app: App, open: boolean): void {
+  app.panel.open = open;
+  savePanelPrefs(app);
+  applyPanel(app);
+  app.render();
 }
 
 export function setupPanel(app: App): void {
-  // Side panel: collapse toggle in the header, drag-to-resize on its left edge.
+  // Side panel: the arrow at the start of the tab strip closes it; a click anywhere
+  // on the closed rail opens it. Drag-to-resize on its left edge.
   applyPanel(app);
-  el("btn-panel").addEventListener("click", () => {
-    app.panel.open = !app.panel.open;
-    savePanelPrefs(app);
-    applyPanel(app);
-  });
+  el("aside-rail").addEventListener("click", () => setPanelOpen(app, true));
   bindResizer(
     el("aside-resizer"),
     () => app.panel.width,
@@ -214,16 +240,18 @@ export function setupPanel(app: App): void {
     });
   }
 
-  // Undo / redo — they act through history intents, scoped. The buttons are
-  // labels around a radio input, so one click reaches the label twice (once
-  // from the pointer, once re-dispatched from the input); act on the first only.
-  const onLabelClick = (id: string, fn: () => void) =>
-    el(id).addEventListener("click", (e) => {
-      if (e.target instanceof HTMLInputElement) return;
-      fn();
-    });
-  onLabelClick("btn-undo", () => app.send({ type: "history", action: "undo", scope: app.scope }));
-  onLabelClick("btn-redo", () => app.send({ type: "history", action: "redo", scope: app.scope }));
+  // The settings menu on the brand: undo / redo, export / import, theme.
+  setupAppMenu();
+
+  // Undo / redo — they act through history intents, scoped.
+  el("btn-undo").addEventListener("click", () => {
+    app.send({ type: "history", action: "undo", scope: app.scope });
+    closeAppMenu();
+  });
+  el("btn-redo").addEventListener("click", () => {
+    app.send({ type: "history", action: "redo", scope: app.scope });
+    closeAppMenu();
+  });
 
   el("btn-screenshot").addEventListener("click", () => void downloadScreenshot(app));
 
@@ -235,11 +263,13 @@ export function setupPanel(app: App): void {
     document.body.appendChild(a);
     a.click();
     a.remove();
+    closeAppMenu();
   });
   const importFile = el<HTMLInputElement>("import-file");
   el("btn-import").addEventListener("click", () => {
     importFile.value = "";
     importFile.click();
+    closeAppMenu();
   });
   importFile.addEventListener("change", () => void importBoardFile(importFile.files?.[0]));
   el("btn-infer").addEventListener("click", () => app.send({ type: "infer" }));
@@ -250,14 +280,7 @@ export function setupPanel(app: App): void {
   });
 
   // Tabs.
-  const tabs = el("tabs");
-  for (const [id, label] of TABS) {
-    const opt = document.createElement("label");
-    opt.className = "seg-opt";
-    opt.innerHTML = `<input type="radio" name="tab" value="${id}"${id === app.tab ? " checked" : ""}><span>${label}</span>`;
-    opt.querySelector("input")!.addEventListener("change", () => switchTab(app, id));
-    tabs.appendChild(opt);
-  }
+  renderTabStrip(app);
 
   // STATE tab: which payload to show while a layer is focused.
   const stateSeg = el("stateseg");
@@ -274,6 +297,29 @@ export function setupPanel(app: App): void {
   }
 
   renderToolsPane(app);
+}
+
+function setupAppMenu(): void {
+  const btn = el("btn-menu");
+  const menu = el("app-menu");
+  btn.addEventListener("click", () => (menu.hidden ? openAppMenu() : closeAppMenu()));
+  // Close on a click outside the menu and its button, or on Escape.
+  document.addEventListener("pointerdown", (e) => {
+    if (!menu.hidden && !el("btn-menu").parentElement!.contains(e.target as Node)) closeAppMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !menu.hidden) closeAppMenu();
+  });
+}
+
+function openAppMenu(): void {
+  el("app-menu").hidden = false;
+  el("btn-menu").setAttribute("aria-expanded", "true");
+}
+
+function closeAppMenu(): void {
+  el("app-menu").hidden = true;
+  el("btn-menu").setAttribute("aria-expanded", "false");
 }
 
 async function importBoardFile(file: File | undefined): Promise<void> {
@@ -318,8 +364,88 @@ export function toast(text: string, isError = false): void {
   }, 6000);
 }
 
+/** Build the tab strip in this board's order, after the close arrow and the lock. While the
+ * lock is open, a tab drags to a new place; the order is saved for this board. */
+function renderTabStrip(app: App): void {
+  const tabs = el("tabs");
+  tabs.replaceChildren();
+  tabs.classList.toggle("unlocked", !app.tabs.locked);
+  const labels = new Map(TABS);
+  const close = document.createElement("button");
+  close.className = "panel-close";
+  close.title = "hide the side panel";
+  close.innerHTML = icon("chevron-right");
+  close.addEventListener("click", () => setPanelOpen(app, false));
+  tabs.appendChild(close);
+  tabs.appendChild(lockButton(app));
+  let dragged: Tab | null = null;
+  for (const id of app.tabs.order) {
+    const opt = document.createElement("label");
+    opt.className = "seg-opt";
+    opt.dataset.tab = id;
+    opt.draggable = !app.tabs.locked;
+    opt.innerHTML = `<input type="radio" name="tab" value="${id}"${id === app.tab ? " checked" : ""}><span></span>`;
+    opt.querySelector("span")!.textContent = labels.get(id) ?? id;
+    opt.querySelector("input")!.addEventListener("change", () => switchTab(app, id));
+    opt.addEventListener("dragstart", (e) => {
+      dragged = id;
+      e.dataTransfer?.setData("text/plain", id);
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+      opt.classList.add("dragging");
+    });
+    opt.addEventListener("dragend", () => {
+      dragged = null;
+      opt.classList.remove("dragging");
+      for (const o of tabs.querySelectorAll(".drop-before, .drop-after")) o.classList.remove("drop-before", "drop-after");
+    });
+    opt.addEventListener("dragover", (e) => {
+      if (!dragged || dragged === id) return;
+      e.preventDefault();
+      const after = dropAfter(opt, e.clientX);
+      opt.classList.toggle("drop-before", !after);
+      opt.classList.toggle("drop-after", after);
+    });
+    opt.addEventListener("dragleave", () => opt.classList.remove("drop-before", "drop-after"));
+    opt.addEventListener("drop", (e) => {
+      e.preventDefault();
+      if (!dragged || dragged === id) return;
+      const order = app.tabs.order.filter((t) => t !== dragged);
+      order.splice(order.indexOf(id) + (dropAfter(opt, e.clientX) ? 1 : 0), 0, dragged);
+      app.tabs.order = order;
+      saveTabOrder(app);
+      renderTabStrip(app);
+    });
+    tabs.appendChild(opt);
+  }
+}
+
+/** The lock of the tab order: closed, the tabs stay where they are; open, a tab drags to a new place. */
+function lockButton(app: App): HTMLButtonElement {
+  const lock = document.createElement("button");
+  lock.className = "tab-lock";
+  lock.title = app.tabs.locked ? "tab order is locked — click to drag tabs into a new order" : "drag a tab to move it — click to lock the order";
+  lock.setAttribute("aria-pressed", String(app.tabs.locked));
+  lock.innerHTML = icon(app.tabs.locked ? "lock" : "unlock");
+  lock.addEventListener("click", () => {
+    app.tabs.locked = !app.tabs.locked;
+    savePanelPrefs(app);
+    renderTabStrip(app);
+  });
+  return lock;
+}
+
+/** True when a drop at clientX lands after the tab (on its right half). */
+function dropAfter(opt: HTMLElement, clientX: number): boolean {
+  const r = opt.getBoundingClientRect();
+  return clientX > r.left + r.width / 2;
+}
+
+// The tab the person was on before the Notebook tab, for the N key and the notebook chip.
+let tabBeforeNotebook: Tab = "layers";
+
 /** Set the tab without rendering: the caller owns the render. */
 export function setTab(app: App, tab: Tab): void {
+  if (tab === "notebook" && app.tab !== "notebook") tabBeforeNotebook = app.tab;
   app.tab = tab;
   for (const input of el("tabs").querySelectorAll("input")) {
     input.checked = input.value === tab;
@@ -329,6 +455,22 @@ export function setTab(app: App, tab: Tab): void {
 export function switchTab(app: App, tab: Tab): void {
   setTab(app, tab);
   app.render();
+}
+
+/** Show the notebook (open the side panel on the Notebook tab), or close it (go back to
+ * the tab before it). Without a render: the caller owns the render. */
+export function showNotebook(app: App, show: boolean): void {
+  if (show === notebookOpen(app)) return;
+  if (show) {
+    if (!app.panel.open) {
+      app.panel.open = true;
+      savePanelPrefs(app);
+      applyPanel(app);
+    }
+    setTab(app, "notebook");
+  } else {
+    setTab(app, tabBeforeNotebook);
+  }
 }
 
 async function downloadScreenshot(app: App): Promise<void> {
@@ -342,6 +484,9 @@ async function downloadScreenshot(app: App): Promise<void> {
   URL.revokeObjectURL(a.href);
 }
 
+// The history row at the head of the timeline.
+const HEAD_MARK = `${icon("diamond")}<span>head</span>`;
+
 let inspectorKey = "";
 
 export function renderPanel(app: App): void {
@@ -353,8 +498,8 @@ export function renderPanel(app: App): void {
   }
   const canUndo = (push?.state.history.head ?? 0) > 0;
   const canRedo = (push?.state.history.ahead ?? 0) > 0 || (push?.state.history.skipped ?? 0) > 0;
-  el("btn-undo").style.color = canUndo ? "var(--color-text)" : "var(--color-neutral-400)";
-  el("btn-redo").style.color = canRedo ? "var(--color-text)" : "var(--color-neutral-400)";
+  el<HTMLButtonElement>("btn-undo").disabled = !canUndo;
+  el<HTMLButtonElement>("btn-redo").disabled = !canRedo;
 
   renderInspector(app);
   renderAsideStrip(app);
@@ -367,6 +512,7 @@ export function renderPanel(app: App): void {
   if (app.tab === "session") renderSession(app);
   if (app.tab === "history") renderHistory(app);
   if (app.tab === "state") renderState(app);
+  // The Notebook tab renders in notebook.ts (renderNotebook), from app.render.
 
   renderFooter(app);
 }
@@ -570,7 +716,8 @@ function renderHistory(app: App): void {
     by.style.color = row.author === "ai" ? "var(--color-accent-700)" : "var(--color-neutral-600)";
     const marker = document.createElement("span");
     marker.className = "marker";
-    marker.textContent = row.conflict ? "conflict" : row.index === head ? "◆ head" : row.ahead ? "ahead" : row.skipped ? "skipped" : "";
+    if (!row.conflict && row.index === head) marker.innerHTML = HEAD_MARK;
+    else marker.textContent = row.conflict ? "conflict" : row.ahead ? "ahead" : row.skipped ? "skipped" : "";
     meta.append(step, by, marker);
 
     const line = document.createElement("div");
@@ -609,7 +756,7 @@ function renderHistory(app: App): void {
   base.className = "card hist-card" + (head === 0 ? " head" : "");
   base.title = "click to rewind to the opened board";
   base.addEventListener("click", () => app.send({ type: "history", action: "rewind", index: 0, scope: app.scope }));
-  base.innerHTML = `<div class="meta"><span class="step">00</span><span style="color: var(--color-neutral-600)">base</span><span class="marker">${head === 0 ? "◆ head" : ""}</span></div><div class="row"><div class="label">board opened</div></div>`;
+  base.innerHTML = `<div class="meta"><span class="step">00</span><span style="color: var(--color-neutral-600)">base</span><span class="marker">${head === 0 ? HEAD_MARK : ""}</span></div><div class="row"><div class="label">board opened</div></div>`;
   pane.appendChild(base);
 }
 
@@ -626,7 +773,7 @@ function renderAsideStrip(app: App): void {
   if (!hl) return;
   const strip = document.createElement("div");
   strip.className = "hl-strip";
-  strip.innerHTML = `<span class="diamond">◆</span><span class="kicker">HIGHLIGHT</span><span class="label"></span><span class="count"></span>`;
+  strip.innerHTML = `<span class="diamond">${icon("diamond")}</span><span class="kicker">HIGHLIGHT</span><span class="label"></span><span class="count"></span>`;
   (strip.children[2] as HTMLElement).textContent = hl.label;
   (strip.children[3] as HTMLElement).textContent = `${hl.nodes.length} nodes · ${hl.edges.length} edges`;
   const clear = document.createElement("button");
@@ -736,7 +883,7 @@ function renderLayers(app: App): void {
         const row = document.createElement("div");
         row.className = pinned ? "path-row on scrubber" : playing ? "path-row on" : "path-row";
         row.innerHTML = `<button class="play" title="play — opens the scrubber"></button><span class="id"></span><span class="title"></span><span class="hops"></span>`;
-        (row.children[0] as HTMLElement).textContent = playing && tr.running ? "❚❚" : "▸";
+        (row.children[0] as HTMLElement).innerHTML = icon(playing && tr.running ? "pause" : "play");
         (row.children[1] as HTMLElement).textContent = p.id;
         (row.children[2] as HTMLElement).textContent = p.title;
         (row.children[3] as HTMLElement).textContent = `${p.steps.length} hops`;
@@ -757,7 +904,7 @@ function renderLayers(app: App): void {
         if (pinned) {
           const loop = document.createElement("button");
           loop.className = tr.tr.loop ? "loop on" : "loop";
-          loop.textContent = "↻ loop";
+          loop.innerHTML = `${icon("loop")}<span>loop</span>`;
           loop.title = "loop playback";
           loop.addEventListener("click", () => {
             const live = traceInfo(app); // t at click time, not at build time
@@ -862,7 +1009,7 @@ function renderDrafts(app: App): void {
         const row = document.createElement("div");
         row.className = "mark-row";
         if (gone) row.style.opacity = "0.5";
-        row.innerHTML = `<span class="id"></span><span class="label"></span><button class="unmark" title="clear mark">✕</button>`;
+        row.innerHTML = `<span class="id"></span><span class="label"></span><button class="unmark" title="clear mark">${icon("close")}</button>`;
         (row.children[0] as HTMLElement).textContent = id;
         (row.children[1] as HTMLElement).textContent = gone ? "gone" : (node?.label ?? edge?.label ?? "edge");
         row.children[2]!.addEventListener("click", () => app.send({ type: "drafts_mark", draft_id: draft.id, id, role: null }));
@@ -940,7 +1087,8 @@ function renderFooter(app: App): void {
   const push = app.push;
   const conn = el("conn");
   conn.className = app.connected ? "conn" : "conn off";
-  conn.textContent = app.connected ? `● mcp connected · ${MCP_TOOLS.length} tools` : "○ reconnecting…";
+  conn.innerHTML = `${icon(app.connected ? "dot" : "dot-outline")}<span></span>`;
+  (conn.children[1] as HTMLElement).textContent = app.connected ? `mcp connected · ${MCP_TOOLS.length} tools` : "reconnecting…";
   const mode = el("modenote");
   // The mode of this board's Author.
   const author = stripView(app).author;
@@ -955,7 +1103,7 @@ function renderFooter(app: App): void {
       (s.history.skipped ? ` · ${s.history.skipped} skipped` : "") +
       ` · scope ${app.scope === "human" ? "you" : app.scope === "ai" ? "claude" : "all"}`;
     el("inknote").textContent = s.ink.length
-      ? `${s.ink.length} strokes awaiting infer_structure`
+      ? `${s.ink.length} strokes awaiting infer structure`
       : "all ink resolved";
   }
   el("zoom").textContent = `zoom ${Math.round(app.view.zoom * 100)}%`;

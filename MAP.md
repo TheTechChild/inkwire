@@ -511,7 +511,7 @@ plugin/src/shared/protocol.ts:179  AuthorPush
 plugin/src/shared/protocol.ts:213  DaemonPush
 plugin/src/ui/ws-client.ts:8       connectWs
 plugin/src/ui/ws-client.ts:120     answerCapture
-plugin/src/ui/app.ts:91            isServerMessage
+plugin/src/ui/app.ts:93            isServerMessage
 ```
 
 A rejected intent triggers a re-sync push to every panel of the board. On board delete the socket
@@ -567,23 +567,23 @@ app, `canvas.ts` draws and handles pointer input, `panel.ts` renders the side ta
 shared UI state.
 
 ```
-plugin/src/ui/main.ts:17     boot
-plugin/src/ui/main.ts:65     showBoardPicker
-plugin/src/ui/app.ts:73      KIND_META
-plugin/src/ui/app.ts:106     focusLayer
-plugin/src/ui/canvas.ts:57   setupCanvas
+plugin/src/ui/main.ts:18     boot
+plugin/src/ui/main.ts:68     showBoardPicker
+plugin/src/ui/app.ts:75      KIND_META
+plugin/src/ui/app.ts:113     focusLayer
+plugin/src/ui/canvas.ts:58   setupCanvas
 plugin/src/ui/canvas.ts:628  renderWorld
 plugin/src/ui/canvas.ts:565  hitNode
 plugin/src/ui/canvas.ts:619  deleteSelection
-plugin/src/ui/panel.ts:176   setupPanel
-plugin/src/ui/panel.ts:347   renderPanel
-plugin/src/ui/panel.ts:374   renderInspector
-plugin/src/ui/panel.ts:641   staleStrip
-plugin/src/ui/panel.ts:939   renderFooter
-plugin/src/ui/panel.ts:620   renderAsideStrip
-plugin/src/ui/panel.ts:666   renderLayers
-plugin/src/ui/panel.ts:511   renderHistory
-plugin/src/ui/panel.ts:108   loadPanelPrefs
+plugin/src/ui/panel.ts:205   setupPanel
+plugin/src/ui/panel.ts:492   renderPanel
+plugin/src/ui/panel.ts:520   renderInspector
+plugin/src/ui/panel.ts:788   staleStrip
+plugin/src/ui/panel.ts:1086  renderFooter
+plugin/src/ui/panel.ts:767   renderAsideStrip
+plugin/src/ui/panel.ts:813   renderLayers
+plugin/src/ui/panel.ts:657   renderHistory
+plugin/src/ui/panel.ts:110   loadPanelPrefs
 ```
 
 The aside strip (`renderAsideStrip`) shows the stale-build notice (`staleStrip`, with Restart:
@@ -593,7 +593,7 @@ The board picker (`showBoardPicker`) shows each board's `project_root` (or `root
 Author from `GET /api/boards`. The panel treats `author`, `readers`, `released_from`, `daemon` and
 the picker's `author` as optional: a new bundle can load from an older running daemon.
 
-Styles are in `plugin/src/ui/styles.css`; `plugin/src/ui/index.html` is the shell. A browser cannot
+Icons are SVG in `plugin/src/ui/icons.ts` (`ICONS`, `icon(name)`; `hydrateIcons` fills `<span data-icon>` slots in `index.html`). Every icon has the same 24×24 frame and 2px line; `--icon-size` in `styles.css` sets one size per context (14 header, 12 panel, 10 chip). Do not use a font glyph as an icon: each glyph draws at its own size, and `tests/ui/icons.test.ts` fails on one. Styles are in `plugin/src/ui/styles.css`; `plugin/src/ui/index.html` is the shell. A browser cannot
 run `.ts`, so the daemon bundles `plugin/src/ui/main.ts` with esbuild in memory
 (`createUiBundle`, no `dist/`), keeps `index.html` and `styles.css` with it, and serves `/`
 (`index.html`), `/main.js`, `/main.js.map` and `/styles.css` from memory only. The daemon entry
@@ -689,12 +689,12 @@ plugin/src/server/session-mode.ts:500  terminalProgram
 plugin/src/server/session-mode.ts:505  focusTerminal
 plugin/src/server/clients.ts:16        HookReport
 plugin/src/server/http.ts:135           /api/hook
-plugin/src/ui/session.ts:73            setupSession
-plugin/src/ui/session.ts:169           renderSession
-plugin/src/ui/session.ts:373           messageCard
-plugin/src/ui/session.ts:38            stripView
-plugin/src/ui/session.ts:67            agentState
-plugin/src/ui/session.ts:353           authorRow
+plugin/src/ui/session.ts:74            setupSession
+plugin/src/ui/session.ts:170           renderSession
+plugin/src/ui/session.ts:374           messageCard
+plugin/src/ui/session.ts:39            stripView
+plugin/src/ui/session.ts:68            agentState
+plugin/src/ui/session.ts:354           authorRow
 ```
 
 Hook files (not `.ts`): `plugin/hooks/hooks.json` wires `Stop`, `PreToolUse` on the `session_mode` tool,
@@ -934,7 +934,7 @@ plugin/src/server/layers.ts:58    updateLayer
 plugin/src/server/layers.ts:82    deleteLayer
 plugin/src/server/session.ts:246  updateLayers
 plugin/src/server/session.ts:257  setFocus
-plugin/src/ui/panel.ts:666        renderLayers
+plugin/src/ui/panel.ts:813        renderLayers
 ```
 
 Beware: layer members are never pruned when a node is deleted; `liveMembers` filters at read time.
@@ -962,7 +962,7 @@ plugin/src/server/session.ts:338  setTrace
 plugin/src/server/session.ts:345  updateTrace
 plugin/src/ui/canvas.ts:928       effectiveTrace
 plugin/src/ui/canvas.ts:1093      renderTrace
-plugin/src/ui/canvas.ts:1172      renderWalk
+plugin/src/ui/canvas.ts:1177      renderWalk
 ```
 
 Each step with a ref carries a server-written `ref_hash`; `paths_update` takes `verify` to restamp hops (see Code binding and lint). The trace rides in `SessionPush`. The WS intents are `trace_set`, `trace_seek`, `trace_run`.
@@ -985,7 +985,7 @@ plugin/src/server/drafts.ts:42    updateDraft
 plugin/src/server/drafts.ts:101   markElement
 plugin/src/server/session.ts:270  updateDrafts
 plugin/src/server/session.ts:278  setActiveDraft
-plugin/src/ui/panel.ts:794        renderDrafts
+plugin/src/ui/panel.ts:941        renderDrafts
 ```
 
 Beware: `active_draft` is never persisted. The error hue is shared between draft roles and lint. Draft
@@ -996,7 +996,7 @@ Tests: `tests/core/drafts.test.ts`.
 
 ## Notebooks
 
-Notebooks are prose panes beside the canvas. They replace note nodes. Bodies use a small markdown
+Notebooks are prose in the Notebook tab of the side panel. They replace note nodes. Bodies use a small markdown
 subset with `[[ref]]` chips that resolve to nodes.
 
 ```
@@ -1009,9 +1009,9 @@ plugin/src/server/notebooks.ts:16   createNotebook
 plugin/src/server/notebooks.ts:69   appendToNotebook
 plugin/src/server/notebooks.ts:112  migrateNotes
 plugin/src/server/session.ts:287    updateNotebooks
-plugin/src/ui/notebook.ts:41        setupNotebook
-plugin/src/ui/notebook.ts:136       renderNotebook
-plugin/src/ui/notebook.ts:338       buildChip
+plugin/src/ui/notebook.ts:42        setupNotebook
+plugin/src/ui/notebook.ts:109       renderNotebook
+plugin/src/ui/notebook.ts:303       buildChip
 ```
 
 Beware: prose is not a board element. A legacy `note` node is a lint error until `migrateNotes`

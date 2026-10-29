@@ -1,10 +1,11 @@
 // Boot: board id from the query string, WS connection, render loop.
 import { connectWs } from "./ws-client.ts";
 import { renderTrace, renderWorld, setupCanvas } from "./canvas.ts";
-import { loadPanelPrefs, renderPanel, setupPanel } from "./panel.ts";
+import { loadPanelPrefs, loadTabOrder, renderPanel, setupPanel } from "./panel.ts";
 import { renderNotebook, setupNotebook } from "./notebook.ts";
 import { clientLabel, setupSession } from "./session.ts";
 import { el, type App } from "./app.ts";
+import { hydrateIcons } from "./icons.ts";
 
 const boardId = new URLSearchParams(location.search).get("board");
 
@@ -15,7 +16,8 @@ if (!boardId) {
 }
 
 function boot(id: string): void {
-  const { rim, dim, notebook, ...panel } = loadPanelPrefs();
+  hydrateIcons(document);
+  const { rim, dim, notebook, tabsLocked, ...panel } = loadPanelPrefs();
   const app: App = {
     boardId: id,
     push: null,
@@ -30,6 +32,7 @@ function boot(id: string): void {
     drag: null,
     panel,
     notebook,
+    tabs: { order: loadTabOrder(id), locked: tabsLocked },
     nbCaretToEnd: false,
     rim,
     dim,
