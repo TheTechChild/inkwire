@@ -199,16 +199,20 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-se
 .brand { margin-right: 0; flex-shrink: 0; display: flex; align-items: baseline; gap: 10px; }
 .brand .title { letter-spacing: 0.06em; }
 .brand .proto { font-family: var(--font-mono); font-size: var(--text-sm); font-weight: 400; color: var(--color-neutral-600); }
-.header-right { margin-left: auto; flex-shrink: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .tool-seg .seg-opt { padding: 6px 11px; font-size: var(--text-md); }
 .tool-seg .keycap { font-family: var(--font-mono); font-size: var(--text-xs); opacity: 0.55; }
 .theme-seg .seg-opt { padding: 4px 9px; font-family: var(--font-mono); font-size: var(--text-sm); min-height: 0; }
 
-/* The brand opens the settings menu: undo / redo, export / import, theme. */
+/* The brand opens the settings menu: undo / redo, infer structure, screenshot / export / import, theme. */
 .app-menu-wrap { position: relative; flex-shrink: 0; }
 #btn-menu { border: 1px solid transparent; background: transparent; color: inherit; cursor: pointer; padding: 4px 8px; margin: -5px -9px; align-items: center; }
 #btn-menu:hover, #btn-menu[aria-expanded="true"] { border-color: var(--color-separator); background: color-mix(in srgb, var(--color-text) 7%, transparent); }
-#btn-menu .icon { align-self: center; color: var(--color-neutral-600); }
+#btn-menu .icon { align-self: center; color: var(--color-neutral-600); transition: transform 200ms ease; }
+/* The arrow points down while the menu can open, and up while it is open. */
+#btn-menu[aria-expanded="true"] .icon { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) {
+  #btn-menu .icon { transition: none; }
+}
 .app-menu {
   position: absolute; top: calc(100% + 8px); left: -9px; z-index: 10; min-width: 240px; padding: 4px 0;
   background: var(--color-chrome); border: 1px solid var(--color-separator); box-shadow: var(--shadow-md);

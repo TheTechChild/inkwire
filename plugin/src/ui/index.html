@@ -22,6 +22,9 @@
         <button class="menu-item" id="btn-undo" role="menuitem"><span data-icon="undo"></span><span>undo</span><span class="keys">⌘Z</span></button>
         <button class="menu-item" id="btn-redo" role="menuitem"><span data-icon="redo"></span><span>redo</span><span class="keys">⇧⌘Z</span></button>
         <div class="menu-sep"></div>
+        <button class="menu-item" id="btn-infer" role="menuitem" title="canvas.infer_structure — turn freehand ink into nodes and edges"><span data-icon="infer"></span><span>infer structure</span></button>
+        <div class="menu-sep"></div>
+        <button class="menu-item" id="btn-screenshot" role="menuitem" title="canvas.screenshot — download the board as a PNG"><span data-icon="camera"></span><span>screenshot</span></button>
         <button class="menu-item" id="btn-export" role="menuitem" title="download this board as a file"><span data-icon="download"></span><span>export</span></button>
         <button class="menu-item" id="btn-import" role="menuitem" title="load a board file as a new board"><span data-icon="upload"></span><span>import</span></button>
         <div class="menu-sep"></div>
@@ -42,10 +45,6 @@
     </div>
     <input type="file" id="import-file" accept=".json,application/json" hidden>
     <div class="seg tool-seg" id="toolseg"></div>
-    <div class="header-right">
-      <button class="btn btn-secondary" id="btn-screenshot" title="canvas.screenshot — download the board as a PNG" style="font-size: var(--text-md); white-space: nowrap">screenshot</button>
-      <button class="btn btn-primary" id="btn-infer" title="canvas.infer_structure — turn freehand ink into nodes and edges" style="font-size: var(--text-md); white-space: nowrap">infer structure</button>
-    </div>
   </header>
 
   <div id="body">

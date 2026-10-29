@@ -576,13 +576,13 @@ plugin/src/ui/canvas.ts:628  renderWorld
 plugin/src/ui/canvas.ts:565  hitNode
 plugin/src/ui/canvas.ts:619  deleteSelection
 plugin/src/ui/panel.ts:205   setupPanel
-plugin/src/ui/panel.ts:543   renderPanel
-plugin/src/ui/panel.ts:571   renderInspector
-plugin/src/ui/panel.ts:839   staleStrip
-plugin/src/ui/panel.ts:1137  renderFooter
-plugin/src/ui/panel.ts:818   renderAsideStrip
-plugin/src/ui/panel.ts:864   renderLayers
-plugin/src/ui/panel.ts:708   renderHistory
+plugin/src/ui/panel.ts:549   renderPanel
+plugin/src/ui/panel.ts:577   renderInspector
+plugin/src/ui/panel.ts:845   staleStrip
+plugin/src/ui/panel.ts:1143  renderFooter
+plugin/src/ui/panel.ts:824   renderAsideStrip
+plugin/src/ui/panel.ts:870   renderLayers
+plugin/src/ui/panel.ts:714   renderHistory
 plugin/src/ui/panel.ts:111   loadPanelPrefs
 ```
 
@@ -934,7 +934,7 @@ plugin/src/server/layers.ts:58    updateLayer
 plugin/src/server/layers.ts:82    deleteLayer
 plugin/src/server/session.ts:246  updateLayers
 plugin/src/server/session.ts:257  setFocus
-plugin/src/ui/panel.ts:864        renderLayers
+plugin/src/ui/panel.ts:870        renderLayers
 ```
 
 Beware: layer members are never pruned when a node is deleted; `liveMembers` filters at read time.
@@ -985,7 +985,7 @@ plugin/src/server/drafts.ts:42    updateDraft
 plugin/src/server/drafts.ts:101   markElement
 plugin/src/server/session.ts:270  updateDrafts
 plugin/src/server/session.ts:278  setActiveDraft
-plugin/src/ui/panel.ts:992        renderDrafts
+plugin/src/ui/panel.ts:998        renderDrafts
 ```
 
 Beware: `active_draft` is never persisted. The error hue is shared between draft roles and lint. Draft
