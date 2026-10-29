@@ -11,10 +11,11 @@ import {
 } from "../shared/board-file.ts";
 import { validateWalk } from "../core/layers.ts";
 import { RENDER } from "../shared/tokens.ts";
-import type { Collections, EdgeEl, ImageEl, LayoutMap, NodeEl } from "../shared/types.ts";
+import type { Collections, EdgeEl, ImageEl, Layer, LayoutMap, NodeEl } from "../shared/types.ts";
 import type { BoardSession, Sessions } from "./session.ts";
 import type { Store } from "./store.ts";
 import { checkRootArg } from "./project-root.ts";
+import { stampRef } from "./bindcode.ts";
 
 export class ImportError extends Error {}
 
@@ -157,12 +158,33 @@ export function importBoard(
     notebookIds.add(n.id);
   }
 
+  // A step with a ref and no stamp (a hand-built file) is stamped against the
+  // board's root, like paths_create. A stamp the file carries stays, so a hop that
+  // was stale at export is still flagged. A missing file or symbol gets no stamp.
+  const stamp = (ref: string) => {
+    try {
+      return stampRef(projectRoot, ref);
+    } catch {
+      return null;
+    }
+  };
+  const layers: Layer[] = (file.layers ?? []).map((l) => ({
+    ...l,
+    paths: l.paths.map((p) => ({
+      ...p,
+      steps: p.steps.map((s) => {
+        const hash = s.ref && s.ref_hash == null ? stamp(s.ref) : null;
+        return hash ? { ...s, ref_hash: hash } : s;
+      }),
+    })),
+  }));
+
   const collections: Collections = { nodes, edges, strokes: file.strokes, images, layout };
   const { name, ...check } = sessions.uniqueName(file.name);
   const session = sessions.create(name, projectRoot, {
     collections,
     viewport: file.viewport ?? { x: 0, y: 0, zoom: 1 },
-    layers: file.layers ?? [],
+    layers,
     drafts: file.drafts ?? [],
     notebooks: file.notebooks ?? [],
   });

@@ -58,6 +58,25 @@ describe("findSymbol", () => {
     expect(findSymbol(t, "handle")).toEqual({ line: 5, end: 7 });
   });
 
+  it("finds Class.method inside the class, not a method of the same name elsewhere", () => {
+    const t =
+      "class B {\n  handle() {\n    0;\n  }\n}\n// see A.handle\nexport class A {\n  other() {\n    1;\n  }\n  async handle(socket) {\n    2;\n  }\n}";
+    expect(findSymbol(t, "A.handle")).toEqual({ line: 11, end: 13 });
+    expect(findSymbol(t, "B.handle")).toEqual({ line: 2, end: 4 });
+  });
+
+  it("finds a dotted path through nested blocks, and gives null for a missing member", () => {
+    const t = "namespace ns {\n  class C {\n    run() {\n      1;\n    }\n  }\n}\nclass D {}";
+    expect(findSymbol(t, "ns.C.run")).toEqual({ line: 3, end: 5 });
+    expect(findSymbol(t, "D.run")).toBeNull();
+    expect(findSymbol(t, "C.")).toBeNull();
+  });
+
+  it("falls back to the whole dotted name when no part-by-part match exists", () => {
+    const t = "function Foo() {}\nFoo.bar = function () {\n  1;\n};";
+    expect(findSymbol(t, "Foo.bar")).toEqual({ line: 2, end: 4 });
+  });
+
   it("ends a python def at the next def", () => {
     const t = "def a():\n    x = 1\n\n    return x\n\ndef b():\n    pass";
     expect(findSymbol(t, "a")).toEqual({ line: 1, end: 4 });

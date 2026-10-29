@@ -16,7 +16,32 @@ const MODIFIERS = new RegExp(`^${MODS}`);
 const indentOf = (l: string): number => l.length - l.trimStart().length;
 const depthOf = (l: string): number => (l.match(/[([{]/g)?.length ?? 0) - (l.match(/[)\]}]/g)?.length ?? 0);
 
+/**
+ * The declaration of `symbol` in `text`. A dotted symbol (`Class.method`,
+ * `ns.Class.method`) is found part by part, each part inside the block of the
+ * part before it; when that fails, as a whole (`Foo.bar = function …`).
+ */
 export function findSymbol(text: string, symbol: string): SymbolRange | null {
+  if (!symbol.includes(".")) return findOne(text, symbol);
+  return findMember(text, symbol.split(".")) ?? findOne(text, symbol);
+}
+
+function findMember(text: string, parts: string[]): SymbolRange | null {
+  if (parts.some((p) => p === "")) return null;
+  const lines = text.split("\n");
+  let range: SymbolRange = { line: 1, end: lines.length };
+  for (const [i, part] of parts.entries()) {
+    // The block of the part before, without its head line, so `Class` never matches itself.
+    const from = i === 0 ? range.line : range.line + 1;
+    if (from > range.end) return null;
+    const found = findOne(lines.slice(from - 1, range.end).join("\n"), part);
+    if (!found) return null;
+    range = { line: found.line + from - 1, end: found.end + from - 1 };
+  }
+  return range;
+}
+
+function findOne(text: string, symbol: string): SymbolRange | null {
   const esc = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const word = new RegExp(`(?<![\\w$])${esc}(?![\\w$])`);
   const declared = new RegExp(`^${MODS}(?:${DECL_KEYWORDS})(?:\\s+|\\s*\\*\\s*)(?:\\([^)]*\\)\\s*)?${esc}(?![\\w$])`);

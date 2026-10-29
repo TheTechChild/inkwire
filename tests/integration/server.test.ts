@@ -564,7 +564,8 @@ describe("integration", () => {
         expect(svg).toContain(`<rect x="${box[0]}" y="${box[1]}" width="${box[2]}" height="${box[3]}"`);
       }
     }
-    expect(svg.match(/marker-end/g) ?? []).toHaveLength(c.edges.length);
+    expect(svg.match(/class="arrow"/g) ?? []).toHaveLength(c.edges.length);
+    expect(svg).not.toContain("marker-end");
     expect(svg.match(/stroke-linejoin="round"/g) ?? []).toHaveLength(c.strokes.length);
     // Text: same subset as the panel's CSS tiers.
     expect(svg.match(/text-anchor="middle"/g) ?? []).toHaveLength(lod === "dot" ? 0 : labeled.length);

@@ -52,8 +52,8 @@ export function lintPath(projectRoot: string | null, layer: Layer, path: Path, n
     const r = projectRoot === null ? null : refStatus(projectRoot, s);
     const at = r?.line ? ` (line ${r.line})` : "";
     if (r?.status === "ref_missing") {
-      out.push({ target_id: path.id, check: "path_ref_missing", level: "error", message: `${hop}: ref points at a missing file` });
-    } else if (r?.status === "symbol_missing") warn("path_symbol_missing", `${hop}: symbol gone`);
+      out.push({ target_id: path.id, check: "path_ref_missing", level: "error", message: `${hop}: ${s.ref} points at a missing file` });
+    } else if (r?.status === "symbol_missing") warn("path_symbol_missing", `${hop}: symbol not found in ${s.ref}`);
     else if (r?.status === "changed") warn("path_ref_changed", `${hop}: ${s.ref}${at} changed since the hop was verified`);
     else if (r?.status === "unverified") warn("path_ref_unverified", `${hop}: ${s.ref}${at} was never verified`);
     else if (!s.ref) {

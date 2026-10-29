@@ -401,7 +401,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "canvas.screenshot",
-    "PNG of the board as the human sees it. Use this to read handwriting, judge spatial intent, or check what an ambiguous stroke actually looks like. Structure comes from get_state; pixels come from here.",
+    "PNG of the board as the human sees it. Use this to read handwriting, judge spatial intent, or check what an ambiguous stroke actually looks like. Structure comes from get_state; pixels come from here. The image is 1280×800. viewport is the panel's pan and zoom: a board point (bx, by) draws at screen pixel (bx·zoom + x, by·zoom + y), so to put board point (bx, by) at the top-left corner, send x = −bx·zoom, y = −by·zoom. zoom is 0.35–2.4. fit: true frames every element, but never below zoom 0.35, so a very large board is cropped; shoot it in parts with viewport.",
     async (args: { board_id?: string; viewport?: { x: number; y: number; zoom: number }; fit?: boolean }) => {
       const session = resolve(args.board_id);
       const shot = await deps.screenshots().capture(session, args.viewport, args.fit ?? false);

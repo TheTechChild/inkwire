@@ -6,6 +6,7 @@
 // native @resvg/resvg-js 2.6.2 reads fonts from files only (fontBuffers is in
 // its WASM build only), so the copy is in the data dir, not in memory. The
 // parity test is structural, so exact font metrics are not load-bearing.
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -59,4 +60,38 @@ export function rasterizeSvg(svg: string, fontFiles: string[] = []): Buffer {
     },
   });
   return Buffer.from(resvg.render().asPng());
+}
+
+const CHILD = fileURLToPath(new URL("./rasterize-child.ts", import.meta.url));
+export const RASTERIZE_TIMEOUT_MS = 30_000;
+
+/**
+ * rasterizeSvg in a child process. A Rust panic in resvg aborts the whole
+ * process and no try/catch can stop it, so the daemon never runs resvg itself.
+ * Rejects when the child fails, with the last line of its stderr.
+ */
+export function rasterizeIsolated(svg: string, fontFiles: string[] = [], timeoutMs = RASTERIZE_TIMEOUT_MS): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CHILD], { stdio: ["pipe", "pipe", "pipe"] });
+    const out: Buffer[] = [];
+    let err = "";
+    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    timer.unref?.();
+    child.stdout.on("data", (b: Buffer) => out.push(b));
+    child.stderr.on("data", (b: Buffer) => (err += b.toString("utf8")));
+    child.stdin.on("error", () => {}); // the child died before it read the input; "close" reports it
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      reject(new Error(`server render failed to start: ${e.message}`));
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) return resolve(Buffer.concat(out));
+      const why = signal === "SIGKILL" ? `timed out after ${timeoutMs} ms` : (code ?? signal);
+      const detail = err.trim().split("\n").find((l) => l.includes("panicked")) ?? err.trim().split("\n").pop() ?? "";
+      if (err) console.error(`inkwire: server render failed (${why}):\n${err.trim()}`);
+      reject(new Error(`server render failed (${why})${detail ? `: ${detail}` : ""}`));
+    });
+    child.stdin.end(JSON.stringify({ svg, fontFiles }));
+  });
 }
