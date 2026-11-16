@@ -285,6 +285,22 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-se
 /* dot: no kicker; edge labels only on the selected edge */
 #world[data-lod="dot"] .node-kicker { display: none; }
 #world[data-lod="dot"] .edge:not(.selected) .edge-label, #world[data-lod="dot"] .edge:not(.selected) .edge-label-bg { display: none; }
+/* outline (core/outline.ts): far out, nodes in a layer give way to its hull;
+   loose nodes stay as plain boxes with no text. canvas.ts counter-scales the
+   hull border, the title and the hairlines, so they stay at screen size.
+   The alphas (45% hull, 35% link, 70% title; 60% loose node, set inline in
+   canvas.ts) mirror OUTLINE_STYLE in core/outline.ts. */
+#world[data-lod="outline"] .node-box > :not(.corner) { display: none; }
+#world .hull {
+  position: absolute; box-sizing: border-box; pointer-events: none;
+  border-style: dashed; border-color: color-mix(in srgb, var(--color-text) 45%, transparent);
+}
+#world .hull > span {
+  position: absolute; left: 0; white-space: nowrap; color: color-mix(in srgb, var(--color-text) 70%, transparent);
+  font-family: var(--font-mono); font-weight: 500; letter-spacing: 0.08em;
+}
+#world .hull[data-tier="out"] { opacity: 0.3; filter: none; }
+#world .outline-link { fill: none; stroke: color-mix(in srgb, var(--color-text) 35%, transparent); }
 /* layer tiers (handoff "Derived tiers"): presentation only, no transition */
 #world [data-tier="rim"] { opacity: 0.3; filter: blur(1.4px); }
 #world [data-tier="out"] { opacity: 0.28; filter: blur(3px); }
@@ -359,6 +375,19 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-se
   background: var(--color-accent-100); opacity: 0; pointer-events: none;
 }
 #flash.on { animation: flashcap 600ms ease-out forwards; }
+/* The minimap (canvas.ts renderMinimap): the one panel CLAUDE.md lets draw over the graph. */
+#minimap {
+  position: absolute; right: 14px; bottom: 12px; width: 160px; height: 100px; overflow: hidden;
+  background: var(--color-bg); border: 1px solid var(--color-divider); cursor: crosshair; touch-action: none; z-index: 2;
+}
+#minimap[hidden] { display: none; }
+/* The hints wrap short of the minimap, never under it. */
+#canvas:has(#minimap:not([hidden])) #hints { right: 188px; }
+#minimap > div { position: absolute; box-sizing: border-box; pointer-events: none; }
+#minimap .mm-node { background: var(--color-neutral-500); opacity: 0.5; }
+#minimap .mm-hull { border: 1px dashed var(--color-neutral-500); }
+#minimap .mm-hull.focus { border: 1px solid var(--color-accent); }
+#minimap .mm-view { border: 1px solid var(--color-accent); background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
 #toast {
   position: absolute; left: 50%; top: 14px; transform: translateX(-50%); max-width: 70%;
   padding: 8px 14px; background: var(--color-surface); border: 1px solid var(--color-accent);
@@ -808,4 +837,7 @@ footer {
 footer .conn { color: var(--color-accent-700); }
 footer .conn.off { color: var(--color-neutral-500); }
 footer .ink-note { margin-left: auto; }
+/* One line: each item keeps its width; the ink note (last, least needed) gives way first. */
+footer > * { white-space: nowrap; flex-shrink: 0; }
+footer .ink-note { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 footer .btn-ghost { font-family: inherit; font-size: inherit; padding: 0 4px; }

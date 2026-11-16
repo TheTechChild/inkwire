@@ -38,7 +38,7 @@ describe("server render isolation", () => {
   it("renders a board far wider than the image at fit and at a fixed zoom", async () => {
     const c = wideBoard();
     for (const opts of [{ fit: true }, { fit: false }]) {
-      const svg = renderBoardSvg({ collections: c, viewport: { x: 0, y: 0, zoom: 0.35 }, ...opts });
+      const svg = renderBoardSvg({ collections: c, layers: [], viewport: { x: 0, y: 0, zoom: 0.35 }, ...opts });
       expect(svg).not.toContain("marker");
       const png = await rasterizeIsolated(svg);
       expect(png.subarray(0, 4).equals(PNG_MAGIC)).toBe(true);

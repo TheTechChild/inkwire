@@ -368,9 +368,9 @@ The heuristic turns strokes into nodes (closed shapes) and edges (lines that sna
 ```
 plugin/src/core/infer.ts:36         inferStructure
 plugin/src/core/geometry.ts:11      bbox
-plugin/src/core/geometry.ts:30      isClosed
-plugin/src/core/geometry.ts:46      nearestNode
-plugin/src/core/geometry.ts:83      edgeEndpoints
+plugin/src/core/geometry.ts:50      isClosed
+plugin/src/core/geometry.ts:66      nearestNode
+plugin/src/core/geometry.ts:103     edgeEndpoints
 plugin/src/server/mutations.ts:293  inferFromInk
 plugin/src/server/mutations.ts:247  addStroke
 ```
@@ -570,20 +570,20 @@ shared UI state.
 plugin/src/ui/main.ts:18     boot
 plugin/src/ui/main.ts:68     showBoardPicker
 plugin/src/ui/app.ts:75      KIND_META
-plugin/src/ui/app.ts:113     focusLayer
-plugin/src/ui/canvas.ts:58   setupCanvas
-plugin/src/ui/canvas.ts:628  renderWorld
-plugin/src/ui/canvas.ts:565  hitNode
-plugin/src/ui/canvas.ts:619  deleteSelection
-plugin/src/ui/panel.ts:205   setupPanel
-plugin/src/ui/panel.ts:549   renderPanel
-plugin/src/ui/panel.ts:577   renderInspector
-plugin/src/ui/panel.ts:845   staleStrip
-plugin/src/ui/panel.ts:1143  renderFooter
-plugin/src/ui/panel.ts:824   renderAsideStrip
-plugin/src/ui/panel.ts:870   renderLayers
-plugin/src/ui/panel.ts:714   renderHistory
-plugin/src/ui/panel.ts:111   loadPanelPrefs
+plugin/src/ui/app.ts:109     focusLayer
+plugin/src/ui/canvas.ts:89   setupCanvas
+plugin/src/ui/canvas.ts:711  renderWorld
+plugin/src/ui/canvas.ts:644  hitNode
+plugin/src/ui/canvas.ts:702  deleteSelection
+plugin/src/ui/panel.ts:206   setupPanel
+plugin/src/ui/panel.ts:551   renderPanel
+plugin/src/ui/panel.ts:579   renderInspector
+plugin/src/ui/panel.ts:847   staleStrip
+plugin/src/ui/panel.ts:1145  renderFooter
+plugin/src/ui/panel.ts:826   renderAsideStrip
+plugin/src/ui/panel.ts:872   renderLayers
+plugin/src/ui/panel.ts:716   renderHistory
+plugin/src/ui/panel.ts:112   loadPanelPrefs
 ```
 
 The aside strip (`renderAsideStrip`) shows the stale-build notice (`staleStrip`, with Restart:
@@ -635,16 +635,16 @@ panel is connected, the server can ask it for a capture over WS. Level of detail
 wrapping) is shared code in `core/lod.ts`.
 
 ```
-plugin/src/server/render-svg.ts:25   renderBoardSvg
-plugin/src/server/render-svg.ts:150  fitViewport
+plugin/src/server/render-svg.ts:28   renderBoardSvg
+plugin/src/server/render-svg.ts:191  fitViewport
 plugin/src/server/rasterize.ts:54    rasterizeSvg
 plugin/src/server/rasterize.ts:73   rasterizeIsolated
-plugin/src/server/render-svg.ts:138  arrowHead
+plugin/src/server/render-svg.ts:141  arrowHead
 plugin/src/server/screenshot.ts:9    CaptureBroker
 plugin/src/server/screenshot.ts:26   Screenshots
-plugin/src/ui/capture.ts:10          captureBoard
-plugin/src/core/lod.ts:18            lodFor
-plugin/src/core/lod.ts:48            wrapText
+plugin/src/ui/capture.ts:11          captureBoard
+plugin/src/core/lod.ts:41            lodFor
+plugin/src/core/lod.ts:88            wrapText
 plugin/src/shared/tokens.ts:53       RENDER
 ```
 
@@ -668,7 +668,51 @@ whose edge ends far outside the image.
 
 Beware: screenshots ignore focus (layers). Tokens must match in both renderers.
 
-Tests: `tests/core/lod.test.ts`, `tests/server/fonts.test.ts`.
+Tests: `tests/core/lod.test.ts`, `tests/server/fonts.test.ts`, `tests/server/render-svg.test.ts`.
+
+## Zoom range, outline tier, fit, minimap
+
+The camera has no design floor. `ZOOM_MIN` (0.01) and `ZOOM_MAX` (64) in `shared/types.ts` are a
+render guard, and the contract (`viewportSchema`, `canvas.set_viewport`) accepts the same range.
+`lodFor` has four tiers: `full`, `compact`, `dot`, and `outline` below 0.35. In the outline tier,
+`outlineView` replaces each layer's nodes with the layer's hull (dashed, with its title), keeps
+nodes in no layer as plain boxes, and collapses edges to one hairline per pair of units. All three
+renderers (the panel, the panel capture, render-svg) and the minimap read it. Fit (key `0`, the
+footer's fit, `canvas_screenshot` `fit`) frames everything through `fitView`, never past `FIT_MAX`
+(2.4). Far out, a double-click on a hull fits that layer (select tool only). Wheel zoom is proportional
+to the scroll delta (a notch is about ×1.1; a `ctrlKey` pinch is smoother), and the footer has
+`#btn-fit`.
+
+```
+plugin/src/core/lod.ts:21            clampZoom
+plugin/src/core/lod.ts:30            quantizeZoom
+plugin/src/core/lod.ts:50            fitView
+plugin/src/core/outline.ts:15      OUTLINE_STYLE
+plugin/src/core/outline.ts:26      hullTitle
+plugin/src/core/outline.ts:31      inkBounds
+plugin/src/core/outline.ts:46        layerHulls
+plugin/src/core/outline.ts:81        outlineView
+plugin/src/core/outline.ts:108        boardBounds
+plugin/src/server/render-svg.ts:158  renderOutline
+plugin/src/ui/canvas.ts:75           fitBox
+plugin/src/ui/canvas.ts:83           fitBoard
+plugin/src/ui/canvas.ts:627          outlineOf
+plugin/src/ui/canvas.ts:634          hitHull
+plugin/src/ui/canvas.ts:1000          renderHulls
+plugin/src/ui/canvas.ts:1046         renderMinimap
+```
+
+Beware: `quantizeZoom` halves the first step below 0.35, so it is always <= the zoom, and every
+`calc(N / var(--zoom))` floor in `styles.css` holds at any zoom. Keep that property.
+
+Beware: a playing trace turns the outline tier off (`outlineOf` is null, `data-lod` is `dot`): the
+walk draws its nodes and edges at any zoom. Far out, a node inside a hull cannot be hit, and no
+edge can be hit.
+
+Beware: the minimap (`#minimap`, bottom right) is the one panel that draws over the graph
+(CLAUDE.md). It shows only while the board is larger than the view, and never while a trace plays.
+
+Tests: `tests/core/lod.test.ts`, `tests/core/outline.test.ts`, `tests/server/render-svg.test.ts`.
 
 ## Session mode and hooks
 
@@ -934,7 +978,7 @@ plugin/src/server/layers.ts:58    updateLayer
 plugin/src/server/layers.ts:82    deleteLayer
 plugin/src/server/session.ts:246  updateLayers
 plugin/src/server/session.ts:257  setFocus
-plugin/src/ui/panel.ts:870        renderLayers
+plugin/src/ui/panel.ts:872        renderLayers
 ```
 
 Beware: layer members are never pruned when a node is deleted; `liveMembers` filters at read time.
@@ -960,9 +1004,9 @@ plugin/src/server/layers.ts:196   getPath
 plugin/src/server/layers.ts:227   openTrace
 plugin/src/server/session.ts:338  setTrace
 plugin/src/server/session.ts:345  updateTrace
-plugin/src/ui/canvas.ts:928       effectiveTrace
-plugin/src/ui/canvas.ts:1093      renderTrace
-plugin/src/ui/canvas.ts:1177      renderWalk
+plugin/src/ui/canvas.ts:1130      effectiveTrace
+plugin/src/ui/canvas.ts:1295      renderTrace
+plugin/src/ui/canvas.ts:1379      renderWalk
 ```
 
 Each step with a ref carries a server-written `ref_hash`; `paths_update` takes `verify` to restamp hops (see Code binding and lint). The trace rides in `SessionPush`. The WS intents are `trace_set`, `trace_seek`, `trace_run`.
@@ -985,7 +1029,7 @@ plugin/src/server/drafts.ts:42    updateDraft
 plugin/src/server/drafts.ts:101   markElement
 plugin/src/server/session.ts:270  updateDrafts
 plugin/src/server/session.ts:278  setActiveDraft
-plugin/src/ui/panel.ts:998        renderDrafts
+plugin/src/ui/panel.ts:1000       renderDrafts
 ```
 
 Beware: `active_draft` is never persisted. The error hue is shared between draft roles and lint. Draft

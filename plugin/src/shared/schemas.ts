@@ -1,7 +1,7 @@
 // zod schemas — the contract. JSON Schema is generated from these
 // (scripts/gen-schemas.ts at the repo root) and the MCP tools register them directly.
 import { z } from "zod";
-import { DRAFT_ROLES, EDGE_KINDS, LEGACY_NODE_KINDS, NODE_KINDS } from "./types.ts";
+import { DRAFT_ROLES, EDGE_KINDS, LEGACY_NODE_KINDS, NODE_KINDS, ZOOM_MAX, ZOOM_MIN } from "./types.ts";
 
 export const authorSchema = z.enum(["human", "ai"]);
 /** A *stored* node's kind — the six offered kinds plus legacy "note". Used
@@ -75,7 +75,7 @@ export const historySummarySchema = z.strictObject({
 export const viewportSchema = z.strictObject({
   x: z.number(),
   y: z.number(),
-  zoom: z.number().min(0.35).max(2.4),
+  zoom: z.number().min(ZOOM_MIN).max(ZOOM_MAX),
 });
 
 export const pathStepSchema = z.strictObject({
@@ -271,7 +271,7 @@ export const toolArgs = {
     ...boardScoped,
     x: z.number(),
     y: z.number(),
-    zoom: z.number().min(0.35).max(2.4),
+    zoom: z.number().min(ZOOM_MIN).max(ZOOM_MAX),
   }),
   "canvas.get_board": z.object({ ...boardScoped, include_layout: z.boolean().optional() }),
   "canvas.export_mermaid": z.object({ ...boardScoped }),

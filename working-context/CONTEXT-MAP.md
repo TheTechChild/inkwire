@@ -50,7 +50,6 @@ Map sources without making all of them active. Update this file when source auth
 | `node_modules/`, `yarn.lock` | Generated or too large. No signal for the outcome | A dependency change, or `yarn check-plugin` fails |
 | `schema/*.generated.json` | Generated from the zod contract. Do not edit it | Never edit. Regenerate with `yarn gen:schemas` |
 | `~/.inkwire` and `~/.inkwire-dev` data and `daemon.log` | Live user data. Approval boundary | Clayton approves a check of the live or dev daemon |
-| Far-zoom part of `Shared Canvas - Notebooks.dc.html` | Out of scope and not approved | Clayton approves far zoom |
 | Branch `docs/readme-clone-steps` (PR #29) | Closed without a merge. It adds `yarn build` steps that ADR 0005 removed | Never, unless Clayton opens it again |
 | Local branches `chore/plugin-install`, `feat/ref-accuracy`, `feat/session`; remote `feat/boards-delete` | Already in `main` | Clayton asks for branch cleanup |
 

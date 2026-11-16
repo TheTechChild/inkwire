@@ -1,16 +1,18 @@
 // Canvas: grid, pan/zoom, the six tools, hit-testing, and world rendering.
 // All hit-testing happens in world coordinates on the container — node divs
 // are pointer-events: none. Gestures commit ONE intent, on release.
-import { edgeEndpoints, resizeBox } from "../core/geometry.ts";
-import type { Corner } from "../core/geometry.ts";
+import { boxToBBox, edgeEndpoints, resizeBox } from "../core/geometry.ts";
+import type { BBox, Corner } from "../core/geometry.ts";
 import { nextDraftId } from "../core/drafts.ts";
 import { nearestNodeWithin, nextNotebookId } from "../core/notebooks.ts";
 import { noteOwnSend } from "./notebook.ts";
 import { liveMembers, pathsAffected, tiers, traceT } from "../core/layers.ts";
 import type { PathBreak } from "../core/layers.ts";
-import { edgeLabel, lodFor, monoPx, quantizeZoom } from "../core/lod.ts";
+import { clampZoom, edgeLabel, fitView, lodFor, monoPx, quantizeZoom } from "../core/lod.ts";
+import { boardBounds, hullTitle, inkBounds, OUTLINE_STYLE, outlineView } from "../core/outline.ts";
+import type { Hull, OutlineView } from "../core/outline.ts";
 import type { App, Tool } from "./app.ts";
-import { KIND_META, clampZoom, el, focusLayer, focusedLayer, notebookOpen } from "./app.ts";
+import { KIND_META, el, focusLayer, focusedLayer, notebookOpen } from "./app.ts";
 import { DRAFT_ROLES } from "../shared/types.ts";
 import type { Box, CanvasState, Draft, DraftRole, EdgeEl, Layer, LayoutMap, Path, PathStep, Point, Trace } from "../shared/types.ts";
 import { savePanelPrefs, showNotebook, toast } from "./panel.ts";
@@ -55,20 +57,37 @@ const MIN_IMAGE_SIZE: Point = [24, 24];
 const HANDLE_PX = 14;
 const CORNERS: Corner[] = ["tl", "tr", "bl", "br"];
 
+let viewportTimer: number | null = null;
+
+/** Tell the server where this panel looks, 300 ms after the last change. */
+function sendViewport(app: App): void {
+  if (viewportTimer !== null) window.clearTimeout(viewportTimer);
+  viewportTimer = window.setTimeout(() => {
+    viewportTimer = null;
+    app.send({
+      type: "set_viewport",
+      viewport: { x: app.view.x, y: app.view.y, zoom: clampZoom(app.view.zoom) },
+    });
+  }, 300);
+}
+
+/** Frame `box` in the canvas (core/lod.ts fitView: 48 px margin, never past FIT_MAX). */
+export function fitBox(app: App, box: BBox | null): void {
+  const host = el("canvas");
+  app.view = fitView(box, host.clientWidth, host.clientHeight);
+  sendViewport(app);
+  app.render();
+}
+
+/** Fit the whole board: every node, image and stroke (key 0, the footer's fit). */
+export function fitBoard(app: App): void {
+  const state = app.push?.state;
+  if (!state) return;
+  fitBox(app, boardBounds(state.layout.boxes, inkBounds(state.ink)));
+}
+
 export function setupCanvas(app: App): void {
   const host = el("canvas");
-  let viewportTimer: number | null = null;
-
-  const sendViewport = () => {
-    if (viewportTimer !== null) window.clearTimeout(viewportTimer);
-    viewportTimer = window.setTimeout(() => {
-      viewportTimer = null;
-      app.send({
-        type: "set_viewport",
-        viewport: { x: app.view.x, y: app.view.y, zoom: clampZoom(app.view.zoom) },
-      });
-    }, 300);
-  };
 
   const toWorld = (e: PointerEvent): Point => {
     const r = host.getBoundingClientRect();
@@ -81,7 +100,11 @@ export function setupCanvas(app: App): void {
       e.preventDefault();
       if (app.drag?.type === "pan") return; // a wheel tick mid-pan must not zoom
       const r = host.getBoundingClientRect();
-      const f = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      // Proportional to the scroll: a wheel notch (~100 px) is ×1.1, as before, and
+      // a trackpad pinch (ctrlKey, small deltas) zooms smoothly. Chrome can join
+      // fast notches into one event, so one event may move up to ×1.46.
+      const dy = Math.max(-400, Math.min(400, e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY));
+      const f = Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.00095));
       const z = clampZoom(app.view.zoom * f);
       const cx = e.clientX - r.left;
       const cy = e.clientY - r.top;
@@ -90,7 +113,7 @@ export function setupCanvas(app: App): void {
         x: cx - (cx - app.view.x) * (z / app.view.zoom),
         y: cy - (cy - app.view.y) * (z / app.view.zoom),
       };
-      sendViewport();
+      sendViewport(app);
       app.render();
     },
     { passive: false },
@@ -137,6 +160,10 @@ export function setupCanvas(app: App): void {
     if (!meta && /^[1-9]$/.test(e.key)) {
       const layer = app.push?.state.layers[Number(e.key) - 1];
       if (layer) focusLayer(app, layer.id);
+    }
+    if (!meta && e.key === "0") {
+      e.preventDefault();
+      fitBoard(app);
     }
     // n is free — not in the tool map above.
     if (!meta && k === "n") {
@@ -207,6 +234,37 @@ export function setupCanvas(app: App): void {
       app.space = false;
       app.render();
     }
+  });
+
+  // Far out, a double-click on a layer's hull zooms in to fit that layer.
+  host.addEventListener("dblclick", (e) => {
+    if (app.tool !== "select") return;
+    const r = host.getBoundingClientRect();
+    const p: Point = [(e.clientX - r.left - app.view.x) / app.view.zoom, (e.clientY - r.top - app.view.y) / app.view.zoom];
+    const hull = hitHull(app, p);
+    if (hull) fitBox(app, boxToBBox(hull.box));
+  });
+
+  // The minimap pans: the pointer's spot on it becomes the canvas centre.
+  const mm = el("minimap");
+  const panFromMinimap = (e: PointerEvent) => {
+    const g = mmGeom;
+    if (!g) return;
+    const box = mm.getBoundingClientRect();
+    const wx = g.bx + (e.clientX - box.left - g.ox) / g.k;
+    const wy = g.by + (e.clientY - box.top - g.oy) / g.k;
+    app.view = { zoom: app.view.zoom, x: host.clientWidth / 2 - wx * app.view.zoom, y: host.clientHeight / 2 - wy * app.view.zoom };
+    sendViewport(app);
+    app.render();
+  };
+  mm.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    if (e.button !== 0) return;
+    mm.setPointerCapture(e.pointerId);
+    panFromMinimap(e);
+  });
+  mm.addEventListener("pointermove", (e) => {
+    if (e.buttons === 1) panFromMinimap(e);
   });
 
   host.addEventListener("pointerdown", (e) => {
@@ -321,7 +379,7 @@ export function setupCanvas(app: App): void {
     }
     if (d.type === "pan") {
       app.view = { ...app.view, x: d.ox + (e.clientX - d.sx), y: d.oy + (e.clientY - d.sy) };
-      sendViewport();
+      sendViewport(app);
       app.render();
       return;
     }
@@ -562,11 +620,36 @@ function hitResizeHandle(app: App, p: Point): { id: string; corner: Corner } | n
   return null;
 }
 
+/**
+ * The far view, when the camera is in the outline tier (core/lod.ts) and no
+ * trace plays: a trace draws its whole walk at any zoom.
+ */
+function outlineOf(app: App): OutlineView | null {
+  const state = app.push?.state;
+  if (!state || lodFor(app.view.zoom) !== "outline" || traceInfo(app)) return null;
+  return outlineView(state.layers, state.graph.nodes, state.graph.edges, state.layout.boxes);
+}
+
+/** The smallest hull under `p` in the outline tier, if any. */
+function hitHull(app: App, p: Point): Hull | null {
+  let best: Hull | null = null;
+  for (const h of outlineOf(app)?.hulls ?? []) {
+    const [x, y, w, hh] = h.box;
+    if (p[0] < x || p[0] > x + w || p[1] < y || p[1] > y + hh) continue;
+    if (!best || w * hh < best.box[2] * best.box[3]) best = h;
+  }
+  return best;
+}
+
 function hitNode(app: App, p: Point): string | null {
   const state = app.push?.state;
   if (!state) return null;
   const t = tiersOf(app);
-  const ids = [...state.graph.nodes.map((n) => n.id), ...state.images.map((i) => i.id)].filter((id) => t.node(id) === "in");
+  // Far out, a node inside a hull is not drawn, so it cannot be hit.
+  const far = outlineOf(app);
+  const loose = far ? new Set(far.loose) : null;
+  const nodeIds = state.graph.nodes.map((n) => n.id).filter((id) => !loose || loose.has(id));
+  const ids = [...nodeIds, ...state.images.map((i) => i.id)].filter((id) => t.node(id) === "in");
   for (let i = ids.length - 1; i >= 0; i--) {
     const box = state.layout.boxes[ids[i]!];
     if (box && p[0] >= box[0] && p[0] <= box[0] + box[2] && p[1] >= box[1] && p[1] <= box[1] + box[3]) {
@@ -587,7 +670,7 @@ function hitStroke(app: App, p: Point): string | null {
 
 function hitEdge(app: App, p: Point): string | null {
   const state = app.push?.state;
-  if (!state) return null;
+  if (!state || outlineOf(app)) return null; // far out, edges are hairlines between hulls, not edges
   const t = tiersOf(app);
   for (const e of state.graph.edges) {
     if (t.edge(e) !== "in") continue;
@@ -636,9 +719,14 @@ export function renderWorld(app: App): void {
   // LOD: quantized so styles do not recompute every frame; all tier rules are CSS.
   const qz = quantizeZoom(v.zoom);
   world.style.setProperty("--zoom", String(qz));
-  world.dataset.lod = lodFor(qz);
+  const far = outlineOf(app);
+  // A trace keeps the nodes at any zoom: the outline tier then draws as dot.
+  world.dataset.lod = far ? "outline" : lodFor(qz) === "outline" ? "dot" : lodFor(qz);
+  // The grid coarsens by 2× steps far out, so its dots stay 9 px or more apart on screen.
+  let step = 28;
+  while (step * v.zoom < 9) step *= 2;
   grid.style.backgroundImage = "radial-gradient(circle, var(--cv-grid) 1px, transparent 1px)";
-  grid.style.backgroundSize = `${(28 * v.zoom).toFixed(1)}px ${(28 * v.zoom).toFixed(1)}px`;
+  grid.style.backgroundSize = `${(step * v.zoom).toFixed(1)}px ${(step * v.zoom).toFixed(1)}px`;
   grid.style.backgroundPosition = `${v.x.toFixed(0)}px ${v.y.toFixed(0)}px`;
 
   el("canvas").style.cursor = app.space ? "grabbing" : app.tool === "select" ? "default" : "crosshair";
@@ -664,6 +752,7 @@ export function renderWorld(app: App): void {
   edges.replaceChildren();
   preview.replaceChildren();
   nodes.replaceChildren();
+  renderMinimap(app, far);
   if (!state) return;
 
   // Layer tiers: every element resolves to in / rim / out; CSS carries the look.
@@ -700,8 +789,18 @@ export function renderWorld(app: App): void {
     ink.appendChild(path);
   }
 
+  // Far out: one hairline per pair of hulls (or loose nodes) in place of the edges.
+  for (const l of far?.links ?? []) {
+    const { p1, p2 } = edgeEndpoints(l.a, l.b, 0);
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("class", "outline-link");
+    path.setAttribute("d", `M ${p1[0].toFixed(1)} ${p1[1].toFixed(1)} L ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`);
+    path.setAttribute("stroke-width", String(1 / v.zoom));
+    edges.appendChild(path);
+  }
+
   // Edges, clipped to node borders, with a measured label backing rect.
-  for (const e of state.graph.edges) {
+  for (const e of far ? [] : state.graph.edges) {
     const a = boxOf(app, e.from);
     const b = boxOf(app, e.to);
     if (!a || !b) continue;
@@ -812,8 +911,11 @@ export function renderWorld(app: App): void {
     nodes.appendChild(div);
   }
 
-  // Nodes: blueprint-framed boxes with registration marks.
+  // Nodes: blueprint-framed boxes with registration marks. Far out, only the
+  // nodes in no layer draw (as plain boxes: CSS hides the text).
+  const loose = far ? new Set(far.loose) : null;
   for (const n of state.graph.nodes) {
+    if (loose && !loose.has(n.id)) continue;
     const box = boxOf(app, n.id);
     if (!box) continue;
     const selected = app.sel?.type === "node" && app.sel.id === n.id;
@@ -851,7 +953,9 @@ export function renderWorld(app: App): void {
           ? "1.5px solid var(--color-accent)"
           : ai
             ? "1.5px dashed var(--color-accent-500)"
-            : "1px solid var(--color-divider)",
+            : far
+              ? `1px solid color-mix(in srgb, var(--color-text) ${OUTLINE_STYLE.looseAlpha * 100}%, transparent)`
+              : "1px solid var(--color-divider)",
       boxShadow: walk && !selected && !pending
         ? ""
         : lit
@@ -884,7 +988,105 @@ export function renderWorld(app: App): void {
     if (selected) div.appendChild(resizeHandle());
     nodes.appendChild(div);
   }
+  if (far) renderHulls(app, far.hulls, hlNodes, marks);
   ensureLoop(app);
+}
+
+/**
+ * The outline tier's hulls: a dashed frame per layer with its title above.
+ * Border and type counter-scale to stay at screen size. A hull takes the hue
+ * of a highlight or a draft mark on any member; focus dims the other hulls.
+ */
+function renderHulls(app: App, hulls: Hull[], hlNodes: Set<string>, marks: Record<string, DraftRole>): void {
+  const nodes = el("nodelayer");
+  const z = app.view.zoom;
+  const focus = app.push?.state.focus ?? null;
+  for (const h of hulls) {
+    const [x, y, w, hh] = h.box;
+    const marked = [...h.members].find((id) => marks[id]);
+    const lit = [...h.members].some((id) => hlNodes.has(id));
+    const hue = lit ? "var(--color-accent-600)" : marked ? roleHue(marks[marked]!) : "";
+    const div = document.createElement("div");
+    div.className = "hull";
+    div.dataset.layer = h.layer.id;
+    if (focus && focus !== h.layer.id) div.dataset.tier = "out";
+    Object.assign(div.style, {
+      left: `${x}px`,
+      top: `${y}px`,
+      width: `${w}px`,
+      height: `${hh}px`,
+      borderWidth: `${1 / z}px`,
+      borderColor: hue,
+    });
+    const title = document.createElement("span");
+    title.textContent = hullTitle(h.layer);
+    Object.assign(title.style, { fontSize: `${OUTLINE_STYLE.titlePx / z}px`, top: `${-(OUTLINE_STYLE.titlePx + OUTLINE_STYLE.titleGap) / z}px`, color: hue });
+    div.appendChild(title);
+    nodes.appendChild(div);
+  }
+}
+
+const MINIMAP_W = 160;
+const MINIMAP_H = 100;
+/** The minimap transform: board point → minimap px is (p - (bx, by)) · k + (ox, oy). */
+interface MinimapTransform {
+  bx: number;
+  by: number;
+  k: number;
+  ox: number;
+  oy: number;
+}
+let mmGeom: MinimapTransform | null = null;
+
+/**
+ * The minimap (bottom right, 160×100): the one panel allowed over the graph
+ * (CLAUDE.md). It shows only while the board is larger than the view, never
+ * while a trace plays. Hulls, loose nodes, and the view in accent.
+ */
+function renderMinimap(app: App, far: OutlineView | null): void {
+  const mm = el("minimap");
+  const host = el("canvas");
+  const state = app.push?.state;
+  const v = app.view;
+  const b = state ? boardBounds(state.layout.boxes, inkBounds(state.ink)) : null;
+  const vw = host.clientWidth;
+  const vh = host.clientHeight;
+  const overflows = !!b && vw > 0 && (b.w * v.zoom > vw + 4 || b.h * v.zoom > vh + 4);
+  if (!state || !b || !overflows || traceInfo(app)) {
+    mm.hidden = true;
+    mmGeom = null;
+    return;
+  }
+  mm.hidden = false;
+  const W = MINIMAP_W;
+  const H = MINIMAP_H;
+  const k = Math.min(W / (b.w || 1), H / (b.h || 1));
+  const g = { bx: b.x, by: b.y, k, ox: (W - b.w * k) / 2, oy: (H - b.h * k) / 2 };
+  mmGeom = g;
+  const place = (cls: string, x: number, y: number, w: number, h: number): HTMLElement => {
+    const d = document.createElement("div");
+    d.className = cls;
+    Object.assign(d.style, {
+      left: `${(g.ox + (x - g.bx) * k).toFixed(1)}px`,
+      top: `${(g.oy + (y - g.by) * k).toFixed(1)}px`,
+      width: `${(w * k).toFixed(1)}px`,
+      height: `${(h * k).toFixed(1)}px`,
+    });
+    return d;
+  };
+  const view = far ?? outlineView(state.layers, state.graph.nodes, state.graph.edges, state.layout.boxes);
+  const kids: HTMLElement[] = [];
+  for (const id of view.loose) {
+    const [x, y, w, h] = state.layout.boxes[id]!;
+    kids.push(place("mm-node", x, y, w, h));
+  }
+  for (const h of view.hulls) {
+    const d = place("mm-hull", ...h.box);
+    if (state.focus === h.layer.id) d.classList.add("focus");
+    kids.push(d);
+  }
+  kids.push(place("mm-view", -v.x / v.zoom, -v.y / v.zoom, vw / v.zoom, vh / v.zoom));
+  mm.replaceChildren(...kids);
 }
 
 // ---------------------------------------------------------------------------
