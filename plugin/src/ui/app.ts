@@ -94,10 +94,6 @@ export function isServerMessage(raw: unknown): raw is ServerMessage {
   return typeof raw === "object" && raw !== null && "type" in raw;
 }
 
-export function clampZoom(z: number): number {
-  return Math.min(2.4, Math.max(0.35, z));
-}
-
 /** True when the person can see the notebook: the side panel is open on the Notebook tab. */
 export function notebookOpen(app: App): boolean {
   return app.panel.open && app.tab === "notebook";

@@ -27,7 +27,7 @@ Reason for this outcome: all work since 2026-10-22 is plugin delivery (ADR 0004,
 
 - ADR 0005: the plugin and the marketplace entry have no `version` field. The commit SHA is the version.
 - ADR 0001: only the person restarts the daemon. A newer build does not restart it.
-- The far-zoom pass in the notebooks design file is out of scope and is not approved (`design_handoff_inkwire/README.md`).
+- Far zoom is approved (2026-11-16) and supersedes the out-of-scope line in `design_handoff_inkwire/README.md`. Part 1 (no zoom limits, the outline tier below 0.35, Fit, the minimap) is on branch `feat/far-zoom`. Part 2 (nested graphs) starts after the 2026-11-17 demo.
 
 ## Non-negotiables
 

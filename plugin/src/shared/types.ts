@@ -70,6 +70,13 @@ export type Box = [number, number, number, number];
 /** id → box, covering nodes and images. Strokes carry their own geometry. */
 export type LayoutMap = Record<string, Box>;
 
+/**
+ * The camera's zoom range: a render guard, not a design floor (core/lod.ts
+ * draws the far end as layer outlines). The contract and the panel read it.
+ */
+export const ZOOM_MIN = 0.01;
+export const ZOOM_MAX = 64;
+
 export interface Viewport {
   x: number;
   y: number;

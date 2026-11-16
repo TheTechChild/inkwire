@@ -495,8 +495,8 @@
         },
         "zoom": {
           "type": "number",
-          "minimum": 0.35,
-          "maximum": 2.4
+          "minimum": 0.01,
+          "maximum": 64
         }
       },
       "required": [

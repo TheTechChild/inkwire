@@ -89,8 +89,9 @@
       </div>
       <div id="hints">
         <span id="hint"></span>
-        <span>scroll = zoom · space-drag = pan · del = delete · ⌘Z / ⇧⌘Z = undo, redo · n = notebook</span>
+        <span>scroll = zoom · space-drag = pan · del = delete · ⌘Z / ⇧⌘Z = undo, redo · n = notebook · 0 = fit</span>
       </div>
+      <div id="minimap" title="drag to pan" hidden></div>
       <div id="flash"></div>
       <div id="toast" hidden></div>
     </div>
@@ -159,6 +160,7 @@
     <span id="modenote"></span>
     <span id="counts"></span>
     <span id="zoom"></span>
+    <button class="btn btn-ghost" id="btn-fit" title="fit the whole board — 0"><span data-icon="fit"></span><span>fit</span></button>
     <button class="btn btn-ghost" id="btn-resetview">reset view</button>
     <span id="histnote"></span>
     <span class="ink-note" id="inknote"></span>

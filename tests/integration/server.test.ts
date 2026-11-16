@@ -557,7 +557,7 @@ describe("integration", () => {
     const refs = c.nodes.filter((n) => n.ref ?? n.endpoint);
     expect(refs.length).toBeGreaterThan(0);
 
-    const svg = renderBoardSvg({ collections: c, viewport: { x: 0, y: 0, zoom } });
+    const svg = renderBoardSvg({ collections: c, layers: [], viewport: { x: 0, y: 0, zoom } });
     // Geometry: byte-identical across tiers.
     for (const [id, box] of Object.entries(c.layout)) {
       if (c.nodes.some((n) => n.id === id)) {

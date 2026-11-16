@@ -22,6 +22,26 @@ export function bbox(points: readonly Point[]): BBox {
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 
+/** The smallest box that holds every box in `boxes`; null when there are none. */
+export function unionBox(boxes: Iterable<BBox>): BBox | null {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const b of boxes) {
+    minX = Math.min(minX, b.x);
+    minY = Math.min(minY, b.y);
+    maxX = Math.max(maxX, b.x + b.w);
+    maxY = Math.max(maxY, b.y + b.h);
+  }
+  return isFinite(minX) ? { x: minX, y: minY, w: maxX - minX, h: maxY - minY } : null;
+}
+
+/** A layout box as a BBox. */
+export function boxToBBox(box: Box): BBox {
+  return { x: box[0], y: box[1], w: box[2], h: box[3] };
+}
+
 export function dist(a: Point, b: Point): number {
   return Math.hypot(a[0] - b[0], a[1] - b[1]);
 }

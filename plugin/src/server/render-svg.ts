@@ -4,12 +4,15 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { bbox, edgeEndpoints } from "../core/geometry.ts";
-import { edgeLabel, labelPx, lodFor, monoPx, wrapText } from "../core/lod.ts";
-import type { Collections, Point, Viewport } from "../shared/types.ts";
+import { edgeLabel, fitView, labelPx, lodFor, monoPx, wrapText } from "../core/lod.ts";
+import { boardBounds, hullTitle, OUTLINE_STYLE, outlineView } from "../core/outline.ts";
+import type { Collections, Layer, Point, Viewport } from "../shared/types.ts";
 import { DARK, RENDER, type ThemeTokens } from "../shared/tokens.ts";
 
 export interface RenderOptions {
   collections: Collections;
+  /** The board's layers: the outline tier draws them as hulls. */
+  layers: Layer[];
   viewport: Viewport;
   width?: number;
   height?: number;
@@ -57,6 +60,12 @@ export function renderBoardSvg(opts: RenderOptions): string {
         `<rect x="${box[0]}" y="${box[1]}" width="${box[2]}" height="${box[3]}" fill="none" stroke="${t.divider}"/>`,
       );
     }
+  }
+
+  if (lod === "outline") {
+    renderOutline(parts, c, opts.layers, vp.zoom, t);
+    parts.push("</g></svg>");
+    return parts.join("\n");
   }
 
   // Edges, clipped to node borders.
@@ -116,13 +125,7 @@ export function renderBoardSvg(opts: RenderOptions): string {
     }
   }
 
-  // Ink on top.
-  for (const s of c.strokes) {
-    const d = s.points.map(([px, py], i) => `${i === 0 ? "M" : "L"} ${px} ${py}`).join(" ");
-    parts.push(
-      `<path d="${d}" fill="none" stroke="${t.text}" stroke-width="${RENDER.inkWidth}" stroke-linecap="round" stroke-linejoin="round"/>`,
-    );
-  }
+  inkPaths(parts, c, t);
 
   parts.push("</g></svg>");
   return parts.join("\n");
@@ -147,29 +150,46 @@ export function arrowHead(p1: Point, p2: Point): string | null {
   return `M ${bx - uy * ARROW_SIDE} ${by + ux * ARROW_SIDE} L ${p2[0]} ${p2[1]} L ${bx + uy * ARROW_SIDE} ${by - ux * ARROW_SIDE}`;
 }
 
-export function fitViewport(c: Collections, width: number, height: number): Viewport {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  const extend = (x: number, y: number, w: number, h: number) => {
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x + w);
-    maxY = Math.max(maxY, y + h);
-  };
-  for (const box of Object.values(c.layout)) extend(...box);
-  for (const s of c.strokes) {
-    const b = bbox(s.points);
-    extend(b.x, b.y, b.w, b.h);
+/**
+ * The outline tier (core/outline.ts): loose nodes as plain boxes, each layer as
+ * its dashed hull with its title, one hairline per pair of units, ink on top.
+ * Strokes and type counter-scale so they stay at screen size.
+ */
+function renderOutline(parts: string[], c: Collections, layers: Layer[], zoom: number, t: ThemeTokens): void {
+  const view = outlineView(layers, c.nodes, c.edges, c.layout);
+  const hair = 1 / zoom;
+  for (const l of view.links) {
+    const { p1, p2 } = edgeEndpoints(l.a, l.b, 0);
+    parts.push(`<path d="M ${p1[0]} ${p1[1]} L ${p2[0]} ${p2[1]}" fill="none" stroke="${t.text}" stroke-opacity="${OUTLINE_STYLE.linkAlpha}" stroke-width="${hair}"/>`);
   }
-  if (!isFinite(minX)) return { x: 0, y: 0, zoom: 1 };
-  const pad = 40;
-  const zoom = Math.min(
-    2.4,
-    Math.max(0.35, Math.min((width - pad * 2) / (maxX - minX || 1), (height - pad * 2) / (maxY - minY || 1))),
-  );
-  return { x: pad - minX * zoom, y: pad - minY * zoom, zoom };
+  for (const id of view.loose) {
+    const [x, y, w, h] = c.layout[id]!;
+    parts.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${t.bg}" stroke="${t.text}" stroke-opacity="${OUTLINE_STYLE.looseAlpha}" stroke-width="${hair}"/>`);
+  }
+  for (const h of view.hulls) {
+    const [x, y, w, hh] = h.box;
+    const size = OUTLINE_STYLE.titlePx / zoom;
+    parts.push(
+      `<rect x="${x}" y="${y}" width="${w}" height="${hh}" fill="none" stroke="${t.text}" stroke-opacity="${OUTLINE_STYLE.hullAlpha}" stroke-width="${hair}" stroke-dasharray="${OUTLINE_STYLE.dash[0] * hair} ${OUTLINE_STYLE.dash[1] * hair}"/>` +
+        `<text x="${x}" y="${y - OUTLINE_STYLE.titleGap / zoom}" font-family="${RENDER.fontMono}, monospace" font-weight="${RENDER.fontMonoWeight}" font-size="${size}" fill="${t.text}" opacity="${OUTLINE_STYLE.titleAlpha}">${esc(hullTitle(h.layer))}</text>`,
+    );
+  }
+  inkPaths(parts, c, t);
+}
+
+/** The ink, on top of everything. */
+function inkPaths(parts: string[], c: Collections, t: ThemeTokens): void {
+  for (const s of c.strokes) {
+    const d = s.points.map(([px, py], i) => `${i === 0 ? "M" : "L"} ${px} ${py}`).join(" ");
+    parts.push(
+      `<path d="${d}" fill="none" stroke="${t.text}" stroke-width="${RENDER.inkWidth}" stroke-linecap="round" stroke-linejoin="round"/>`,
+    );
+  }
+}
+
+/** Frame every element (FIT_PAD margin). Far boards drop into the outline tier, not off the image. */
+export function fitViewport(c: Collections, width: number, height: number): Viewport {
+  return fitView(boardBounds(c.layout, c.strokes.map((s) => bbox(s.points))), width, height);
 }
 
 function inlineImage(imagesDir: string, src: string): string | null {

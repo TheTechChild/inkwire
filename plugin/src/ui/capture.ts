@@ -1,8 +1,9 @@
 // Client self-capture (SPEC § 6 primary path): render the board to a PNG
 // with the same geometry (core/geometry) and tokens (shared/tokens) the
 // server-side SVG fallback uses, so the two renderers stay in step.
-import { bbox, edgeEndpoints } from "../core/geometry.ts";
-import { edgeLabel, labelPx, lodFor, monoPx, wrapText } from "../core/lod.ts";
+import { edgeEndpoints } from "../core/geometry.ts";
+import { edgeLabel, fitView, labelPx, lodFor, monoPx, wrapText } from "../core/lod.ts";
+import { boardBounds, hullTitle, inkBounds, OUTLINE_STYLE, outlineView } from "../core/outline.ts";
 import { DARK, LIGHT, RENDER } from "../shared/tokens.ts";
 import type { App } from "./app.ts";
 import type { Point, Viewport } from "../shared/types.ts";
@@ -52,6 +53,12 @@ export async function captureBoard(
       ctx.strokeStyle = t.divider;
       ctx.strokeRect(box[0], box[1], box[2], box[3]);
     }
+  }
+
+  if (lod === "outline") {
+    drawOutline(ctx, state, vp.zoom, t.text, t.bg);
+    drawInk(ctx, state, t.text);
+    return await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
   }
 
   // Edges.
@@ -110,15 +117,22 @@ export async function captureBoard(
     lines.forEach((line, i) => ctx.fillText(line, x + 10, y + 40 + i * labelSize * 1.1));
     const refLine = n.ref ?? n.endpoint;
     if (refLine && lod === "full") {
-      ctx.globalAlpha = 0.7;
+      ctx.globalAlpha = OUTLINE_STYLE.titleAlpha;
       ctx.font = mono(10);
       ctx.fillText(refLine, x + 10, y + 58);
       ctx.globalAlpha = 1;
     }
   }
 
-  // Ink on top.
-  ctx.strokeStyle = t.text;
+  drawInk(ctx, state, t.text);
+  return await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+}
+
+type State = NonNullable<App["push"]>["state"];
+
+/** Ink on top. */
+function drawInk(ctx: CanvasRenderingContext2D, state: State, color: string): void {
+  ctx.strokeStyle = color;
   ctx.lineWidth = RENDER.inkWidth;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
@@ -130,8 +144,43 @@ export async function captureBoard(
     for (const [px, py] of pts.slice(1)) ctx.lineTo(px, py);
     ctx.stroke();
   }
+}
 
-  return await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+/** The outline tier, as render-svg draws it (core/outline.ts): hairlines, loose boxes, hulls with titles. */
+function drawOutline(ctx: CanvasRenderingContext2D, state: State, zoom: number, fg: string, bg: string): void {
+  const view = outlineView(state.layers, state.graph.nodes, state.graph.edges, state.layout.boxes);
+  const hair = 1 / zoom;
+  ctx.strokeStyle = fg;
+  ctx.lineWidth = hair;
+  ctx.globalAlpha = OUTLINE_STYLE.linkAlpha;
+  for (const l of view.links) {
+    const { p1, p2 } = edgeEndpoints(l.a, l.b, 0);
+    ctx.beginPath();
+    ctx.moveTo(p1[0], p1[1]);
+    ctx.lineTo(p2[0], p2[1]);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  for (const id of view.loose) {
+    const [x, y, w, h] = state.layout.boxes[id]!;
+    ctx.fillStyle = bg;
+    ctx.fillRect(x, y, w, h);
+    ctx.globalAlpha = OUTLINE_STYLE.looseAlpha;
+    ctx.strokeRect(x, y, w, h);
+    ctx.globalAlpha = 1;
+  }
+  ctx.font = `${RENDER.fontMonoWeight} ${OUTLINE_STYLE.titlePx / zoom}px "${RENDER.fontMono}", monospace`;
+  for (const h of view.hulls) {
+    const [x, y, w, hh] = h.box;
+    ctx.globalAlpha = OUTLINE_STYLE.hullAlpha;
+    ctx.setLineDash(OUTLINE_STYLE.dash.map((d) => d * hair));
+    ctx.strokeRect(x, y, w, hh);
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 0.7;
+    ctx.fillStyle = fg;
+    ctx.fillText(hullTitle(h.layer), x, y - OUTLINE_STYLE.titleGap / zoom);
+    ctx.globalAlpha = 1;
+  }
 }
 
 function drawArrowHead(ctx: CanvasRenderingContext2D, from: Point, to: Point): void {
@@ -144,37 +193,8 @@ function drawArrowHead(ctx: CanvasRenderingContext2D, from: Point, to: Point): v
   ctx.stroke();
 }
 
-function fitViewport(
-  state: NonNullable<App["push"]>["state"],
-  width: number,
-  height: number,
-): Viewport {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  const extend = (x: number, y: number, w: number, h: number) => {
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x + w);
-    maxY = Math.max(maxY, y + h);
-  };
-  for (const box of Object.values(state.layout.boxes)) extend(box[0], box[1], box[2], box[3]);
-  for (const s of state.ink) {
-    if (s.geometry && s.geometry.length > 0) {
-      const b = bbox(s.geometry);
-      extend(b.x, b.y, b.w, b.h);
-    } else {
-      extend(s.bbox.x, s.bbox.y, s.bbox.w, s.bbox.h);
-    }
-  }
-  if (!isFinite(minX)) return { x: 0, y: 0, zoom: 1 };
-  const pad = 40;
-  const zoom = Math.min(
-    2.4,
-    Math.max(0.35, Math.min((width - pad * 2) / (maxX - minX || 1), (height - pad * 2) / (maxY - minY || 1))),
-  );
-  return { x: pad - minX * zoom, y: pad - minY * zoom, zoom };
+function fitViewport(state: State, width: number, height: number): Viewport {
+  return fitView(boardBounds(state.layout.boxes, inkBounds(state.ink)), width, height);
 }
 
 function loadImage(src: string): Promise<HTMLImageElement> {

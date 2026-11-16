@@ -73,6 +73,7 @@ export class Screenshots {
 
     const svg = renderBoardSvg({
       collections: session.collections(),
+      layers: session.layers,
       viewport: vp,
       fit,
       imagesDir: this.imagesDir,

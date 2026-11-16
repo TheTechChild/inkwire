@@ -401,7 +401,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "canvas.screenshot",
-    "PNG of the board as the human sees it. Use this to read handwriting, judge spatial intent, or check what an ambiguous stroke actually looks like. Structure comes from get_state; pixels come from here. The image is 1280×800. viewport is the panel's pan and zoom: a board point (bx, by) draws at screen pixel (bx·zoom + x, by·zoom + y), so to put board point (bx, by) at the top-left corner, send x = −bx·zoom, y = −by·zoom. zoom is 0.35–2.4. fit: true frames every element, but never below zoom 0.35, so a very large board is cropped; shoot it in parts with viewport.",
+    "PNG of the board as the human sees it. Use this to read handwriting, judge spatial intent, or check what an ambiguous stroke actually looks like. Structure comes from get_state; pixels come from here. The image is 1280×800. viewport is the panel's pan and zoom: a board point (bx, by) draws at screen pixel (bx·zoom + x, by·zoom + y), so to put board point (bx, by) at the top-left corner, send x = −bx·zoom, y = −by·zoom. zoom is 0.01–64. Below 0.35 the board draws in outline: each layer is a dashed hull with its title, nodes in no layer are plain boxes, and edges become one hairline per pair; no node text shows. fit: true frames every element (never past zoom 2.4); on a large board that is the outline, so to read labels, shoot it in parts with viewport at zoom 0.5 or more.",
     async (args: { board_id?: string; viewport?: { x: number; y: number; zoom: number }; fit?: boolean }) => {
       const session = resolve(args.board_id);
       const shot = await deps.screenshots().capture(session, args.viewport, args.fit ?? false);
@@ -410,7 +410,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
         content: [
           {
             type: "text" as const,
-            text: `board ${session.boardId} · zoom ${shot.viewport.zoom} · source: ${shot.source}`,
+            text: `board ${session.boardId} · zoom ${args.fit ? "fit" : shot.viewport.zoom} · source: ${shot.source}`,
           },
           { type: "image" as const, data: shot.png.toString("base64"), mimeType: "image/png" },
         ],
@@ -526,7 +526,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
 
   register(
     "canvas.set_viewport",
-    "Pan and zoom the human's view. Use it to direct attention to what you are talking about, sparingly — it moves someone else's screen.",
+    "Pan and zoom the human's view. Use it to direct attention to what you are talking about, sparingly — it moves someone else's screen. zoom is 0.01–64; below 0.35 the panel draws the outline tier (layer hulls, no node text).",
     (args: { board_id?: string; x: number; y: number; zoom: number }) => {
       const session = writable(args.board_id);
       session.setViewport({ x: args.x, y: args.y, zoom: args.zoom });

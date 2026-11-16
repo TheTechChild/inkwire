@@ -1,6 +1,7 @@
 // Right panel (inspector + the tab strip and its panes), header controls, and the footer.
 import { captureBoard } from "./capture.ts";
-import { abortHold, beginHold, deleteSelection, holdFired, renderWalk, startPeek, togglePlay, traceInfo } from "./canvas.ts";
+import { abortHold, beginHold, deleteSelection, fitBoard, holdFired, renderWalk, startPeek, togglePlay, traceInfo } from "./canvas.ts";
+import { lodFor } from "../core/lod.ts";
 import type { App, Scope, Tab, Tool } from "./app.ts";
 import { KIND_META, el, focusLayer, focusedLayer, notebookOpen } from "./app.ts";
 import { liveMembers, scopeState } from "../core/layers.ts";
@@ -279,6 +280,7 @@ export function setupPanel(app: App): void {
     app.send({ type: "infer" });
     closeAppMenu();
   });
+  el("btn-fit").addEventListener("click", () => fitBoard(app));
   el("btn-resetview").addEventListener("click", () => {
     app.view = { x: 40, y: 20, zoom: 1 };
     app.send({ type: "set_viewport", viewport: app.view });
@@ -1163,7 +1165,8 @@ function renderFooter(app: App): void {
       ? `${s.ink.length} strokes awaiting infer structure`
       : "all ink resolved";
   }
-  el("zoom").textContent = `zoom ${Math.round(app.view.zoom * 100)}%`;
+  const z = app.view.zoom * 100;
+  el("zoom").textContent = `zoom ${z < 10 ? z.toFixed(1) : Math.round(z)}% · lod ${el("world").dataset.lod ?? lodFor(app.view.zoom)}`;
 }
 
 export function fmtTime(at: number): string {

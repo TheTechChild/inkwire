@@ -76,7 +76,7 @@
       "properties": {
         "x": { "type": "number" },
         "y": { "type": "number" },
-        "zoom": { "type": "number", "minimum": 0.35, "maximum": 2.4 }
+        "zoom": { "type": "number", "minimum": 0.01, "maximum": 64 }
       }
     },
     "layers": {
