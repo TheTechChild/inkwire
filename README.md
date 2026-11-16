@@ -6,7 +6,7 @@ A local MCP server with a shared drawing canvas, for collaborating visually with
 
 Inkwire needs Node 26 or later: Node runs the TypeScript source directly, so there is no build step. Claude Code starts the plugin in the folder of your session, and a version manager can then give the Node of that project's `.nvmrc`. The plugin uses the `node` on PATH when it is Node 26 or later, else `mise x node@26` when [mise](https://mise.jdx.dev) is installed. So if your projects pin an older Node, install mise.
 
-Inkwire ships as a Claude Code plugin: the MCP server, a `Stop` hook, the `/use-inkwire` and `/back-to-claude-code` commands, and the model-invocable `trace-path` and `pr-walkthrough` skills. This repo is also the plugin's marketplace. Install it one time; it then loads in every session:
+Inkwire ships as a Claude Code plugin: the MCP server, a `Stop` hook, the `/use-inkwire` and `/back-to-claude-code` commands, and the model-invocable `trace-path`, `pr-walkthrough` and `workflow-board` skills. This repo is also the plugin's marketplace. Install it one time; it then loads in every session:
 
 ```sh
 claude plugin marketplace add TheTechChild/inkwire
