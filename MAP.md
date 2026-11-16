@@ -1203,8 +1203,7 @@ merge to `main` that changes `plugin/` is an update.
 - `.claude-plugin/marketplace.json` — the marketplace listing (at the repo root, not in `plugin/`).
 - `plugin/hooks/hooks.json`, `plugin/hooks/forward.sh` — see Session mode and hooks.
 - `plugin/hooks/mod/` — the Claude Code mod (`plugin/hooks/mod/register.tsx` is the module) — see The mod.
-- `plugin/skills/use-inkwire`, `plugin/skills/back-to-claude-code`, `plugin/skills/trace-path` — `trace-path` is
-  model-invocable.
+- `plugin/skills/use-inkwire`, `plugin/skills/back-to-claude-code`, `plugin/skills/trace-path`, `plugin/skills/pr-walkthrough` — `trace-path` and `pr-walkthrough` are model-invocable.
 - `plugin/package.json`, `plugin/package-lock.json` — the runtime deps that Claude Code installs
   in the cache folder (`npm ci --ignore-scripts`: exact registry versions, no install scripts).
   `yarn lock-plugin` writes both from the root `dependencies` at the versions that `yarn.lock`

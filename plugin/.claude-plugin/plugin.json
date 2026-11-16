@@ -1,6 +1,6 @@
 {
   "name": "inkwire",
-  "description": "Shared drawing canvas for collaborating visually with Claude Code: the MCP server, the Stop hook, the /use-inkwire and /back-to-claude-code commands, and the trace-path skill.",
+  "description": "Shared drawing canvas for collaborating visually with Claude Code: the MCP server, the Stop hook, the /use-inkwire and /back-to-claude-code commands, the trace-path skill, and the pr-walkthrough skill.",
   "author": { "name": "Clayton Noyes" },
   "types": "./hooks/mod/contract.d.ts",
   "mcpServers": {
