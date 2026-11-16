@@ -318,6 +318,18 @@ header.nav { gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--color-se
    equal specificity, later in source, so this beats both the tier rule above
    and the highlight-out rule just above. */
 #world .edge[data-draft] .edge-label, #world .edge[data-draft] .edge-label-bg { display: initial; }
+/* Run status (workflow-board skill): canvas.ts sets data-status when a node's
+   endpoint is one of these words, and leaves the inline border and shadow empty. */
+#world .node-box[data-status="running"] { border: 2px solid var(--color-accent); }
+#world .node-box[data-status="running"]:not([data-trace]):not([data-draft]) { box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent) 28%, transparent); }
+#world .node-box[data-status="passed"] { border: 2px solid var(--color-ok); }
+#world .node-box[data-status="failed"] { border: 2px solid var(--color-error); }
+#world .node-box[data-status="skipped"] { border: 1px solid var(--color-neutral-600); }
+#world .node-box[data-status="running"] .node-ref { color: var(--color-accent); }
+#world .node-box[data-status="passed"] .node-ref { color: var(--color-ok); }
+#world .node-box[data-status="failed"] .node-ref { color: var(--color-error); }
+#world .node-box[data-status="skipped"]:not([data-trace]):not([data-draft]) .node-label, #world .node-box[data-status="skipped"]:not([data-trace]):not([data-draft]) .node-ref { color: var(--color-neutral-600); }
+
 /* trace (handoff "Paths" § 3): the walk is "in", its layer the rim, the rest
    blurs harder than focus. Walk states ride on data-trace; canvas.ts leaves
    walk nodes' inline border/shadow empty so these rules win. Gold is for the

@@ -571,10 +571,10 @@ plugin/src/ui/main.ts:18     boot
 plugin/src/ui/main.ts:68     showBoardPicker
 plugin/src/ui/app.ts:75      KIND_META
 plugin/src/ui/app.ts:109     focusLayer
-plugin/src/ui/canvas.ts:89   setupCanvas
-plugin/src/ui/canvas.ts:711  renderWorld
-plugin/src/ui/canvas.ts:644  hitNode
-plugin/src/ui/canvas.ts:702  deleteSelection
+plugin/src/ui/canvas.ts:92   setupCanvas
+plugin/src/ui/canvas.ts:714  renderWorld
+plugin/src/ui/canvas.ts:647  hitNode
+plugin/src/ui/canvas.ts:705  deleteSelection
 plugin/src/ui/panel.ts:206   setupPanel
 plugin/src/ui/panel.ts:551   renderPanel
 plugin/src/ui/panel.ts:579   renderInspector
@@ -668,6 +668,8 @@ whose edge ends far outside the image.
 
 Beware: screenshots ignore focus (layers). Tokens must match in both renderers.
 
+Beware: the panel colors a node by `data-status` when its endpoint is a run-status word (workflow-board skill); the running glow and the skipped label yield to trace and draft. The screenshot renderers ignore it, like drafts.
+
 Tests: `tests/core/lod.test.ts`, `tests/server/fonts.test.ts`, `tests/server/render-svg.test.ts`.
 
 ## Zoom range, outline tier, fit, minimap
@@ -694,12 +696,12 @@ plugin/src/core/outline.ts:46        layerHulls
 plugin/src/core/outline.ts:81        outlineView
 plugin/src/core/outline.ts:108        boardBounds
 plugin/src/server/render-svg.ts:158  renderOutline
-plugin/src/ui/canvas.ts:75           fitBox
-plugin/src/ui/canvas.ts:83           fitBoard
-plugin/src/ui/canvas.ts:627          outlineOf
-plugin/src/ui/canvas.ts:634          hitHull
-plugin/src/ui/canvas.ts:1000          renderHulls
-plugin/src/ui/canvas.ts:1046         renderMinimap
+plugin/src/ui/canvas.ts:78           fitBox
+plugin/src/ui/canvas.ts:86           fitBoard
+plugin/src/ui/canvas.ts:630          outlineOf
+plugin/src/ui/canvas.ts:637          hitHull
+plugin/src/ui/canvas.ts:1010          renderHulls
+plugin/src/ui/canvas.ts:1056         renderMinimap
 ```
 
 Beware: `quantizeZoom` halves the first step below 0.35, so it is always <= the zoom, and every
@@ -1004,9 +1006,9 @@ plugin/src/server/layers.ts:196   getPath
 plugin/src/server/layers.ts:227   openTrace
 plugin/src/server/session.ts:338  setTrace
 plugin/src/server/session.ts:345  updateTrace
-plugin/src/ui/canvas.ts:1130      effectiveTrace
-plugin/src/ui/canvas.ts:1295      renderTrace
-plugin/src/ui/canvas.ts:1379      renderWalk
+plugin/src/ui/canvas.ts:1140      effectiveTrace
+plugin/src/ui/canvas.ts:1305      renderTrace
+plugin/src/ui/canvas.ts:1389      renderWalk
 ```
 
 Each step with a ref carries a server-written `ref_hash`; `paths_update` takes `verify` to restamp hops (see Code binding and lint). The trace rides in `SessionPush`. The WS intents are `trace_set`, `trace_seek`, `trace_run`.
@@ -1203,7 +1205,7 @@ merge to `main` that changes `plugin/` is an update.
 - `.claude-plugin/marketplace.json` — the marketplace listing (at the repo root, not in `plugin/`).
 - `plugin/hooks/hooks.json`, `plugin/hooks/forward.sh` — see Session mode and hooks.
 - `plugin/hooks/mod/` — the Claude Code mod (`plugin/hooks/mod/register.tsx` is the module) — see The mod.
-- `plugin/skills/use-inkwire`, `plugin/skills/back-to-claude-code`, `plugin/skills/trace-path`, `plugin/skills/pr-walkthrough` — `trace-path` and `pr-walkthrough` are model-invocable.
+- `plugin/skills/use-inkwire`, `plugin/skills/back-to-claude-code`, `plugin/skills/trace-path`, `plugin/skills/pr-walkthrough`, `plugin/skills/workflow-board` — `trace-path`, `pr-walkthrough` and `workflow-board` are model-invocable.
 - `plugin/package.json`, `plugin/package-lock.json` — the runtime deps that Claude Code installs
   in the cache folder (`npm ci --ignore-scripts`: exact registry versions, no install scripts).
   `yarn lock-plugin` writes both from the root `dependencies` at the versions that `yarn.lock`

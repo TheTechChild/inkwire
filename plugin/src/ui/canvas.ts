@@ -24,6 +24,9 @@ import { icon } from "./icons.ts";
  * map — the CSS custom properties (styles.css) are the only source. */
 export const roleHue = (role: DraftRole): string => `var(--color-draft-${role})`;
 
+/** Run status words that the workflow-board skill writes in a node's endpoint; styles.css colors [data-status]. */
+const RUN_STATUS = new Set(["running", "passed", "failed", "skipped"]);
+
 /** The notebook pane's chip hover (handoff "Notebooks" § 2): a local pointer,
  * like a held trace peek — never touches the server. `ref` guards the clear:
  * a fast pointer swap between chips must not clobber a newer hover. */
@@ -926,6 +929,8 @@ export function renderWorld(app: App): void {
     const lit = hlNodes.has(n.id);
     const walk = info?.onPath.has(n.id) ?? false;
     const role = marks[n.id] as DraftRole | undefined;
+    // Run status: near tiers only, never in the outline tier (far).
+    const status = !far && n.endpoint && RUN_STATUS.has(n.endpoint) ? n.endpoint : null;
     const div = document.createElement("div");
     div.className = "node-box blueprint";
     div.dataset.id = n.id;
@@ -933,8 +938,9 @@ export function renderWorld(app: App): void {
     div.dataset.tier = t.node(n.id);
     div.dataset.hl = hlOf(lit);
     if (role) div.dataset.draft = role;
+    if (status) div.dataset.status = status;
     // Walk and marked nodes leave border to CSS: inline would beat [data-trace]
-    // / [data-draft] (trace > draft > highlight > selected > ai > default). A
+    // / [data-draft] (trace > draft > highlight > selected > status > ai > default). A
     // selected marked node keeps the role border and still gets shadow-md below —
     // a pending (arrow-tool endpoint) marked node keeps its role border the same
     // way, and gets the same shadow-md as its pending cue.
@@ -951,18 +957,22 @@ export function renderWorld(app: App): void {
         ? "2px solid var(--color-accent-600)"
         : selected || pending
           ? "1.5px solid var(--color-accent)"
-          : ai
-            ? "1.5px dashed var(--color-accent-500)"
-            : far
-              ? `1px solid color-mix(in srgb, var(--color-text) ${OUTLINE_STYLE.looseAlpha * 100}%, transparent)`
-              : "1px solid var(--color-divider)",
+          : status
+            ? ""
+            : ai
+              ? "1.5px dashed var(--color-accent-500)"
+              : far
+                ? `1px solid color-mix(in srgb, var(--color-text) ${OUTLINE_STYLE.looseAlpha * 100}%, transparent)`
+                : "1px solid var(--color-divider)",
       boxShadow: walk && !selected && !pending
         ? ""
         : lit
           ? "0 0 0 4px color-mix(in srgb, var(--color-accent) 28%, transparent), var(--shadow-md)"
           : selected || pending
             ? "var(--shadow-md)"
-            : "none",
+            : status
+              ? ""
+              : "none",
     });
     for (const corner of ["tl", "tr", "bl", "br"]) {
       const i = document.createElement("i");
