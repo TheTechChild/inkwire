@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HULL_PAD, boardBounds, hullTitle, inkBounds, layerHulls, outlineView } from "../../plugin/src/core/outline.ts";
+import { HULL_PAD, boardBounds, hullTitle, inkBounds, layerHulls, minimapShows, outlineView } from "../../plugin/src/core/outline.ts";
 import type { EdgeEl, Layer, LayoutMap, NodeEl } from "../../plugin/src/shared/types.ts";
 
 const node = (id: string): NodeEl => ({ id, label: id, kind: "service", ref: null, endpoint: null, from_ink: null, author: "human" });
@@ -90,5 +90,15 @@ describe("outline", () => {
 
   it("hullTitle joins the letter and the title", () => {
     expect(hullTitle({ ...layer("L1", ["a"]), letter: "B", title: "edge" })).toBe("B · edge");
+  });
+
+  it("minimapShows needs a board, a view, and a board at least twice the view", () => {
+    const b = { x: 0, y: 0, w: 1000, h: 1000 };
+    expect(minimapShows(null, 1, 800, 600)).toBe(false);
+    expect(minimapShows(b, 1, 0, 600)).toBe(false);
+    expect(minimapShows(b, 1, 800, 700)).toBe(false); // 1.25x and 1.4x
+    expect(minimapShows({ ...b, w: 1500, h: 100 }, 1, 750, 600)).toBe(true); // exactly 2x width
+    expect(minimapShows({ ...b, w: 100, h: 1200 }, 1, 800, 600)).toBe(true); // 2x height only
+    expect(minimapShows({ ...b, w: 5000, h: 5000 }, 0.1, 800, 600)).toBe(false); // zoomed out to fit
   });
 });

@@ -695,6 +695,7 @@ plugin/src/core/outline.ts:31      inkBounds
 plugin/src/core/outline.ts:46        layerHulls
 plugin/src/core/outline.ts:81        outlineView
 plugin/src/core/outline.ts:108        boardBounds
+plugin/src/core/outline.ts:116        minimapShows
 plugin/src/server/render-svg.ts:158  renderOutline
 plugin/src/ui/canvas.ts:78           fitBox
 plugin/src/ui/canvas.ts:86           fitBoard
@@ -712,7 +713,7 @@ walk draws its nodes and edges at any zoom. Far out, a node inside a hull cannot
 edge can be hit.
 
 Beware: the minimap (`#minimap`, bottom right) is the one panel that draws over the graph
-(CLAUDE.md). It shows only while the board is larger than the view, and never while a trace plays.
+(CLAUDE.md). It shows only while the board is at least twice the view in width or height, and never while a trace plays.
 
 Tests: `tests/core/lod.test.ts`, `tests/core/outline.test.ts`, `tests/server/render-svg.test.ts`.
 
@@ -1006,9 +1007,9 @@ plugin/src/server/layers.ts:196   getPath
 plugin/src/server/layers.ts:227   openTrace
 plugin/src/server/session.ts:338  setTrace
 plugin/src/server/session.ts:345  updateTrace
-plugin/src/ui/canvas.ts:1140      effectiveTrace
-plugin/src/ui/canvas.ts:1305      renderTrace
-plugin/src/ui/canvas.ts:1389      renderWalk
+plugin/src/ui/canvas.ts:1139      effectiveTrace
+plugin/src/ui/canvas.ts:1304      renderTrace
+plugin/src/ui/canvas.ts:1388      renderWalk
 ```
 
 Each step with a ref carries a server-written `ref_hash`; `paths_update` takes `verify` to restamp hops (see Code binding and lint). The trace rides in `SessionPush`. The WS intents are `trace_set`, `trace_seek`, `trace_run`.
