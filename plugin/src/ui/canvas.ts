@@ -9,7 +9,7 @@ import { noteOwnSend } from "./notebook.ts";
 import { liveMembers, pathsAffected, tiers, traceT } from "../core/layers.ts";
 import type { PathBreak } from "../core/layers.ts";
 import { clampZoom, edgeLabel, fitView, lodFor, monoPx, quantizeZoom } from "../core/lod.ts";
-import { boardBounds, hullTitle, inkBounds, OUTLINE_STYLE, outlineView } from "../core/outline.ts";
+import { boardBounds, hullTitle, inkBounds, minimapShows, OUTLINE_STYLE, outlineView } from "../core/outline.ts";
 import type { Hull, OutlineView } from "../core/outline.ts";
 import type { App, Tool } from "./app.ts";
 import { KIND_META, el, focusLayer, focusedLayer, notebookOpen } from "./app.ts";
@@ -1050,8 +1050,8 @@ let mmGeom: MinimapTransform | null = null;
 
 /**
  * The minimap (bottom right, 160×100): the one panel allowed over the graph
- * (CLAUDE.md). It shows only while the board is larger than the view, never
- * while a trace plays. Hulls, loose nodes, and the view in accent.
+ * (CLAUDE.md). It shows only while the board is at least twice the view in width
+ * or height, never while a trace plays. Hulls, loose nodes, and the view in accent.
  */
 function renderMinimap(app: App, far: OutlineView | null): void {
   const mm = el("minimap");
@@ -1061,8 +1061,7 @@ function renderMinimap(app: App, far: OutlineView | null): void {
   const b = state ? boardBounds(state.layout.boxes, inkBounds(state.ink)) : null;
   const vw = host.clientWidth;
   const vh = host.clientHeight;
-  const overflows = !!b && vw > 0 && (b.w * v.zoom > vw + 4 || b.h * v.zoom > vh + 4);
-  if (!state || !b || !overflows || traceInfo(app)) {
+  if (!state || !b || !minimapShows(b, v.zoom, vw, vh) || traceInfo(app)) {
     mm.hidden = true;
     mmGeom = null;
     return;

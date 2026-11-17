@@ -108,3 +108,12 @@ export function outlineView(layers: Layer[], nodes: NodeEl[], edges: EdgeEl[], l
 export function boardBounds(layout: LayoutMap, ink: Iterable<BBox>): BBox | null {
   return unionBox([...Object.values(layout).map(boxToBBox), ...ink]);
 }
+
+/** The minimap shows only when the board is at least this many times the view, in width or height. */
+export const MINIMAP_MIN_RATIO = 2;
+
+/** Whether the far-zoom minimap shows: a board, a view, and a board at least twice the view at this zoom. */
+export function minimapShows(bounds: BBox | null, zoom: number, viewW: number, viewH: number): boolean {
+  if (!bounds || viewW <= 0) return false;
+  return bounds.w * zoom >= MINIMAP_MIN_RATIO * viewW || bounds.h * zoom >= MINIMAP_MIN_RATIO * viewH;
+}
