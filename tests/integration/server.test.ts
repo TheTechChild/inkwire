@@ -157,7 +157,10 @@ describe("integration", () => {
     const page = await fetch(`${base}/?board=${boardId}`);
     expect(page.status).toBe(200);
     expect(page.headers.get("content-type")).toContain("text/html");
-    expect(await page.text()).toContain('src="./main.js"');
+    const html = await page.text();
+    expect(html).toContain('src="./main.js"');
+    // Dark Reader's inline !important strokes beat the trace colors; the panel has its own themes.
+    expect(html).toContain('<meta name="darkreader-lock">');
     const js = await fetch(`${base}/main.js`);
     expect(js.status).toBe(200);
     expect(js.headers.get("content-type")).toContain("text/javascript");
