@@ -24,12 +24,13 @@ Only one Claude Code session at a time is the author of a board. If a write fail
    - Skip generated files, lockfiles, migration snapshot JSON, and docs.
    - Put the test files of one app into one node. Put "tests" in its label. Use kind `entry`.
    - Keep about 15 nodes.
-   - Pass `at` on every `canvas_add_node`: x = 80 + 240 × col, y = 80 + 120 × row.
+   - Pass `at` on every `canvas_add_node`: x = 80 + 360 × col, y = 80 + 160 × row.
    - Put columns in call order, left to right: entry, service, transform, then store or state.
    - Put the tests node or nodes in the last row.
    - Bind each node with `ref` on `canvas_add_node`, or with `canvas_bind_code`. A ref is `path/to/file.ts:symbol` or `path/to/file.ts#symbol`. `Class.method` is allowed. Without a symbol, the ref binds the whole file.
    - Leave a removed-code node unbound.
    - Add an edge (`canvas_add_edge`, kind `sync`, `async` or `error`) only for a call that you verified with Read and Grep. An HTTP call between services is an edge. Use `sync` when the caller waits for the response.
+   - Keep each edge label to 3 words or fewer, for example "imports" or "fill from backup". Put details in the draft note or in the path captions.
 
 5. **Write one draft.** Call `drafts_create` with title "PR #<n>" and `marks`: a list of `{ id, role }`. Use role `added`, `changed` or `removed`. Mark every changed node and edge. Leave context nodes unmarked. Name them in the draft `note`.
 
